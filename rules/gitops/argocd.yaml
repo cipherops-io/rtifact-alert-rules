@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "ArgoCD component is down"
           description: "ArgoCD job {{ $labels.job }} instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddown"
 
       - alert: ArgoCDAppOutOfSync
         expr: argocd_app_info{sync_status="OutOfSync"} == 1
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "ArgoCD application is OutOfSync"
           description: "ArgoCD application {{ $labels.name }} in project {{ $labels.project }} has been OutOfSync for more than 10 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappoutofsync"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappoutofsync"
 
       - alert: ArgoCDAppDegraded
         expr: argocd_app_info{health_status="Degraded"} == 1
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "ArgoCD application health is Degraded"
           description: "ArgoCD application {{ $labels.name }} health is Degraded."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappdegraded"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappdegraded"
 
       - alert: ArgoCDSyncFailed
         expr: argocd_app_info{operation_phase=~"Error|Failed"} == 1
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "ArgoCD application sync operation failed"
           description: "ArgoCD application {{ $labels.name }} last sync operation failed."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdsyncfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdsyncfailed"
 
       - alert: ArgoCDAppSyncRunningLong
         expr: argocd_app_info{operation_phase="Running"} == 1
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "ArgoCD application sync has been running too long"
           description: "ArgoCD application {{ $labels.name }} sync has been running for more than 10 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappsyncrunninglong"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappsyncrunninglong"
 
       - alert: ArgoCDRepoServerDown
         expr: up{job=~"argocd-repo-server.*"} == 0
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "ArgoCD repo-server is down"
           description: "ArgoCD repo-server is down — all sync operations are blocked."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdreposerverdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdreposerverdown"
 
       - alert: ArgoCDRepoUnreachable
         expr: rate(argocd_git_request_total{request_type="fetch",response_code!="200"}[5m]) > 0
@@ -105,7 +105,7 @@ groups:
         annotations:
           summary: "ArgoCD cannot reach a git repository"
           description: "ArgoCD cannot reach git repository for {{ $labels.repo }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdrepounreachable"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdrepounreachable"
 
       - alert: ArgoCDAppControllerCrashLoop
         expr: rate(kube_pod_container_status_restarts_total{container="argocd-application-controller"}[15m]) * 60 * 15 > 3
@@ -120,7 +120,7 @@ groups:
         annotations:
           summary: "ArgoCD application-controller is crash-looping"
           description: "ArgoCD application-controller is crash-looping — all GitOps reconciliation is stopped."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappcontrollercrashloop"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappcontrollercrashloop"
 
       - alert: ArgoCDCertificateExpiring
         expr: (argocd_cert_expiry_timestamp_seconds - time()) / 86400 < 30
@@ -135,7 +135,7 @@ groups:
         annotations:
           summary: "ArgoCD repository certificate is expiring soon"
           description: "ArgoCD repository certificate expires in {{ $value | humanize }} days for {{ $labels.cert_name }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdcertificateexpiring"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdcertificateexpiring"
 
       - alert: ArgoCDAppHealthUnknown
         expr: argocd_app_info{health_status="Unknown"} == 1
@@ -150,7 +150,7 @@ groups:
         annotations:
           summary: "ArgoCD application health is Unknown"
           description: "ArgoCD application {{ $labels.name }} health has been Unknown for 15 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdapphealthunknown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdapphealthunknown"
 
       - alert: ArgoCDDexDown
         expr: up{job=~"argocd-dex.*"} == 0
@@ -165,7 +165,7 @@ groups:
         annotations:
           summary: "ArgoCD Dex OIDC provider is down"
           description: "ArgoCD Dex (OIDC provider) is down — SSO login is broken, only local admin accounts work."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddexdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddexdown"
 
       - alert: ArgoCDRedisDown
         expr: up{job=~"argocd-redis.*"} == 0
@@ -180,4 +180,4 @@ groups:
         annotations:
           summary: "ArgoCD Redis is down"
           description: "ArgoCD Redis is down — session cache unavailable, UI performance degraded."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdredisdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdredisdown"

@@ -27,7 +27,7 @@ tests:
             exp_annotations:
               summary: "Redis instance is down"
               description: "Redis instance redis:6379 has been unreachable for more than 1 minute."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisdown"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisdown"
 
   # ============================================================
   # RedisDown: negative — redis_up == 1
@@ -65,7 +65,7 @@ tests:
             exp_annotations:
               summary: "Redis memory usage is approaching maxmemory"
               description: "Redis memory usage is 90% of maxmemory on redis:6379."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redishighmemoryusage"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redishighmemoryusage"
 
   # ============================================================
   # RedisHighMemoryUsage: negative — used / max < 0.80
@@ -103,4 +103,4 @@ tests:
             exp_annotations:
               summary: "Redis replica has lost connection to master"
               description: "Redis replica redis-replica-1:6379 has lost connection to master."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redismasterlinkdown"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redismasterlinkdown"

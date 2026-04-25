@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "Kubernetes API server is unreachable"
           description: "No Kubernetes API server has been reachable for 5 minutes — control plane is down."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverdown"
 
       - alert: KubeAPIServerErrors
         expr: |
@@ -32,7 +32,7 @@ groups:
         annotations:
           summary: "Kubernetes API server 5xx error rate is high"
           description: "API server is returning 5xx errors at {{ $value | humanizePercentage }} for verb {{ $labels.verb }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiservererrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiservererrors"
 
       - alert: KubeAPIServerLatencyHigh
         expr: |
@@ -52,7 +52,7 @@ groups:
         annotations:
           summary: "Kubernetes API server p99 latency is above 1s"
           description: "API server p99 latency is above 1 second for verb {{ $labels.verb }} resource {{ $labels.resource }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyhigh"
 
       - alert: KubeAPIServerLatencyVeryHigh
         expr: |
@@ -72,7 +72,7 @@ groups:
         annotations:
           summary: "Kubernetes API server p99 latency is above 4s"
           description: "API server p99 latency is above 4 seconds for verb {{ $labels.verb }} resource {{ $labels.resource }} — kubectl will start to time out."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyveryhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyveryhigh"
 
       - alert: KubeAPIClientCertExpiring
         expr: histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400 * 7
@@ -87,7 +87,7 @@ groups:
         annotations:
           summary: "Kubernetes API server client certificate is expiring within 7 days"
           description: "A client certificate used to connect to the API server is expiring in less than 7 days."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiclientcertexpiring"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiclientcertexpiring"
 
       - alert: KubeAPIServerAdmissionLatency
         expr: |
@@ -107,7 +107,7 @@ groups:
         annotations:
           summary: "Kubernetes API server admission webhook is slow"
           description: "Admission webhook {{ $labels.name }} p99 latency is above 1s — slow webhooks block all writes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveradmissionlatency"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveradmissionlatency"
 
       - alert: KubeAPIServerEtcdRequestErrors
         expr: |
@@ -124,4 +124,4 @@ groups:
         annotations:
           summary: "Kubernetes API server is experiencing etcd request errors"
           description: "API server is failing etcd {{ $labels.operation }} requests at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveretcdrequesterrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveretcdrequesterrors"

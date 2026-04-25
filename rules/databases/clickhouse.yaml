@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "ClickHouse instance is down"
           description: "ClickHouse instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedown"
 
       - alert: ClickHouseHighMemoryUsage
         expr: ClickHouseMetrics_MemoryTracking / ClickHouseAsyncMetrics_CGroupMemLimit > 0.80
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "ClickHouse memory usage is high"
           description: "ClickHouse memory usage is {{ $value | humanizePercentage }} of cgroup memory limit on {{ $labels.instance }}. OOM kill risk is elevated."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousehighmemoryusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousehighmemoryusage"
 
       - alert: ClickHouseReplicationQueueHigh
         expr: ClickHouseMetrics_ReplicatedChecks > 100
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "ClickHouse replication queue has a high number of pending checks"
           description: "ClickHouse replication queue has {{ $value }} pending checks — replication is lagging."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationqueuehigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationqueuehigh"
 
       - alert: ClickHouseZooKeeperSessionLost
         expr: ClickHouseMetrics_ZooKeeperSession == 0
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "ClickHouse lost its ZooKeeper session"
           description: "ClickHouse lost ZooKeeper session on {{ $labels.instance }} — distributed operations are unavailable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousezookeepersessionlost"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousezookeepersessionlost"
 
       - alert: ClickHousePartsExplosion
         expr: ClickHouseMetrics_Parts > 300
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "ClickHouse MergeTree part count is explosively high"
           description: "ClickHouse has {{ $value }} active parts — MergeTree part explosion. Merges cannot keep up with inserts."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousepartsexplosion"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousepartsexplosion"
 
       - alert: ClickHouseLongRunningMutation
         expr: ClickHouseMetrics_Mutations > 0
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "ClickHouse has long-running mutations"
           description: "ClickHouse has {{ $value }} running mutations for more than 30 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouselongrunningmutation"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouselongrunningmutation"
 
       - alert: ClickHouseQueryThreadsHigh
         expr: ClickHouseMetrics_QueryThread > 50
@@ -105,7 +105,7 @@ groups:
         annotations:
           summary: "ClickHouse query thread count is high"
           description: "ClickHouse has {{ $value }} active query threads on {{ $labels.instance }} — query queue may be saturated."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousequerythreadshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousequerythreadshigh"
 
       - alert: ClickHouseInsertDelayHigh
         expr: ClickHouseAsyncMetrics_ReplicaDelay > 300
@@ -120,7 +120,7 @@ groups:
         annotations:
           summary: "ClickHouse replica delay is high"
           description: "ClickHouse replica delay is {{ $value | humanize }}s on {{ $labels.instance }} — inserts and replication are backpressuring."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseinsertdelayhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseinsertdelayhigh"
 
       - alert: ClickHouseDiskUsageHigh
         expr: |
@@ -137,7 +137,7 @@ groups:
         annotations:
           summary: "ClickHouse disk usage is high"
           description: "ClickHouse disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Plan capacity expansion or enable tiered storage."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskusagehigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskusagehigh"
 
       - alert: ClickHouseMergesDelayed
         expr: |
@@ -154,7 +154,7 @@ groups:
         annotations:
           summary: "ClickHouse background merge pool is nearly full"
           description: "ClickHouse background merge and mutation pool is {{ $value | humanizePercentage }} utilized on {{ $labels.instance }} — merges are delayed."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemergesdelayed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemergesdelayed"
 
       - alert: ClickHouseDetachedPartsHigh
         expr: ClickHouseAsyncMetrics_NumberOfDetachedParts > 10
@@ -169,7 +169,7 @@ groups:
         annotations:
           summary: "ClickHouse has a high number of detached parts"
           description: "ClickHouse has {{ $value }} detached parts — orphaned data that should be investigated or dropped."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedetachedpartshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedetachedpartshigh"
 
       - alert: ClickHouseDistributedSendFailed
         expr: rate(ClickHouseProfileEvents_DistributedSyncInsertionTimeoutExceeded[5m]) > 0
@@ -184,7 +184,7 @@ groups:
         annotations:
           summary: "ClickHouse distributed insert sync timeouts are occurring"
           description: "ClickHouse distributed sync insertion timeout rate is {{ $value | humanize }}/s on {{ $labels.instance }}. Remote shards may be unavailable or overloaded."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedsendfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedsendfailed"
 
       - alert: ClickHouseKeeperConnectionLost
         expr: ClickHouseMetrics_KeeperAliveConnections == 0
@@ -199,4 +199,4 @@ groups:
         annotations:
           summary: "ClickHouse Keeper has no alive connections"
           description: "ClickHouse Keeper has no alive connections — distributed operations unavailable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperconnectionlost"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperconnectionlost"

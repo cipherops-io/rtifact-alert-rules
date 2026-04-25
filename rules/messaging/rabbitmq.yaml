@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "RabbitMQ node is unreachable"
           description: "RabbitMQ node {{ $labels.instance }} is unreachable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdown"
 
       - alert: RabbitMQQueueDepthHigh
         expr: rabbitmq_queue_messages_ready > 10000
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "RabbitMQ queue depth is high"
           description: "RabbitMQ queue {{ $labels.queue }} on vhost {{ $labels.vhost }} has {{ $value }} ready messages."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqqueuedepthhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqqueuedepthhigh"
 
       - alert: RabbitMQQueueDepthCritical
         expr: rabbitmq_queue_messages_ready > 100000
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "RabbitMQ queue depth is critically high"
           description: "RabbitMQ queue {{ $labels.queue }} on vhost {{ $labels.vhost }} has {{ $value }} ready messages — critical backlog."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqqueuedepthcritical"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqqueuedepthcritical"
 
       - alert: RabbitMQNoConsumers
         expr: rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "RabbitMQ queue has messages but no consumers"
           description: "RabbitMQ queue {{ $labels.queue }} has {{ $value }} messages but NO consumers. Messages are accumulating."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnoconsumers"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnoconsumers"
 
       - alert: RabbitMQUnackedMessagesHigh
         expr: rabbitmq_queue_messages_unacknowledged > 1000
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "RabbitMQ unacknowledged message count is high"
           description: "RabbitMQ queue {{ $labels.queue }} has {{ $value }} unacknowledged messages — consumers may be slow or stuck."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqunackedmessageshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqunackedmessageshigh"
 
       - alert: RabbitMQMemoryHigh
         expr: rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes > 0.80
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "RabbitMQ memory usage is high"
           description: "RabbitMQ memory usage is {{ $value | humanizePercentage }} of limit on {{ $labels.instance }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqmemoryhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqmemoryhigh"
 
       - alert: RabbitMQMemoryAlarm
         expr: rabbitmq_alarms_memory_used_watermark == 1
@@ -105,7 +105,7 @@ groups:
         annotations:
           summary: "RabbitMQ memory alarm is active — all publishing is blocked"
           description: "RabbitMQ memory alarm is ACTIVE on {{ $labels.instance }}. WARNING: ALL publishing connections across the ENTIRE cluster are blocked until memory drops below the watermark."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqmemoryalarm"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqmemoryalarm"
 
       - alert: RabbitMQDiskFreeAlarm
         expr: rabbitmq_alarms_free_disk_space_watermark == 1
@@ -120,7 +120,7 @@ groups:
         annotations:
           summary: "RabbitMQ disk free space alarm is active — all publishing is blocked"
           description: "RabbitMQ disk free space alarm is ACTIVE on {{ $labels.instance }}. ALL publishing is blocked."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdiskfreealarm"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdiskfreealarm"
 
       - alert: RabbitMQDiskFreeWarning
         expr: rabbitmq_disk_space_available_bytes < 1073741824
@@ -135,7 +135,7 @@ groups:
         annotations:
           summary: "RabbitMQ disk free space is below 1GB"
           description: "RabbitMQ disk free space is {{ $value | humanize1024 }}B on {{ $labels.instance }} — approaching disk alarm threshold."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdiskfreewarning"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdiskfreewarning"
 
       - alert: RabbitMQNodeDown
         expr: rabbitmq_cluster_nodes_running < rabbitmq_cluster_nodes_total
@@ -150,7 +150,7 @@ groups:
         annotations:
           summary: "RabbitMQ cluster node is down"
           description: "RabbitMQ cluster has {{ $value }} running nodes — less than expected. A cluster member is down."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnodedown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnodedown"
 
       - alert: RabbitMQNetworkPartition
         expr: rabbitmq_cluster_partitions > 0
@@ -165,7 +165,7 @@ groups:
         annotations:
           summary: "RabbitMQ cluster network partition detected"
           description: "RabbitMQ cluster partition detected — {{ $value }} partition(s) on {{ $labels.instance }}. Manual intervention required."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnetworkpartition"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqnetworkpartition"
 
       - alert: RabbitMQChannelCountHigh
         expr: rabbitmq_channels > 10000
@@ -180,7 +180,7 @@ groups:
         annotations:
           summary: "RabbitMQ open channel count is high"
           description: "RabbitMQ has {{ $value }} open channels on {{ $labels.instance }} — likely a connection/channel leak."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqchannelcounthigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqchannelcounthigh"
 
       - alert: RabbitMQDeadLetterQueueGrowing
         expr: deriv(rabbitmq_queue_messages_ready{queue=~".*dead.*|.*dlq.*|.*dlx.*"}[10m]) > 0
@@ -195,7 +195,7 @@ groups:
         annotations:
           summary: "RabbitMQ dead letter queue is growing"
           description: "RabbitMQ dead letter queue {{ $labels.queue }} is growing — consumers are failing to process messages."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdeadletterqueuegrowing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqdeadletterqueuegrowing"
 
       - alert: RabbitMQConnectionCountHigh
         expr: rabbitmq_connections > 5000
@@ -210,7 +210,7 @@ groups:
         annotations:
           summary: "RabbitMQ connection count is high"
           description: "RabbitMQ has {{ $value }} connections on {{ $labels.instance }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqconnectioncounthigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqconnectioncounthigh"
 
       - alert: RabbitMQRedeliveryRateHigh
         expr: |
@@ -227,4 +227,4 @@ groups:
         annotations:
           summary: "RabbitMQ message redelivery rate is high"
           description: "RabbitMQ redelivery rate on queue {{ $labels.queue }} is {{ $value | humanizePercentage }} — consumers are failing to ack messages."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqredeliveryratehigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/rabbitmq.md#rabbitmqredeliveryratehigh"

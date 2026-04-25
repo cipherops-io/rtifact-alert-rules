@@ -18,7 +18,7 @@ groups:
         annotations:
           summary: "Pod container is crash-looping"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is crash-looping or restarting too frequently."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodcrashlooping"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodcrashlooping"
 
       - alert: KubePodOOMKilled
         expr: |
@@ -36,7 +36,7 @@ groups:
         annotations:
           summary: "Pod container was OOMKilled"
           description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled. Increase memory limit or fix memory leak."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
 
       - alert: KubeContainerWaiting
         expr: kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1
@@ -51,7 +51,7 @@ groups:
         annotations:
           summary: "Pod container has been waiting too long"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} has been waiting for more than 1 hour (reason: {{ $labels.reason }})."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubecontainerwaiting"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubecontainerwaiting"
 
       - alert: KubePodNotReady
         expr: kube_pod_status_ready{condition="true"} == 0
@@ -66,7 +66,7 @@ groups:
         annotations:
           summary: "Pod has not been ready for too long"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has not been ready for 15 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
 
       - alert: KubeDeploymentReplicasMismatch
         expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
@@ -81,7 +81,7 @@ groups:
         annotations:
           summary: "Deployment available replicas do not match desired spec"
           description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedeploymentreplicasmismatch"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedeploymentreplicasmismatch"
 
       - alert: KubeDeploymentRolloutStuck
         expr: kube_deployment_status_condition{condition="Progressing",status="false"} == 1
@@ -96,7 +96,7 @@ groups:
         annotations:
           summary: "Deployment rollout is stuck"
           description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} rollout has been stuck for 15 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedeploymentrolloutstuck"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedeploymentrolloutstuck"
 
       - alert: KubeStatefulSetReplicasMismatch
         expr: kube_statefulset_status_replicas_ready != kube_statefulset_replicas
@@ -111,7 +111,7 @@ groups:
         annotations:
           summary: "StatefulSet has fewer ready replicas than desired"
           description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} does not have all replicas ready."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubestatefulsetreplicasmismatch"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubestatefulsetreplicasmismatch"
 
       - alert: KubeDaemonSetNotScheduled
         expr: kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_ready
@@ -126,7 +126,7 @@ groups:
         annotations:
           summary: "DaemonSet not ready on all desired nodes"
           description: "DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset }} is not ready on all desired nodes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedaemonsetnotscheduled"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubedaemonsetnotscheduled"
 
       - alert: KubePodImagePullBackOff
         expr: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
@@ -141,7 +141,7 @@ groups:
         annotations:
           summary: "Pod cannot pull its container image"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} cannot pull image (reason: {{ $labels.reason }}) — check registry credentials and image tag."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodimagepullbackoff"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodimagepullbackoff"
 
       - alert: KubeJobFailed
         expr: kube_job_status_failed > 0 and kube_job_status_succeeded == 0
@@ -156,7 +156,7 @@ groups:
         annotations:
           summary: "Kubernetes Job has failed"
           description: "Kubernetes Job {{ $labels.namespace }}/{{ $labels.job_name }} has failed {{ $value }} times."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubejobfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubejobfailed"
 
       - alert: KubeCronJobSuspended
         expr: kube_cronjob_spec_suspend == 1
@@ -171,7 +171,7 @@ groups:
         annotations:
           summary: "CronJob is suspended"
           description: "CronJob {{ $labels.namespace }}/{{ $labels.cronjob }} is suspended — scheduled runs are not happening."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubecronjobsuspended"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubecronjobsuspended"
 
       - alert: KubePodEvicted
         expr: kube_pod_status_reason{reason="Evicted"} == 1
@@ -186,7 +186,7 @@ groups:
         annotations:
           summary: "Pod has been evicted from its node"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been evicted from its node."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodevicted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodevicted"
 
       - alert: KubePodPendingTooLong
         expr: kube_pod_status_phase{phase="Pending"} == 1
@@ -201,7 +201,7 @@ groups:
         annotations:
           summary: "Pod has been Pending for too long"
           description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been Pending for more than 15 minutes — check scheduler events for insufficient resources or affinity issues."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodpendingtoolong"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodpendingtoolong"
 
       - alert: KubePersistentVolumeError
         expr: kube_persistentvolume_status_phase{phase=~"Failed|Lost|Pending"} == 1
@@ -216,7 +216,7 @@ groups:
         annotations:
           summary: "PersistentVolume is in an unhealthy state"
           description: "PersistentVolume {{ $labels.persistentvolume }} is in {{ $labels.phase }} state — pods using this PV cannot mount storage."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepersistentvolumeerror"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepersistentvolumeerror"
 
       - alert: KubePVCFillingUp
         expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
@@ -231,7 +231,7 @@ groups:
         annotations:
           summary: "PVC has less than 15% free space"
           description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has less than 15% free space remaining."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
 
       - alert: KubePVCCriticalFull
         expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.05
@@ -246,7 +246,7 @@ groups:
         annotations:
           summary: "PVC has less than 5% free space"
           description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has less than 5% free space remaining."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
 
       - alert: KubeHpaMaxedOut
         expr: |
@@ -266,4 +266,4 @@ groups:
         annotations:
           summary: "HPA has been at max replicas"
           description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} has been at max replicas for over 15 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubehpamaxedout"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubehpamaxedout"

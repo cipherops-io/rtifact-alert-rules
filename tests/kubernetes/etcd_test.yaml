@@ -27,7 +27,7 @@ tests:
             exp_annotations:
               summary: "etcd cluster has no leader"
               description: "etcd cluster has no leader — ALL Kubernetes API operations (pod scheduling, config changes) are BLOCKED."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdnoleader"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdnoleader"
 
   # ============================================================
   # EtcdNoLeader: negative — has_leader == 1
@@ -64,7 +64,7 @@ tests:
             exp_annotations:
               summary: "etcd database size is approaching the 8GB hard limit"
               description: "etcd DB size is 7.078GiB on etcd-0:2379 — approaching the 8GB hard limit. Run compaction."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizehigh"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizehigh"
       - eval_time: 6m
         alertname: EtcdDBSizeCritical
         exp_alerts:
@@ -79,7 +79,7 @@ tests:
             exp_annotations:
               summary: "etcd database size is critically close to the 8GB hard limit"
               description: "etcd DB size is 7.078GiB — critically close to 8GB limit. Compact and defrag IMMEDIATELY."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizecritical"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizecritical"
 
   # ============================================================
   # EtcdBackendQuotaExhausted: positive — db size >= quota for > 1m
@@ -105,4 +105,4 @@ tests:
             exp_annotations:
               summary: "etcd backend quota is exhausted — all writes are rejected"
               description: "etcd backend quota is EXHAUSTED on etcd-0:2379 — ALL writes are REJECTED. Compact and defrag immediately."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdbackendquotaexhausted"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdbackendquotaexhausted"

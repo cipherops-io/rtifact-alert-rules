@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "kube-state-metrics is unreachable"
           description: "kube-state-metrics has been unreachable for 10 minutes — most Kubernetes-derived alerts will not fire."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsdown"
 
       - alert: KubeStateMetricsListErrors
         expr: |
@@ -32,7 +32,7 @@ groups:
         annotations:
           summary: "kube-state-metrics is experiencing list errors"
           description: "kube-state-metrics is failing list operations against the API server at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricslisterrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricslisterrors"
 
       - alert: KubeStateMetricsWatchErrors
         expr: |
@@ -49,7 +49,7 @@ groups:
         annotations:
           summary: "kube-state-metrics is experiencing watch errors"
           description: "kube-state-metrics is failing watch operations against the API server at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricswatcherrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricswatcherrors"
 
       - alert: KubeStateMetricsShardingMismatch
         expr: stdvar (kube_state_metrics_total_shards) != 0
@@ -64,7 +64,7 @@ groups:
         annotations:
           summary: "kube-state-metrics shards report inconsistent total shard counts"
           description: "kube-state-metrics shards do not agree on the total shard count."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardingmismatch"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardingmismatch"
 
       - alert: KubeStateMetricsShardsMissing
         expr: |
@@ -81,4 +81,4 @@ groups:
         annotations:
           summary: "kube-state-metrics has missing shards"
           description: "kube-state-metrics shards are missing — coverage of metrics may be incomplete."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardsmissing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardsmissing"

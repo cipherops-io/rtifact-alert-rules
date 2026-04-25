@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "node-exporter is down on a node"
           description: "node-exporter on {{ $labels.instance }} has been down for 10 minutes — host-level metrics for this node are missing."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeexporterdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeexporterdown"
 
       - alert: NodeFilesystemAlmostOutOfSpace
         expr: |
@@ -33,7 +33,7 @@ groups:
         annotations:
           summary: "Filesystem has less than 10% free space"
           description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutofspace"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutofspace"
 
       - alert: NodeFilesystemOutOfSpace
         expr: |
@@ -51,7 +51,7 @@ groups:
         annotations:
           summary: "Filesystem has less than 3% free space"
           description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space — node will start failing imminently."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemoutofspace"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemoutofspace"
 
       - alert: NodeFilesystemAlmostOutOfFiles
         expr: |
@@ -69,7 +69,7 @@ groups:
         annotations:
           summary: "Filesystem has less than 10% inodes free"
           description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} inodes free."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutoffiles"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutoffiles"
 
       - alert: NodeMemoryHighUsage
         expr: |
@@ -85,7 +85,7 @@ groups:
         annotations:
           summary: "Node memory utilization is above 90%"
           description: "Node {{ $labels.instance }} memory utilization is {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodememoryhighusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodememoryhighusage"
 
       - alert: NodeCPUHighUsage
         expr: |
@@ -101,7 +101,7 @@ groups:
         annotations:
           summary: "Node CPU utilization is above 90%"
           description: "Node {{ $labels.instance }} CPU utilization is {{ $value | humanizePercentage }} for 15 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodecpuhighusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodecpuhighusage"
 
       - alert: NodeLoad15High
         expr: node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
@@ -116,7 +116,7 @@ groups:
         annotations:
           summary: "Node 15-minute load average is more than 2x core count"
           description: "Node {{ $labels.instance }} 15-minute load average is {{ $value }}x the number of cores."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeload15high"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeload15high"
 
       - alert: NodeNetworkReceiveErrs
         expr: rate(node_network_receive_errs_total[2m]) > 10
@@ -131,7 +131,7 @@ groups:
         annotations:
           summary: "Node network receive error rate is elevated"
           description: "Node {{ $labels.instance }} interface {{ $labels.device }} is encountering {{ $value | humanize }} errors/s on receive."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworkreceiveerrs"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworkreceiveerrs"
 
       - alert: NodeNetworkTransmitErrs
         expr: rate(node_network_transmit_errs_total[2m]) > 10
@@ -146,7 +146,7 @@ groups:
         annotations:
           summary: "Node network transmit error rate is elevated"
           description: "Node {{ $labels.instance }} interface {{ $labels.device }} is encountering {{ $value | humanize }} errors/s on transmit."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworktransmiterrs"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworktransmiterrs"
 
       - alert: NodeClockSkew
         expr: |
@@ -163,7 +163,7 @@ groups:
         annotations:
           summary: "Node clock skew is high"
           description: "Node {{ $labels.instance }} clock is drifting from NTP — check chronyd/ntpd."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeclockskew"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeclockskew"
 
       - alert: NodeFileDescriptorUsage
         expr: node_filefd_allocated / node_filefd_maximum > 0.80
@@ -178,4 +178,4 @@ groups:
         annotations:
           summary: "Node file descriptor usage is high"
           description: "Node {{ $labels.instance }} is using {{ $value | humanizePercentage }} of its file descriptor limit."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefiledescriptorusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefiledescriptorusage"

@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "FastAPI application is down"
           description: "FastAPI application {{ $labels.job }}/{{ $labels.instance }} is down."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapiappdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapiappdown"
 
       - alert: FastAPIHighErrorRate
         expr: |
@@ -32,7 +32,7 @@ groups:
         annotations:
           summary: "FastAPI HTTP 5xx error rate is high"
           description: "FastAPI app {{ $labels.instance }} HTTP 5xx error rate is {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihigherrorrate"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihigherrorrate"
 
       - alert: FastAPIHighResponseTime
         expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=~"fastapi.*|python.*"}[5m])) > 2
@@ -47,7 +47,7 @@ groups:
         annotations:
           summary: "FastAPI HTTP p99 latency is high"
           description: "FastAPI app {{ $labels.instance }} HTTP p99 latency is {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighresponsetime"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighresponsetime"
 
       - alert: FastAPIHighCPUUsage
         expr: rate(process_cpu_seconds_total{job=~"fastapi.*|python.*"}[5m]) > 0.80
@@ -62,7 +62,7 @@ groups:
         annotations:
           summary: "FastAPI process CPU usage is high"
           description: "FastAPI app {{ $labels.instance }} CPU usage is {{ $value | humanizePercentage }} — check for blocking sync code in async handlers."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighcpuusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighcpuusage"
 
       - alert: FastAPIDBConnectionPoolExhausted
         expr: |
@@ -79,7 +79,7 @@ groups:
         annotations:
           summary: "FastAPI SQLAlchemy connection pool is nearly exhausted"
           description: "FastAPI app {{ $labels.instance }} SQLAlchemy pool is {{ $value | humanizePercentage }} used — DB queries are queuing."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapidbconnectionpoolexhausted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapidbconnectionpoolexhausted"
 
       - alert: FastAPIKafkaConsumerLagHigh
         expr: kafka_consumergroup_lag{job=~"fastapi.*|python.*"} > 10000
@@ -94,7 +94,7 @@ groups:
         annotations:
           summary: "FastAPI Kafka consumer group lag is high"
           description: "FastAPI Kafka consumer group {{ $labels.consumergroup }} lag is {{ $value }} messages."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapikafkaconsumerlaghigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapikafkaconsumerlaghigh"
 
       - alert: FastAPIBackgroundTaskFailing
         expr: rate(celery_task_failed_total{job=~"fastapi.*|python.*|celery.*"}[5m]) > 0
@@ -109,7 +109,7 @@ groups:
         annotations:
           summary: "FastAPI background or Celery tasks are failing"
           description: "FastAPI background/Celery tasks are failing at {{ $value }}/s on {{ $labels.instance }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapibackgroundtaskfailing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapibackgroundtaskfailing"
 
       - alert: FastAPIHighOpenConnections
         expr: |
@@ -126,7 +126,7 @@ groups:
         annotations:
           summary: "FastAPI open file descriptors are near the limit"
           description: "FastAPI app {{ $labels.instance }} open file descriptors at {{ $value | humanizePercentage }} of limit — check for connection leaks."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighopenconnections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighopenconnections"
 
       - alert: FastAPIErrorRateCritical
         expr: |
@@ -143,4 +143,4 @@ groups:
         annotations:
           summary: "FastAPI error rate exceeds 50% — circuit breaker or total downstream failure"
           description: "FastAPI app {{ $labels.instance }} has > 50% error rate — likely circuit breaker open or downstream total failure."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapierrorratecritical"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapierrorratecritical"

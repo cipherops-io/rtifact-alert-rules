@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "All nginx-ingress controllers are unreachable"
           description: "No nginx-ingress controller has been reachable for 5 minutes — incoming HTTP/HTTPS traffic is not routed."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressdown"
 
       - alert: NginxIngressHigh5xxRate
         expr: |
@@ -32,7 +32,7 @@ groups:
         annotations:
           summary: "Ingress 5xx error rate is above 5%"
           description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} 5xx rate is {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshigh5xxrate"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshigh5xxrate"
 
       - alert: NginxIngressHighLatency
         expr: |
@@ -52,7 +52,7 @@ groups:
         annotations:
           summary: "Ingress p99 request latency is above 2s"
           description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} p99 latency is {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
 
       - alert: NginxIngressUpstreamErrors
         expr: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1
@@ -67,7 +67,7 @@ groups:
         annotations:
           summary: "Ingress is forwarding 5xx responses from upstream"
           description: "Ingress {{ $labels.ingress }} upstream {{ $labels.service }} is returning 5xx at {{ $value | humanize }} req/s."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamerrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamerrors"
 
       - alert: NginxIngressCertificateExpiringSoon
         expr: nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14
@@ -82,7 +82,7 @@ groups:
         annotations:
           summary: "Ingress TLS certificate expires within 14 days"
           description: "Ingress {{ $labels.host }} TLS certificate expires in {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscertificateexpiringsoon"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscertificateexpiringsoon"
 
       - alert: NginxIngressConfigReloadFailed
         expr: nginx_ingress_controller_config_last_reload_successful == 0
@@ -97,7 +97,7 @@ groups:
         annotations:
           summary: "nginx-ingress configuration reload has failed"
           description: "Last nginx-ingress config reload on {{ $labels.controller_pod }} failed — running on stale config."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressconfigreloadfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressconfigreloadfailed"
 
       - alert: NginxIngressHighConnections
         expr: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
@@ -112,4 +112,4 @@ groups:
         annotations:
           summary: "nginx-ingress has a very high active connection count"
           description: "nginx-ingress {{ $labels.controller_pod }} has {{ $value }} active connections."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighconnections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighconnections"

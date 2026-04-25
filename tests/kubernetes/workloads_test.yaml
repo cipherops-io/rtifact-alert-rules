@@ -31,7 +31,7 @@ tests:
             exp_annotations:
               summary: "Pod container was OOMKilled"
               description: "Container api in pod prod/api-7c was OOMKilled. Increase memory limit or fix memory leak."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
 
   # ============================================================
   # KubePodNotReady: positive — pod not ready for > 15m
@@ -57,7 +57,7 @@ tests:
             exp_annotations:
               summary: "Pod has not been ready for too long"
               description: "Pod prod/api-7c has not been ready for 15 minutes."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
 
   # ============================================================
   # KubePVCFillingUp: positive — < 15% free for > 15m
@@ -85,7 +85,7 @@ tests:
             exp_annotations:
               summary: "PVC has less than 15% free space"
               description: "PVC prod/data has less than 15% free space remaining."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
       - eval_time: 16m
         alertname: KubePVCCriticalFull
         exp_alerts:
@@ -101,7 +101,7 @@ tests:
             exp_annotations:
               summary: "PVC has less than 5% free space"
               description: "PVC prod/data has less than 5% free space remaining."
-              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
 
   # ============================================================
   # KubePVCFillingUp: negative — > 15% free

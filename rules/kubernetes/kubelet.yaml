@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "All kubelet instances are unreachable"
           description: "No kubelet instance has been reachable for 5 minutes — node-level visibility lost cluster-wide."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletdown"
 
       - alert: KubeletNodeNotReady
         expr: kube_node_status_condition{condition="Ready",status="true"} == 0
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "Kubernetes node is NotReady"
           description: "Node {{ $labels.node }} has been NotReady for more than 10 minutes — pods on this node may be evicted."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletnodenotready"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletnodenotready"
 
       - alert: KubeletMemoryPressure
         expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "Node has MemoryPressure"
           description: "Node {{ $labels.node }} is under MemoryPressure — pods will be evicted."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletmemorypressure"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletmemorypressure"
 
       - alert: KubeletDiskPressure
         expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "Node has DiskPressure"
           description: "Node {{ $labels.node }} is under DiskPressure — pods will be evicted. Check disk usage and log accumulation."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletdiskpressure"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletdiskpressure"
 
       - alert: KubeletPIDPressure
         expr: kube_node_status_condition{condition="PIDPressure",status="true"} == 1
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "Node has PIDPressure"
           description: "Node {{ $labels.node }} is under PIDPressure — process limit on the node is being approached."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpidpressure"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpidpressure"
 
       - alert: KubeletNetworkUnavailable
         expr: kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "Node network is unavailable"
           description: "Node {{ $labels.node }} reports NetworkUnavailable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletnetworkunavailable"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletnetworkunavailable"
 
       - alert: KubeletPodLifecycleEventGeneratorLatencyHigh
         expr: |
@@ -108,7 +108,7 @@ groups:
         annotations:
           summary: "Kubelet PLEG relist latency is high"
           description: "Kubelet PLEG p99 relist duration on {{ $labels.node }} is {{ $value | humanizeDuration }} — node may go NotReady."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpodlifecycleeventgeneratorlatencyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpodlifecycleeventgeneratorlatencyhigh"
 
       - alert: KubeletPodStartupLatencyHigh
         expr: |
@@ -126,7 +126,7 @@ groups:
         annotations:
           summary: "Kubelet pod startup p99 latency is high"
           description: "Kubelet pod startup p99 latency on {{ $labels.node }} is {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpodstartuplatencyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletpodstartuplatencyhigh"
 
       - alert: KubeletTooManyPods
         expr: |
@@ -143,7 +143,7 @@ groups:
         annotations:
           summary: "Node is at >95% pod capacity"
           description: "Node {{ $labels.node }} is running at {{ $value | humanizePercentage }} of its pod capacity."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubelettoomanypods"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubelettoomanypods"
 
       - alert: KubeletClientCertExpiring
         expr: kubelet_certificate_manager_client_ttl_seconds < 86400 * 7
@@ -158,4 +158,4 @@ groups:
         annotations:
           summary: "Kubelet client certificate expires within 7 days"
           description: "Kubelet client certificate on {{ $labels.node }} expires in {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletclientcertexpiring"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.md#kubeletclientcertexpiring"

@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "Memcached instance is down"
           description: "Memcached instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcacheddown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcacheddown"
 
       - alert: MemcachedHighMemoryUsage
         expr: memcached_current_bytes / memcached_limit_bytes > 0.90
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "Memcached memory usage is near the limit"
           description: "Memcached memory usage is {{ $value | humanizePercentage }} of limit on {{ $labels.instance }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighmemoryusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighmemoryusage"
 
       - alert: MemcachedHighEvictionRate
         expr: rate(memcached_items_evicted_total[5m]) > 100
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "Memcached is evicting items at a high rate"
           description: "Memcached is evicting {{ $value | humanize }} items/s — memory limit is too low for the working set."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighevictionrate"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighevictionrate"
 
       - alert: MemcachedLowHitRatio
         expr: |
@@ -62,7 +62,7 @@ groups:
         annotations:
           summary: "Memcached cache hit ratio is low"
           description: "Memcached hit ratio is {{ $value | humanizePercentage }} — cache is not effective."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedlowhitratio"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedlowhitratio"
 
       - alert: MemcachedConnectionsHigh
         expr: memcached_current_connections / memcached_max_connections > 0.80
@@ -77,7 +77,7 @@ groups:
         annotations:
           summary: "Memcached connection usage is high"
           description: "Memcached connection usage is {{ $value | humanizePercentage }} of max_connections on {{ $labels.instance }}. Risk of connection refusal."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedconnectionshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedconnectionshigh"
 
       - alert: MemcachedCPUSaturation
         expr: rate(memcached_process_cpu_seconds_total[5m]) > 0.80
@@ -92,7 +92,7 @@ groups:
         annotations:
           summary: "Memcached CPU usage is high"
           description: "Memcached CPU utilization is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Consider scaling horizontally or increasing thread count."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedcpusaturation"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedcpusaturation"
 
       - alert: MemcachedHighItemExpiry
         expr: rate(memcached_items_expired_unfetched_total[5m]) > 500
@@ -107,7 +107,7 @@ groups:
         annotations:
           summary: "Memcached items are expiring before being fetched at a high rate"
           description: "Memcached has {{ $value | humanize }} items/s expiring before being fetched — TTLs may be too short."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighitemexpiry"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedhighitemexpiry"
 
       - alert: MemcachedSetFailureHigh
         expr: |
@@ -124,7 +124,7 @@ groups:
         annotations:
           summary: "Memcached set command failure rate is elevated"
           description: "Memcached set failure rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Items may be too large or memory is exhausted."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedsetfailurehigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedsetfailurehigh"
 
       - alert: MemcachedRejectedConnections
         expr: rate(memcached_connections_listener_disabled_total[5m]) > 0
@@ -139,7 +139,7 @@ groups:
         annotations:
           summary: "Memcached is rejecting incoming connections"
           description: "Memcached is rejecting connections (listen_disabled_num increasing) on {{ $labels.instance }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedrejectedconnections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedrejectedconnections"
 
       - alert: MemcachedRestartDetected
         expr: memcached_uptime_seconds < 60
@@ -154,4 +154,4 @@ groups:
         annotations:
           summary: "Memcached has recently restarted"
           description: "Memcached on {{ $labels.instance }} has restarted (uptime < 60s) — all cached data lost."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedrestartdetected"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/caching/memcached.md#memcachedrestartdetected"

@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "Grafana is unreachable"
           description: "No Grafana instance has been reachable for 10 minutes — dashboards are unavailable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadown"
 
       - alert: GrafanaHighRequestErrorRate
         expr: |
@@ -32,7 +32,7 @@ groups:
         annotations:
           summary: "Grafana HTTP 5xx error rate is high"
           description: "Grafana handler {{ $labels.handler }} is returning 5xx at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanahighrequesterrorrate"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanahighrequesterrorrate"
 
       - alert: GrafanaDatasourceErrors
         expr: rate(grafana_datasource_request_total{code!~"2.."}[5m]) > 0.1
@@ -47,7 +47,7 @@ groups:
         annotations:
           summary: "Grafana is experiencing datasource errors"
           description: "Grafana datasource {{ $labels.datasource }} is returning errors at {{ $value | humanize }} req/s."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadatasourceerrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadatasourceerrors"
 
       - alert: GrafanaSlowRequests
         expr: |
@@ -65,4 +65,4 @@ groups:
         annotations:
           summary: "Grafana p99 request latency is above 5s"
           description: "Grafana handler {{ $labels.handler }} p99 latency is {{ $value | humanizeDuration }} — UI feels sluggish."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanaslowrequests"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanaslowrequests"

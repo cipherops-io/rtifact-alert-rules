@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster collector is down"
           description: "CloudNativePG cluster {{ $labels.cnpg_cluster }} collector is down — pod {{ $labels.pod }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdown"
 
       - alert: CNPGClusterDegraded
         expr: cnpg_cluster_ready_instances < cnpg_cluster_instances
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster has fewer ready instances than desired"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} has {{ $value }} ready instances, less than desired."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdegraded"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdegraded"
 
       - alert: CNPGClusterHAWarning
         expr: cnpg_cluster_instances == 1
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster is running without high availability"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} is running with a single instance — no high availability."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhawarning"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhawarning"
 
       - alert: CNPGClusterLongRunningTransactionWarning
         expr: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster has a long-running transaction"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} has a transaction running for {{ $value | humanizeDuration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterlongrunningtransactionwarning"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterlongrunningtransactionwarning"
 
       - alert: CNPGClusterLongRunningTransactionCritical
         expr: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster has a critically long-running transaction"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} has a transaction running for {{ $value | humanizeDuration }} — exceeds 30-minute threshold. Investigate for lock contention or runaway queries."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterlongrunningtransactioncritical"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterlongrunningtransactioncritical"
 
       - alert: CNPGClusterReplicationLagWarning
         expr: cnpg_pg_replication_lag > 30
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "CloudNativePG replica is lagging behind primary"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} replica is {{ $value | humanizeDuration }} behind primary."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagwarning"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagwarning"
 
       - alert: CNPGClusterReplicationLagCritical
         expr: cnpg_pg_replication_lag > 120
@@ -105,7 +105,7 @@ groups:
         annotations:
           summary: "CloudNativePG replica replication lag is critical"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} replica is {{ $value | humanizeDuration }} behind primary — exceeds 2-minute critical threshold. Failover RPO is at risk."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagcritical"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagcritical"
 
       - alert: CNPGClusterBackupOverdue
         expr: time() - cnpg_cluster_last_successful_backup_timestamp > 86400
@@ -120,7 +120,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster backup is overdue"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} last successful backup was more than 24 hours ago."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterbackupoverdue"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterbackupoverdue"
 
       - alert: CNPGClusterHighWALDiskUsage
         expr: cnpg_cluster_pg_wal_volume_size_bytes / cnpg_cluster_pg_wal_volume_total_size_bytes > 0.80
@@ -135,7 +135,7 @@ groups:
         annotations:
           summary: "CloudNativePG WAL volume disk usage is high"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} WAL volume usage is {{ $value | humanizePercentage }} on pod {{ $labels.pod }}. Risk of WAL volume filling up."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhighwaldiskusage"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhighwaldiskusage"
 
       - alert: CNPGClusterWALArchiveFailing
         expr: rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0
@@ -150,7 +150,7 @@ groups:
         annotations:
           summary: "CloudNativePG WAL archiving is failing"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} WAL archiving is failing."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterwalarchivefailing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterwalarchivefailing"
 
       - alert: CNPGClusterDeadReplicationSlot
         expr: cnpg_pg_replication_slots_active == 0
@@ -165,7 +165,7 @@ groups:
         annotations:
           summary: "CloudNativePG has an inactive replication slot"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} has an inactive replication slot holding WAL — pg_wal will grow unboundedly."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdeadreplicationslot"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdeadreplicationslot"
 
       - alert: CNPGClusterHighConnections
         expr: cnpg_backends_total / cnpg_pg_settings_max_connections > 0.80
@@ -180,7 +180,7 @@ groups:
         annotations:
           summary: "CloudNativePG connection count is approaching the limit"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} connection utilization is {{ $value | humanizePercentage }} of max_connections on pod {{ $labels.pod }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhighconnections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterhighconnections"
 
       - alert: CNPGClusterPrimaryNotReady
         expr: cnpg_cluster_primary_uptime_seconds == 0
@@ -195,7 +195,7 @@ groups:
         annotations:
           summary: "CloudNativePG primary pod is not ready"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} primary pod is not ready — writes are failing."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterprimarynotready"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterprimarynotready"
 
       - alert: CNPGClusterFailoverOccurred
         expr: increase(cnpg_cluster_switchover_count[10m]) > 0
@@ -210,7 +210,7 @@ groups:
         annotations:
           summary: "CloudNativePG cluster switchover or failover occurred"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} has undergone a switchover/failover event."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterfailoveroccurred"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterfailoveroccurred"
 
       - alert: CNPGClusterDataVolumeNearFull
         expr: cnpg_cluster_pg_data_volume_used_bytes / cnpg_cluster_pg_data_volume_total_size_bytes > 0.85
@@ -225,4 +225,4 @@ groups:
         annotations:
           summary: "CloudNativePG data volume is nearly full"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} data volume usage is {{ $value | humanizePercentage }} on pod {{ $labels.pod }}. Expand volume before writes are rejected."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdatavolumenearfull"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdatavolumenearfull"

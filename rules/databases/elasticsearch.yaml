@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "Elasticsearch instance is down"
           description: "Elasticsearch instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdown"
 
       - alert: ElasticsearchClusterRed
         expr: elasticsearch_cluster_health_status{color="red"} == 1
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "Elasticsearch cluster status is RED"
           description: "Elasticsearch cluster {{ $labels.cluster }} status is RED — primary shards are missing, data unavailable."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusterred"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusterred"
 
       - alert: ElasticsearchClusterYellow
         expr: elasticsearch_cluster_health_status{color="yellow"} == 1
@@ -45,7 +45,7 @@ groups:
         annotations:
           summary: "Elasticsearch cluster status is YELLOW"
           description: "Elasticsearch cluster {{ $labels.cluster }} status is YELLOW — replica shards are unassigned."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusteryellow"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusteryellow"
 
       - alert: ElasticsearchNodeLeft
         expr: elasticsearch_cluster_health_number_of_nodes < (elasticsearch_cluster_health_number_of_nodes offset 5m)
@@ -60,7 +60,7 @@ groups:
         annotations:
           summary: "An Elasticsearch node has left the cluster"
           description: "An Elasticsearch node has left the cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchnodeleft"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchnodeleft"
 
       - alert: ElasticsearchJVMHeapHigh
         expr: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
@@ -75,7 +75,7 @@ groups:
         annotations:
           summary: "Elasticsearch JVM heap usage is high"
           description: "Elasticsearch JVM heap usage is {{ $value | humanizePercentage }} on {{ $labels.node }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmheaphigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmheaphigh"
 
       - alert: ElasticsearchJVMGCDurationHigh
         expr: rate(elasticsearch_jvm_gc_collection_seconds_sum[5m]) > 2
@@ -90,7 +90,7 @@ groups:
         annotations:
           summary: "Elasticsearch JVM garbage collection duration is high"
           description: "Elasticsearch JVM GC is consuming {{ $value | humanize }}s/s on {{ $labels.node }}. Excessive GC indicates heap pressure."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmgcdurationhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmgcdurationhigh"
 
       - alert: ElasticsearchCircuitBreakerTripped
         expr: rate(elasticsearch_breakers_tripped[5m]) > 0
@@ -105,7 +105,7 @@ groups:
         annotations:
           summary: "Elasticsearch circuit breaker is being tripped"
           description: "Elasticsearch circuit breaker {{ $labels.breaker }} is being tripped on {{ $labels.node }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchcircuitbreakertripped"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchcircuitbreakertripped"
 
       - alert: ElasticsearchDiskWatermarkHigh
         expr: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.85
@@ -120,7 +120,7 @@ groups:
         annotations:
           summary: "Elasticsearch disk usage has reached the high watermark"
           description: "Elasticsearch disk usage is {{ $value | humanizePercentage }} on {{ $labels.node }} — high watermark reached, no new shards will be allocated."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkhigh"
 
       - alert: ElasticsearchDiskWatermarkFlood
         expr: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.95
@@ -135,7 +135,7 @@ groups:
         annotations:
           summary: "Elasticsearch disk usage has reached the flood-stage watermark"
           description: "Elasticsearch disk usage is {{ $value | humanizePercentage }} on {{ $labels.node }} — FLOOD stage, all indices are read-only."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkflood"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkflood"
 
       - alert: ElasticsearchUnassignedShards
         expr: elasticsearch_cluster_health_unassigned_shards > 0
@@ -150,7 +150,7 @@ groups:
         annotations:
           summary: "Elasticsearch cluster has unassigned shards"
           description: "Elasticsearch has {{ $value }} unassigned shards in cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchunassignedshards"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchunassignedshards"
 
       - alert: ElasticsearchPendingTasks
         expr: elasticsearch_cluster_health_number_of_pending_tasks > 100
@@ -165,7 +165,7 @@ groups:
         annotations:
           summary: "Elasticsearch cluster has a high number of pending tasks"
           description: "Elasticsearch has {{ $value }} pending cluster tasks in {{ $labels.cluster }}. Master node may be overloaded."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchpendingtasks"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchpendingtasks"
 
       - alert: ElasticsearchSnapshotFailed
         expr: elasticsearch_snapshot_stats_snapshot_number_of_failures > 0
@@ -180,4 +180,4 @@ groups:
         annotations:
           summary: "Elasticsearch snapshot has failed"
           description: "Elasticsearch snapshot failed on cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchsnapshotfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchsnapshotfailed"

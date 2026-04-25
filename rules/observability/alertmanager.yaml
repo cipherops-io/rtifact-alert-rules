@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "All Alertmanager instances are down"
           description: "No Alertmanager has been reachable for 5 minutes — alerts are not being routed or sent anywhere."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerdown"
 
       - alert: AlertmanagerConfigReloadFailed
         expr: alertmanager_config_last_reload_successful == 0
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "Alertmanager config reload failed"
           description: "Alertmanager on {{ $labels.instance }} failed to reload its configuration — running on the previous version."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerconfigreloadfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerconfigreloadfailed"
 
       - alert: AlertmanagerNotificationsFailing
         expr: |
@@ -47,7 +47,7 @@ groups:
         annotations:
           summary: "Alertmanager notification delivery is failing"
           description: "Alertmanager is failing to send {{ $value | humanizePercentage }} of notifications via {{ $labels.integration }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagernotificationsfailing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagernotificationsfailing"
 
       - alert: AlertmanagerClusterFailedPeers
         expr: max_over_time(alertmanager_cluster_failed_peers[5m]) > 0
@@ -62,7 +62,7 @@ groups:
         annotations:
           summary: "Alertmanager cluster has failed peers"
           description: "Alertmanager {{ $labels.instance }} reports {{ $value }} failed peer(s) — duplicate notifications likely."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterfailedpeers"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterfailedpeers"
 
       - alert: AlertmanagerClusterDown
         expr: |
@@ -79,7 +79,7 @@ groups:
         annotations:
           summary: "Half or more of the Alertmanager cluster is down"
           description: "{{ $value | humanizePercentage }} of the Alertmanager replicas in job {{ $labels.job }} have been down for at least the last 5 minutes."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterdown"
 
       - alert: AlertmanagerSilencesGrowing
         expr: rate(alertmanager_silences[1h]) > 0.5
@@ -94,4 +94,4 @@ groups:
         annotations:
           summary: "Alertmanager silence count is growing rapidly"
           description: "Alertmanager silence count is growing at {{ $value | humanize }}/s — review for stale silences."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagersilencesgrowing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagersilencesgrowing"

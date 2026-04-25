@@ -15,7 +15,7 @@ groups:
         annotations:
           summary: "CoreDNS is unreachable"
           description: "No CoreDNS instance has been reachable for 5 minutes — cluster DNS resolution is broken."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsdown"
 
       - alert: CoreDNSPanicCount
         expr: rate(coredns_panics_total[5m]) > 0
@@ -30,7 +30,7 @@ groups:
         annotations:
           summary: "CoreDNS is panicking"
           description: "CoreDNS instance {{ $labels.instance }} is panicking at {{ $value | humanize }} panics/s."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednspaniccount"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednspaniccount"
 
       - alert: CoreDNSLatencyHigh
         expr: |
@@ -50,7 +50,7 @@ groups:
         annotations:
           summary: "CoreDNS p99 request latency is above 500ms"
           description: "CoreDNS p99 latency for zone {{ $labels.zone }} is {{ $value | humanizeDuration }} — DNS lookups are slow cluster-wide."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednslatencyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednslatencyhigh"
 
       - alert: CoreDNSErrorsHigh
         expr: |
@@ -67,7 +67,7 @@ groups:
         annotations:
           summary: "CoreDNS error response rate is above 3%"
           description: "CoreDNS is returning SERVFAIL/REFUSED at {{ $value | humanizePercentage }} for zone {{ $labels.zone }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednserrorshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednserrorshigh"
 
       - alert: CoreDNSForwardErrorsHigh
         expr: |
@@ -84,7 +84,7 @@ groups:
         annotations:
           summary: "CoreDNS forwarder is failing requests"
           description: "CoreDNS forward to upstream {{ $labels.to }} is failing at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsforwarderrorshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsforwarderrorshigh"
 
       - alert: CoreDNSCacheHitsLow
         expr: |
@@ -102,4 +102,4 @@ groups:
         annotations:
           summary: "CoreDNS cache hit ratio is low"
           description: "CoreDNS cache hit ratio on {{ $labels.instance }} is {{ $value | humanizePercentage }} — high upstream pressure."
-          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednscachehitslow"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednscachehitslow"
