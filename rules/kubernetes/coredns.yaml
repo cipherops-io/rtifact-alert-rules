@@ -1,0 +1,105 @@
+groups:
+  - name: coredns.rules
+    interval: 30s
+    rules:
+      - alert: CoreDNSDown
+        expr: absent(up{job=~".*coredns.*"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: coredns
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS is unreachable"
+          description: "No CoreDNS instance has been reachable for 5 minutes — cluster DNS resolution is broken."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsdown"
+
+      - alert: CoreDNSPanicCount
+        expr: rate(coredns_panics_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: coredns
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS is panicking"
+          description: "CoreDNS instance {{ $labels.instance }} is panicking at {{ $value | humanize }} panics/s."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednspaniccount"
+
+      - alert: CoreDNSLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, server, zone) (
+              rate(coredns_dns_request_duration_seconds_bucket[5m])
+            )
+          ) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: coredns
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS p99 request latency is above 500ms"
+          description: "CoreDNS p99 latency for zone {{ $labels.zone }} is {{ $value | humanizeDuration }} — DNS lookups are slow cluster-wide."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednslatencyhigh"
+
+      - alert: CoreDNSErrorsHigh
+        expr: |
+          sum by (server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL|REFUSED"}[5m]))
+          / sum by (server, zone) (rate(coredns_dns_responses_total[5m])) > 0.03
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: coredns
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS error response rate is above 3%"
+          description: "CoreDNS is returning SERVFAIL/REFUSED at {{ $value | humanizePercentage }} for zone {{ $labels.zone }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednserrorshigh"
+
+      - alert: CoreDNSForwardErrorsHigh
+        expr: |
+          sum by (instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL|REFUSED|FORMERR"}[5m]))
+          / sum by (instance, to) (rate(coredns_forward_responses_total[5m])) > 0.03
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: coredns
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS forwarder is failing requests"
+          description: "CoreDNS forward to upstream {{ $labels.to }} is failing at {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsforwarderrorshigh"
+
+      - alert: CoreDNSCacheHitsLow
+        expr: |
+          sum by (instance) (rate(coredns_cache_hits_total[5m]))
+          / (sum by (instance) (rate(coredns_cache_hits_total[5m]))
+            + sum by (instance) (rate(coredns_cache_misses_total[5m]))) < 0.50
+        for: 30m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: coredns
+          signal: cause
+          category: network
+          runbook: runbooks/kubernetes/coredns.md
+        annotations:
+          summary: "CoreDNS cache hit ratio is low"
+          description: "CoreDNS cache hit ratio on {{ $labels.instance }} is {{ $value | humanizePercentage }} — high upstream pressure."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednscachehitslow"

@@ -1,0 +1,154 @@
+# Unit tests for rules/databases/cnpg.yaml
+#
+# Run with:
+#   promtool test rules tests/databases/cnpg_test.yaml
+#
+# Format reference:
+#   https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+
+rule_files:
+  - ../../rules/databases/cnpg.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # CNPGClusterDown: positive — collector reports 0 for >1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_collector_up{cnpg_cluster="prod-pg",pod="prod-pg-1"}'
+        values: '0 0 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CNPGClusterDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: cnpg
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/cnpg.md
+              cnpg_cluster: prod-pg
+              pod: prod-pg-1
+            exp_annotations:
+              summary: "CloudNativePG cluster collector is down"
+              description: "CloudNativePG cluster prod-pg collector is down — pod prod-pg-1."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdown"
+
+  # ============================================================
+  # CNPGClusterDown: negative — collector reports 1 (healthy)
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_collector_up{cnpg_cluster="prod-pg",pod="prod-pg-1"}'
+        values: '1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: CNPGClusterDown
+        exp_alerts: []
+
+  # ============================================================
+  # CNPGClusterDegraded: positive — fewer ready than desired
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_cluster_ready_instances{cnpg_cluster="prod-pg"}'
+        values: '2 2 2 2 2 2 2 2 2 2'
+      - series: 'cnpg_cluster_instances{cnpg_cluster="prod-pg"}'
+        values: '3 3 3 3 3 3 3 3 3 3'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CNPGClusterDegraded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: cnpg
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/cnpg.md
+              cnpg_cluster: prod-pg
+            exp_annotations:
+              summary: "CloudNativePG cluster has fewer ready instances than desired"
+              description: "CNPG cluster prod-pg has 2 ready instances, less than desired."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdegraded"
+
+  # ============================================================
+  # CNPGClusterDegraded: negative — equal ready and desired
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_cluster_ready_instances{cnpg_cluster="prod-pg"}'
+        values: '3 3 3 3 3 3 3 3 3 3'
+      - series: 'cnpg_cluster_instances{cnpg_cluster="prod-pg"}'
+        values: '3 3 3 3 3 3 3 3 3 3'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: CNPGClusterDegraded
+        exp_alerts: []
+
+  # ============================================================
+  # CNPGClusterReplicationLagWarning: positive — lag > 30s
+  # CNPGClusterReplicationLagCritical: also fires when > 120s
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_pg_replication_lag{cnpg_cluster="prod-pg"}'
+        values: '150 150 150 150'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CNPGClusterReplicationLagWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: cnpg
+              signal: cause
+              category: data
+              runbook: runbooks/databases/cnpg.md
+              cnpg_cluster: prod-pg
+            exp_annotations:
+              summary: "CloudNativePG replica is lagging behind primary"
+              description: "CNPG cluster prod-pg replica is 2m 30s behind primary."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagwarning"
+      - eval_time: 3m
+        alertname: CNPGClusterReplicationLagCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: cnpg
+              signal: cause
+              category: data
+              runbook: runbooks/databases/cnpg.md
+              cnpg_cluster: prod-pg
+            exp_annotations:
+              summary: "CloudNativePG replica replication lag is critical"
+              description: "CNPG cluster prod-pg replica is 2m 30s behind primary — exceeds 2-minute critical threshold. Failover RPO is at risk."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagcritical"
+
+  # ============================================================
+  # CNPGClusterPrimaryNotReady: positive — primary uptime is 0
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'cnpg_cluster_primary_uptime_seconds{cnpg_cluster="prod-pg"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: CNPGClusterPrimaryNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P0
+              tech_stack: cnpg
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/cnpg.md
+              cnpg_cluster: prod-pg
+            exp_annotations:
+              summary: "CloudNativePG primary pod is not ready"
+              description: "CNPG cluster prod-pg primary pod is not ready — writes are failing."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterprimarynotready"

@@ -1,0 +1,84 @@
+groups:
+  - name: kube-state-metrics.rules
+    interval: 30s
+    rules:
+      - alert: KubeStateMetricsDown
+        expr: absent(up{job=~".*kube-state-metrics.*"} == 1)
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kube-state-metrics
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/kube-state-metrics.md
+        annotations:
+          summary: "kube-state-metrics is unreachable"
+          description: "kube-state-metrics has been unreachable for 10 minutes — most Kubernetes-derived alerts will not fire."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsdown"
+
+      - alert: KubeStateMetricsListErrors
+        expr: |
+          sum (rate(kube_state_metrics_list_total{result="error"}[5m]))
+          / sum (rate(kube_state_metrics_list_total[5m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kube-state-metrics
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/kube-state-metrics.md
+        annotations:
+          summary: "kube-state-metrics is experiencing list errors"
+          description: "kube-state-metrics is failing list operations against the API server at {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricslisterrors"
+
+      - alert: KubeStateMetricsWatchErrors
+        expr: |
+          sum (rate(kube_state_metrics_watch_total{result="error"}[5m]))
+          / sum (rate(kube_state_metrics_watch_total[5m])) > 0.01
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kube-state-metrics
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/kube-state-metrics.md
+        annotations:
+          summary: "kube-state-metrics is experiencing watch errors"
+          description: "kube-state-metrics is failing watch operations against the API server at {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricswatcherrors"
+
+      - alert: KubeStateMetricsShardingMismatch
+        expr: stdvar (kube_state_metrics_total_shards) != 0
+        for: 15m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: kube-state-metrics
+          signal: cause
+          category: monitoring
+          runbook: runbooks/kubernetes/kube-state-metrics.md
+        annotations:
+          summary: "kube-state-metrics shards report inconsistent total shard counts"
+          description: "kube-state-metrics shards do not agree on the total shard count."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardingmismatch"
+
+      - alert: KubeStateMetricsShardsMissing
+        expr: |
+          2 ^ max (kube_state_metrics_total_shards) - 1
+          - sum (2 ^ max by (shard_ordinal) (kube_state_metrics_shard_ordinal)) != 0
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kube-state-metrics
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/kube-state-metrics.md
+        annotations:
+          summary: "kube-state-metrics has missing shards"
+          description: "kube-state-metrics shards are missing — coverage of metrics may be incomplete."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/kube-state-metrics.md#kubestatemetricsshardsmissing"

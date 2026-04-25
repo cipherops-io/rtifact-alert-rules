@@ -1,0 +1,206 @@
+groups:
+  - name: java-springboot.rules
+    interval: 30s
+    rules:
+      - alert: SpringBootAppDown
+        expr: up{job=~"springboot.*|java.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot application is down"
+          description: "Spring Boot application {{ $labels.job }}/{{ $labels.instance }} is down."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootappdown"
+
+      - alert: SpringBootHighErrorRate
+        expr: |
+          rate(http_server_requests_seconds_count{status=~"5..",job=~"springboot.*|java.*"}[5m])
+          / rate(http_server_requests_seconds_count{job=~"springboot.*|java.*"}[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot HTTP 5xx error rate is high"
+          description: "Spring Boot app {{ $labels.instance }} HTTP 5xx error rate is {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springboothigherrorrate"
+
+      - alert: SpringBootHighResponseTime
+        expr: histogram_quantile(0.99, rate(http_server_requests_seconds_bucket{job=~"springboot.*|java.*"}[5m])) > 2
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot HTTP p99 latency is high"
+          description: "Spring Boot app {{ $labels.instance }} HTTP p99 latency is {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springboothighresponsetime"
+
+      - alert: SpringBootJVMHeapHigh
+        expr: |
+          jvm_memory_used_bytes{area="heap",job=~"springboot.*|java.*"}
+          / jvm_memory_max_bytes{area="heap",job=~"springboot.*|java.*"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: cause
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot JVM heap usage is high"
+          description: "Spring Boot app {{ $labels.instance }} JVM heap usage is {{ $value | humanizePercentage }} of max."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootjvmheaphigh"
+
+      - alert: SpringBootJVMGCPauseHigh
+        expr: jvm_gc_pause_seconds_max{job=~"springboot.*|java.*"} > 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot JVM GC pause time is high"
+          description: "Spring Boot app {{ $labels.instance }} GC pause is {{ $value | humanizeDuration }} — JVM heap may be near full."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootjvmgcpausehigh"
+
+      - alert: SpringBootThreadPoolExhausted
+        expr: |
+          tomcat_threads_busy_threads{job=~"springboot.*|java.*"}
+          / tomcat_threads_config_max_threads{job=~"springboot.*|java.*"} > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot Tomcat thread pool is nearly exhausted"
+          description: "Spring Boot app {{ $labels.instance }} Tomcat thread pool is {{ $value | humanizePercentage }} utilised — incoming requests will be queued or rejected."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootthreadpoolexhausted"
+
+      - alert: SpringBootDBConnectionPoolExhausted
+        expr: |
+          hikaricp_connections_active{job=~"springboot.*|java.*"}
+          / hikaricp_connections_max{job=~"springboot.*|java.*"} > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot HikariCP connection pool is nearly exhausted"
+          description: "Spring Boot app {{ $labels.instance }} HikariCP pool {{ $labels.pool }} is {{ $value | humanizePercentage }} used — DB queries are queuing."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootdbconnectionpoolexhausted"
+
+      - alert: SpringBootCircuitBreakerOpen
+        expr: resilience4j_circuitbreaker_state{state="open",job=~"springboot.*|java.*"} > 0
+        for: 1m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot circuit breaker is OPEN"
+          description: "Spring Boot app {{ $labels.instance }} circuit breaker {{ $labels.name }} is OPEN — calls to downstream are failing fast."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootcircuitbreakeropen"
+
+      - alert: SpringBootKafkaConsumerLagHigh
+        expr: kafka_consumer_fetch_manager_records_lag{job=~"springboot.*|java.*"} > 10000
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: cause
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot Kafka consumer lag is high"
+          description: "Spring Boot Kafka consumer {{ $labels.client_id }} topic {{ $labels.topic }} lag is {{ $value }} messages."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootkafkaconsumerlaghigh"
+
+      - alert: SpringBootHighCPUUsage
+        expr: process_cpu_usage{job=~"springboot.*|java.*"} > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: cause
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot process CPU usage is high"
+          description: "Spring Boot app {{ $labels.instance }} CPU usage is {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springboothighcpuusage"
+
+      - alert: SpringBootScheduledJobFailed
+        expr: rate(spring_batch_job_seconds_count{status="FAILED",job=~"springboot.*|java.*"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot scheduled batch job is failing"
+          description: "Spring Boot scheduled job {{ $labels.name }} is failing on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootscheduledjobfailed"
+
+      - alert: SpringBootActuatorHealthDegraded
+        expr: spring_boot_health_status{status="DOWN",job=~"springboot.*|java.*"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot actuator health indicator is DOWN"
+          description: "Spring Boot app {{ $labels.instance }} actuator health indicator {{ $labels.component }} is DOWN."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springbootactuatorhealthdegraded"
+
+      - alert: SpringBootHighRejectedTasks
+        expr: rate(executor_rejected_tasks_total{job=~"springboot.*|java.*"}[5m]) > 0
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: java-springboot
+          signal: symptom
+          category: app
+          runbook: runbooks/runtimes/java-springboot.md
+        annotations:
+          summary: "Spring Boot executor is rejecting tasks"
+          description: "Spring Boot app {{ $labels.instance }} executor {{ $labels.name }} is rejecting tasks — thread pool exhausted."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/runtimes/java-springboot.md#springboothighrejectedtasks"

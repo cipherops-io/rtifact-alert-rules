@@ -1,0 +1,127 @@
+groups:
+  - name: kubernetes-apiserver.rules
+    interval: 30s
+    rules:
+      - alert: KubeAPIServerDown
+        expr: absent(up{job="apiserver"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: apiserver
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server is unreachable"
+          description: "No Kubernetes API server has been reachable for 5 minutes — control plane is down."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverdown"
+
+      - alert: KubeAPIServerErrors
+        expr: |
+          sum by (verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m]))
+          / sum by (verb) (rate(apiserver_request_total{job="apiserver"}[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: apiserver
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server 5xx error rate is high"
+          description: "API server is returning 5xx errors at {{ $value | humanizePercentage }} for verb {{ $labels.verb }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiservererrors"
+
+      - alert: KubeAPIServerLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, verb, resource) (
+              rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
+            )
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: apiserver
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server p99 latency is above 1s"
+          description: "API server p99 latency is above 1 second for verb {{ $labels.verb }} resource {{ $labels.resource }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyhigh"
+
+      - alert: KubeAPIServerLatencyVeryHigh
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, verb, resource) (
+              rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
+            )
+          ) > 4
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: apiserver
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server p99 latency is above 4s"
+          description: "API server p99 latency is above 4 seconds for verb {{ $labels.verb }} resource {{ $labels.resource }} — kubectl will start to time out."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyveryhigh"
+
+      - alert: KubeAPIClientCertExpiring
+        expr: histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400 * 7
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: apiserver
+          signal: cause
+          category: security
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server client certificate is expiring within 7 days"
+          description: "A client certificate used to connect to the API server is expiring in less than 7 days."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiclientcertexpiring"
+
+      - alert: KubeAPIServerAdmissionLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, name) (
+              rate(apiserver_admission_webhook_admission_duration_seconds_bucket{job="apiserver"}[5m])
+            )
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: apiserver
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server admission webhook is slow"
+          description: "Admission webhook {{ $labels.name }} p99 latency is above 1s — slow webhooks block all writes."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveradmissionlatency"
+
+      - alert: KubeAPIServerEtcdRequestErrors
+        expr: |
+          sum by (operation) (rate(etcd_request_duration_seconds_count{job="apiserver",grpc_code!~"OK|Unknown"}[5m]))
+          / sum by (operation) (rate(etcd_request_duration_seconds_count{job="apiserver"}[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: apiserver
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/apiserver.md
+        annotations:
+          summary: "Kubernetes API server is experiencing etcd request errors"
+          description: "API server is failing etcd {{ $labels.operation }} requests at {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveretcdrequesterrors"

@@ -1,0 +1,218 @@
+groups:
+  - name: kafka.rules
+    interval: 30s
+    rules:
+      - alert: KafkaBrokerDown
+        expr: up{job=~"kafka.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka broker is unreachable"
+          description: "Kafka broker {{ $labels.instance }} is unreachable."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkabrokerdown"
+
+      - alert: KafkaUnderReplicatedPartitions
+        expr: kafka_server_replicamanager_underreplicatedpartitions > 0
+        for: 2m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka has under-replicated partitions"
+          description: "Kafka has {{ $value }} under-replicated partitions on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaunderreplicatedpartitions"
+
+      - alert: KafkaOfflinePartitions
+        expr: kafka_controller_kafkacontroller_offlinepartitionscount > 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka has offline partitions"
+          description: "Kafka has {{ $value }} offline partitions — these partitions are unavailable for reads and writes."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaofflinepartitions"
+
+      - alert: KafkaConsumerGroupLagHigh
+        expr: kafka_consumergroup_lag > 10000
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka consumer group lag is high"
+          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has lag of {{ $value }} messages."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplaghigh"
+
+      - alert: KafkaConsumerGroupLagCritical
+        expr: kafka_consumergroup_lag > 100000
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka consumer group lag is critically high"
+          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has critical lag of {{ $value }} messages."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplagcritical"
+
+      - alert: KafkaConsumerGroupLagGrowing
+        expr: deriv(kafka_consumergroup_lag[10m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka consumer group lag is growing"
+          description: "Kafka consumer group {{ $labels.consumergroup }} lag is growing consistently for 10 minutes — consumer is not keeping up."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplaggrowing"
+
+      - alert: KafkaLeaderElectionRateHigh
+        expr: rate(kafka_controller_kafkacontroller_leaderelectionrate[5m]) > 5
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka leader election rate is high"
+          description: "Kafka leader election rate is {{ $value }}/min — indicates broker instability."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaleaderelectionratehigh"
+
+      - alert: KafkaISRShrinkRateHigh
+        expr: rate(kafka_server_replicamanager_isrshrinks_total[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka ISR shrink rate is high"
+          description: "Kafka ISR shrink rate is {{ $value }}/min — replicas are falling out of sync."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaisrshrinkratehigh"
+
+      - alert: KafkaDiskUsageHigh
+        expr: |
+          (node_filesystem_size_bytes{mountpoint="/var/lib/kafka"}
+            - node_filesystem_free_bytes{mountpoint="/var/lib/kafka"})
+          / node_filesystem_size_bytes{mountpoint="/var/lib/kafka"} > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: storage
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka broker disk usage is high"
+          description: "Kafka broker disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkadiskusagehigh"
+
+      - alert: KafkaNetworkProcessorIdleLow
+        expr: kafka_network_socketserver_networkprocessoravgidlepercent < 0.20
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka network processor idle percent is low"
+          description: "Kafka network processor idle is {{ $value | humanizePercentage }} — broker network is saturated."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkanetworkprocessoridlelow"
+
+      - alert: KafkaRequestHandlerIdleLow
+        expr: kafka_server_requesthandlerpool_requesthandleravgidlepercent < 0.10
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka request handler idle percent is critically low"
+          description: "Kafka request handler idle is {{ $value | humanizePercentage }} — broker is overloaded."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkarequesthandleridlelow"
+
+      - alert: KafkaProducerRequestErrorRateHigh
+        expr: |
+          rate(kafka_server_brokertopicmetrics_failedproducerequests_total[5m])
+          / rate(kafka_server_brokertopicmetrics_totalproducerequests_total[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka producer request error rate is high"
+          description: "Kafka producer error rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaproducerrequesterrorratehigh"
+
+      - alert: KafkaLogFlushLatencyHigh
+        expr: kafka_log_logflushstats_logflushtimems > 1000
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka log flush latency is high"
+          description: "Kafka log flush latency p99 is {{ $value }}ms on {{ $labels.instance }} — disk I/O may be a bottleneck."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkalogflushlatencyhigh"
+
+      - alert: KafkaActiveControllerCountAbnormal
+        expr: kafka_controller_kafkacontroller_activecontrollercount != 1
+        for: 2m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.md
+        annotations:
+          summary: "Kafka active controller count is not 1"
+          description: "Kafka active controller count is {{ $value }} — expected exactly 1. This indicates a split-brain or no-controller situation."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaactivecontrollercountabnormal"

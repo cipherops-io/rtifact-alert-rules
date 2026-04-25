@@ -1,0 +1,106 @@
+# Unit tests for rules/databases/redis.yaml
+rule_files:
+  - ../../rules/databases/redis.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # RedisDown: positive — redis_up == 0 for > 1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'redis_up{instance="redis:6379"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RedisDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: redis
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/redis.md
+              instance: "redis:6379"
+            exp_annotations:
+              summary: "Redis instance is down"
+              description: "Redis instance redis:6379 has been unreachable for more than 1 minute."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisdown"
+
+  # ============================================================
+  # RedisDown: negative — redis_up == 1
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'redis_up{instance="redis:6379"}'
+        values: '1 1 1 1'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: RedisDown
+        exp_alerts: []
+
+  # ============================================================
+  # RedisHighMemoryUsage: positive — used / max > 0.80 for > 5m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'redis_memory_used_bytes{instance="redis:6379"}'
+        values: '900 900 900 900 900 900 900 900'
+      - series: 'redis_memory_max_bytes{instance="redis:6379"}'
+        values: '1000 1000 1000 1000 1000 1000 1000 1000'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RedisHighMemoryUsage
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: redis
+              signal: cause
+              category: data
+              runbook: runbooks/databases/redis.md
+              instance: "redis:6379"
+            exp_annotations:
+              summary: "Redis memory usage is approaching maxmemory"
+              description: "Redis memory usage is 90% of maxmemory on redis:6379."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redishighmemoryusage"
+
+  # ============================================================
+  # RedisHighMemoryUsage: negative — used / max < 0.80
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'redis_memory_used_bytes{instance="redis:6379"}'
+        values: '500 500 500 500 500 500 500 500'
+      - series: 'redis_memory_max_bytes{instance="redis:6379"}'
+        values: '1000 1000 1000 1000 1000 1000 1000 1000'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: RedisHighMemoryUsage
+        exp_alerts: []
+
+  # ============================================================
+  # RedisMasterLinkDown: positive — replica lost master link
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'redis_master_link_up{instance="redis-replica-1:6379"}'
+        values: '0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisMasterLinkDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: redis
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/redis.md
+              instance: "redis-replica-1:6379"
+            exp_annotations:
+              summary: "Redis replica has lost connection to master"
+              description: "Redis replica redis-replica-1:6379 has lost connection to master."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redismasterlinkdown"

@@ -1,0 +1,230 @@
+groups:
+  - name: redis.rules
+    interval: 30s
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis instance is down"
+          description: "Redis instance {{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisdown"
+
+      - alert: RedisHighMemoryUsage
+        expr: redis_memory_used_bytes / redis_memory_max_bytes > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis memory usage is approaching maxmemory"
+          description: "Redis memory usage is {{ $value | humanizePercentage }} of maxmemory on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redishighmemoryusage"
+
+      - alert: RedisMemoryFragmentationHigh
+        expr: redis_mem_fragmentation_ratio > 1.5
+        for: 10m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis memory fragmentation ratio is high"
+          description: "Redis memory fragmentation ratio is {{ $value }} on {{ $labels.instance }}. Consider running MEMORY PURGE or scheduling a restart during low-traffic periods."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redismemoryfragmentationhigh"
+
+      - alert: RedisEvictedKeysHigh
+        expr: rate(redis_evicted_keys_total[5m]) > 100
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis is evicting keys at a high rate"
+          description: "Redis is evicting {{ $value }} keys/s — maxmemory policy is aggressively evicting data."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisevictedkeyshigh"
+
+      - alert: RedisKeyspaceHitRatioLow
+        expr: |
+          rate(redis_keyspace_hits_total[5m])
+          / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m])) < 0.80
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis keyspace hit ratio is low"
+          description: "Redis keyspace hit ratio is {{ $value | humanizePercentage }} on {{ $labels.instance }}. High miss rate increases backend load — review TTLs and cache warming strategy."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#rediskeyspacehitratiolow"
+
+      - alert: RedisConnectedClientsHigh
+        expr: redis_connected_clients / redis_config_maxclients > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis connected client count is approaching the limit"
+          description: "Redis connected clients are at {{ $value | humanizePercentage }} of maxclients on {{ $labels.instance }}. New connections may be rejected."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisconnectedclientshigh"
+
+      - alert: RedisBlockedClientsHigh
+        expr: redis_blocked_clients > 10
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis has many blocked clients"
+          description: "Redis has {{ $value }} blocked clients on {{ $labels.instance }}. These clients are waiting on blocking commands (BLPOP, BRPOP, etc.)."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisblockedclientshigh"
+
+      - alert: RedisMasterLinkDown
+        expr: redis_master_link_up == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis replica has lost connection to master"
+          description: "Redis replica {{ $labels.instance }} has lost connection to master."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redismasterlinkdown"
+
+      - alert: RedisReplicationOffsetHigh
+        expr: redis_master_repl_offset - redis_slave_repl_offset > 10485760
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis replica is significantly behind master"
+          description: "Redis replication offset is {{ $value | humanize1024 }}B behind master."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisreplicationoffsethigh"
+
+      - alert: RedisSlowLogGrowing
+        expr: rate(redis_slowlog_length[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis slow log entries are accumulating"
+          description: "Redis slow log is growing on {{ $labels.instance }} at {{ $value | humanize }} entries/s. Review slowlog with SLOWLOG GET and optimize high-latency commands."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisslowloggrowing"
+
+      - alert: RedisRDBSaveError
+        expr: redis_rdb_last_bgsave_status == 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis RDB background save failed"
+          description: "Redis RDB background save failed on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisrdbsaveerror"
+
+      - alert: RedisAOFRewriteRunningLong
+        expr: redis_aof_rewrite_in_progress == 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis AOF rewrite has been running for an extended period"
+          description: "Redis AOF rewrite has been running for more than 10 minutes on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisaofrewriterunninglong"
+
+      - alert: RedisClusterNodeDown
+        expr: redis_cluster_nodes_total - redis_cluster_nodes_ok > 0
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "One or more Redis cluster nodes are down"
+          description: "Redis cluster on {{ $labels.instance }} has {{ $value }} node(s) that are not in OK state. Cluster may be unable to serve some key slots."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisclusternodedown"
+
+      - alert: RedisClusterSlotsImporting
+        expr: redis_cluster_slots_importing > 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis cluster has slots in importing state"
+          description: "Redis cluster on {{ $labels.instance }} has {{ $value }} slot(s) in importing state for more than 10 minutes. A resharding or migration may be stalled."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#redisclusterslotsimporting"
+
+      - alert: RedisCPUSaturation
+        expr: rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.md
+        annotations:
+          summary: "Redis CPU utilization is high"
+          description: "Redis CPU utilization is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Redis is single-threaded for commands — high CPU often indicates expensive operations or insufficient sharding."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/databases/redis.md#rediscpusaturation"

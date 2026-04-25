@@ -1,0 +1,68 @@
+groups:
+  - name: grafana.rules
+    interval: 30s
+    rules:
+      - alert: GrafanaDown
+        expr: absent(up{job=~"grafana|.*grafana.*"} == 1)
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: grafana
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/grafana.md
+        annotations:
+          summary: "Grafana is unreachable"
+          description: "No Grafana instance has been reachable for 10 minutes — dashboards are unavailable."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadown"
+
+      - alert: GrafanaHighRequestErrorRate
+        expr: |
+          sum by (handler) (rate(grafana_http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+          / sum by (handler) (rate(grafana_http_request_duration_seconds_count[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: grafana
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/grafana.md
+        annotations:
+          summary: "Grafana HTTP 5xx error rate is high"
+          description: "Grafana handler {{ $labels.handler }} is returning 5xx at {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanahighrequesterrorrate"
+
+      - alert: GrafanaDatasourceErrors
+        expr: rate(grafana_datasource_request_total{code!~"2.."}[5m]) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: grafana
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/grafana.md
+        annotations:
+          summary: "Grafana is experiencing datasource errors"
+          description: "Grafana datasource {{ $labels.datasource }} is returning errors at {{ $value | humanize }} req/s."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanadatasourceerrors"
+
+      - alert: GrafanaSlowRequests
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, handler) (rate(grafana_http_request_duration_seconds_bucket[5m]))
+          ) > 5
+        for: 10m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: grafana
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/grafana.md
+        annotations:
+          summary: "Grafana p99 request latency is above 5s"
+          description: "Grafana handler {{ $labels.handler }} p99 latency is {{ $value | humanizeDuration }} — UI feels sluggish."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/grafana.md#grafanaslowrequests"

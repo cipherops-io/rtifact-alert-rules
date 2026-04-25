@@ -1,0 +1,11 @@
+dist/
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+__pycache__/
+*.pyc
+.env
+.venv/
+node_modules/

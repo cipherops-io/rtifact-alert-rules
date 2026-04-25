@@ -1,0 +1,108 @@
+# Unit tests for rules/kubernetes/etcd.yaml
+rule_files:
+  - ../../rules/kubernetes/etcd.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # EtcdNoLeader: positive — has_leader == 0 for > 1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'etcd_server_has_leader{instance="etcd-0:2379"}'
+        values: '0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EtcdNoLeader
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P0
+              tech_stack: etcd
+              signal: symptom
+              category: control-plane
+              runbook: runbooks/kubernetes/etcd.md
+              instance: "etcd-0:2379"
+            exp_annotations:
+              summary: "etcd cluster has no leader"
+              description: "etcd cluster has no leader — ALL Kubernetes API operations (pod scheduling, config changes) are BLOCKED."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdnoleader"
+
+  # ============================================================
+  # EtcdNoLeader: negative — has_leader == 1
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'etcd_server_has_leader{instance="etcd-0:2379"}'
+        values: '1 1 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EtcdNoLeader
+        exp_alerts: []
+
+  # ============================================================
+  # EtcdDBSizeHigh: positive — > 6GB for > 5m
+  # EtcdDBSizeCritical: also fires above 7GB
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'etcd_mvcc_db_total_size_in_bytes{instance="etcd-0:2379"}'
+        values: '7600000000 7600000000 7600000000 7600000000 7600000000 7600000000 7600000000'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: EtcdDBSizeHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: etcd
+              signal: cause
+              category: control-plane
+              runbook: runbooks/kubernetes/etcd.md
+              instance: "etcd-0:2379"
+            exp_annotations:
+              summary: "etcd database size is approaching the 8GB hard limit"
+              description: "etcd DB size is 7.078GiB on etcd-0:2379 — approaching the 8GB hard limit. Run compaction."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizehigh"
+      - eval_time: 6m
+        alertname: EtcdDBSizeCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: etcd
+              signal: cause
+              category: control-plane
+              runbook: runbooks/kubernetes/etcd.md
+              instance: "etcd-0:2379"
+            exp_annotations:
+              summary: "etcd database size is critically close to the 8GB hard limit"
+              description: "etcd DB size is 7.078GiB — critically close to 8GB limit. Compact and defrag IMMEDIATELY."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizecritical"
+
+  # ============================================================
+  # EtcdBackendQuotaExhausted: positive — db size >= quota for > 1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'etcd_mvcc_db_total_size_in_bytes{instance="etcd-0:2379"}'
+        values: '8589934592 8589934592 8589934592'
+      - series: 'etcd_server_quota_backend_bytes{instance="etcd-0:2379"}'
+        values: '8589934592 8589934592 8589934592'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: EtcdBackendQuotaExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P0
+              tech_stack: etcd
+              signal: symptom
+              category: control-plane
+              runbook: runbooks/kubernetes/etcd.md
+              instance: "etcd-0:2379"
+            exp_annotations:
+              summary: "etcd backend quota is exhausted — all writes are rejected"
+              description: "etcd backend quota is EXHAUSTED on etcd-0:2379 — ALL writes are REJECTED. Compact and defrag immediately."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdbackendquotaexhausted"

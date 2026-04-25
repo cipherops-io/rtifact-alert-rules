@@ -1,0 +1,200 @@
+groups:
+  - name: etcd.rules
+    interval: 30s
+    rules:
+      - alert: EtcdDown
+        expr: up{job=~"etcd.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: etcd
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd member is down"
+          description: "etcd member {{ $labels.instance }} is down — Kubernetes control plane is degraded."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddown"
+
+      - alert: EtcdNoLeader
+        expr: etcd_server_has_leader == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: etcd
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd cluster has no leader"
+          description: "etcd cluster has no leader — ALL Kubernetes API operations (pod scheduling, config changes) are BLOCKED."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdnoleader"
+
+      - alert: EtcdLeaderChangesHigh
+        expr: increase(etcd_server_leader_changes_seen_total[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd leader changes are frequent"
+          description: "etcd has had {{ $value }} leader changes in the last 15 minutes — indicates instability."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdleaderchangeshigh"
+
+      - alert: EtcdHighCommitDurations
+        expr: histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[5m])) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd backend commit duration p99 is high"
+          description: "etcd commit duration p99 is {{ $value | humanizeDuration }} on {{ $labels.instance }} — disk I/O may be slow."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighcommitdurations"
+
+      - alert: EtcdHighFsyncDurations
+        expr: histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])) > 0.25
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd WAL fsync duration p99 is high"
+          description: "etcd WAL fsync p99 is {{ $value | humanizeDuration }} — underlying disk is too slow for etcd. Use SSD."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighfsyncdurations"
+
+      - alert: EtcdDBSizeHigh
+        expr: etcd_mvcc_db_total_size_in_bytes > 6442450944
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd database size is approaching the 8GB hard limit"
+          description: "etcd DB size is {{ $value | humanize1024 }}B on {{ $labels.instance }} — approaching the 8GB hard limit. Run compaction."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizehigh"
+
+      - alert: EtcdDBSizeCritical
+        expr: etcd_mvcc_db_total_size_in_bytes > 7516192768
+        for: 2m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd database size is critically close to the 8GB hard limit"
+          description: "etcd DB size is {{ $value | humanize1024 }}B — critically close to 8GB limit. Compact and defrag IMMEDIATELY."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizecritical"
+
+      - alert: EtcdHighNetworkPeerRTT
+        expr: histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[5m])) > 0.15
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd peer network round-trip time is high"
+          description: "etcd peer network RTT p99 is {{ $value | humanizeDuration }} — check network between control plane nodes."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighnetworkpeerrtt"
+
+      - alert: EtcdHighGRPCErrors
+        expr: |
+          rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m])
+          / rate(grpc_server_handled_total{job=~"etcd.*"}[5m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd gRPC error rate is elevated"
+          description: "etcd gRPC error rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighgrpcerrors"
+
+      - alert: EtcdDefragNeeded
+        expr: etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.50
+        for: 10m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd database fragmentation is high — defragmentation recommended"
+          description: "etcd DB fragmentation ratio is {{ $value | humanize }} on {{ $labels.instance }} — DB size is 50% larger than actual data. Run defragmentation."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddefragneeded"
+
+      - alert: EtcdBackendQuotaExhausted
+        expr: etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes
+        for: 1m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: etcd
+          signal: symptom
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd backend quota is exhausted — all writes are rejected"
+          description: "etcd backend quota is EXHAUSTED on {{ $labels.instance }} — ALL writes are REJECTED. Compact and defrag immediately."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdbackendquotaexhausted"
+
+      - alert: EtcdHighApplyDurations
+        expr: histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) > 0.10
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: control-plane
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd apply duration p99 is high"
+          description: "etcd apply duration p99 is {{ $value | humanizeDuration }} — cluster may be overloaded."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighapplydurations"
+
+      - alert: EtcdCertificateExpiringSoon
+        expr: (etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30
+        for: 1h
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: etcd
+          signal: cause
+          category: security
+          runbook: runbooks/kubernetes/etcd.md
+        annotations:
+          summary: "etcd client certificate is expiring within 30 days"
+          description: "etcd client certificate on {{ $labels.instance }} expires in {{ $value | humanize }} days."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdcertificateexpiringsoon"

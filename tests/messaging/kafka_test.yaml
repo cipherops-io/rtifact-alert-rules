@@ -1,0 +1,116 @@
+# Unit tests for rules/messaging/kafka.yaml
+rule_files:
+  - ../../rules/messaging/kafka.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # KafkaBrokerDown: positive — up == 0 for > 1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'up{job="kafka-broker",instance="kafka-0:9092"}'
+        values: '0 0 0'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: KafkaBrokerDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: kafka
+              signal: symptom
+              category: messaging
+              runbook: runbooks/messaging/kafka.md
+              job: "kafka-broker"
+              instance: "kafka-0:9092"
+            exp_annotations:
+              summary: "Kafka broker is unreachable"
+              description: "Kafka broker kafka-0:9092 is unreachable."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkabrokerdown"
+
+  # ============================================================
+  # KafkaOfflinePartitions: positive — count > 0 for > 1m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kafka_controller_kafkacontroller_offlinepartitionscount{instance="kafka-0:9092"}'
+        values: '5 5 5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: KafkaOfflinePartitions
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P0
+              tech_stack: kafka
+              signal: symptom
+              category: messaging
+              runbook: runbooks/messaging/kafka.md
+              instance: "kafka-0:9092"
+            exp_annotations:
+              summary: "Kafka has offline partitions"
+              description: "Kafka has 5 offline partitions — these partitions are unavailable for reads and writes."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaofflinepartitions"
+
+  # ============================================================
+  # KafkaConsumerGroupLagHigh: positive — lag > 10000 for > 5m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumergroup_lag{consumergroup="my-app",topic="orders"}'
+        values: '50000 50000 50000 50000 50000 50000 50000'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: KafkaConsumerGroupLagHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: kafka
+              signal: cause
+              category: messaging
+              runbook: runbooks/messaging/kafka.md
+              consumergroup: "my-app"
+              topic: "orders"
+            exp_annotations:
+              summary: "Kafka consumer group lag is high"
+              description: "Kafka consumer group my-app on topic orders has lag of 50000 messages."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplaghigh"
+
+  # ============================================================
+  # KafkaConsumerGroupLagHigh: negative — lag below threshold
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kafka_consumergroup_lag{consumergroup="my-app",topic="orders"}'
+        values: '100 100 100 100 100 100 100'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: KafkaConsumerGroupLagHigh
+        exp_alerts: []
+
+  # ============================================================
+  # KafkaActiveControllerCountAbnormal: positive — count != 1
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kafka_controller_kafkacontroller_activecontrollercount{instance="kafka-0:9092"}'
+        values: '0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: KafkaActiveControllerCountAbnormal
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P0
+              tech_stack: kafka
+              signal: symptom
+              category: messaging
+              runbook: runbooks/messaging/kafka.md
+              instance: "kafka-0:9092"
+            exp_annotations:
+              summary: "Kafka active controller count is not 1"
+              description: "Kafka active controller count is 0 — expected exactly 1. This indicates a split-brain or no-controller situation."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaactivecontrollercountabnormal"

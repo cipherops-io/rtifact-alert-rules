@@ -1,0 +1,96 @@
+groups:
+  - name: vmalert.rules
+    interval: 30s
+    rules:
+      - alert: VMAlertDown
+        expr: absent(up{job=~"vmalert|.*vmalert.*"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: vmalert
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert is unreachable"
+          description: "All vmalert instances have been unreachable for 5 minutes — alert rules are not being evaluated."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertdown"
+
+      - alert: VMAlertConfigReloadFailed
+        expr: vmalert_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmalert
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert config reload failed"
+          description: "vmalert on {{ $labels.instance }} failed to reload its configuration — running on the previous version."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertconfigreloadfailed"
+
+      - alert: VMAlertRuleEvaluationErrors
+        expr: |
+          sum by (group) (rate(vmalert_iteration_errors_total[5m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmalert
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert is failing rule evaluations"
+          description: "vmalert rule group {{ $labels.group }} is failing evaluations — alerts in this group may not fire."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertruleevaluationerrors"
+
+      - alert: VMAlertRemoteWriteErrors
+        expr: rate(vmalert_remotewrite_errors_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmalert
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert remote write to recording rules destination is failing"
+          description: "vmalert {{ $labels.instance }} is failing to write recording-rule results to remote storage."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertremotewriteerrors"
+
+      - alert: VMAlertNotifierErrors
+        expr: rate(vmalert_alerts_send_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: vmalert
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert is failing to send alerts to Alertmanager"
+          description: "vmalert {{ $labels.instance }} is failing to send alerts to Alertmanager — notifications are being lost."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertnotifiererrors"
+
+      - alert: VMAlertRuleEvaluationSlow
+        expr: |
+          sum by (group) (vmalert_iteration_duration_seconds_sum)
+          / sum by (group) (vmalert_iteration_duration_seconds_count) > 5
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmalert
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/vmalert.md
+        annotations:
+          summary: "vmalert rule group evaluation is slow"
+          description: "vmalert rule group {{ $labels.group }} average evaluation duration is {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/observability/vmalert.md#vmalertruleevaluationslow"

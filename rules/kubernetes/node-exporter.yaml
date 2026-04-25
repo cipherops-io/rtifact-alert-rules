@@ -1,0 +1,181 @@
+groups:
+  - name: node-exporter.rules
+    interval: 30s
+    rules:
+      - alert: NodeExporterDown
+        expr: up{job=~"node-exporter|node_exporter"} == 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "node-exporter is down on a node"
+          description: "node-exporter on {{ $labels.instance }} has been down for 10 minutes — host-level metrics for this node are missing."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeexporterdown"
+
+      - alert: NodeFilesystemAlmostOutOfSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 30m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Filesystem has less than 10% free space"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutofspace"
+
+      - alert: NodeFilesystemOutOfSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.03
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 10m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Filesystem has less than 3% free space"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} free space — node will start failing imminently."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemoutofspace"
+
+      - alert: NodeFilesystemAlmostOutOfFiles
+        expr: |
+          (node_filesystem_files_free{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_files{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 30m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Filesystem has less than 10% inodes free"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage }} inodes free."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefilesystemalmostoutoffiles"
+
+      - alert: NodeMemoryHighUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node memory utilization is above 90%"
+          description: "Node {{ $labels.instance }} memory utilization is {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodememoryhighusage"
+
+      - alert: NodeCPUHighUsage
+        expr: |
+          (1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node CPU utilization is above 90%"
+          description: "Node {{ $labels.instance }} CPU utilization is {{ $value | humanizePercentage }} for 15 minutes."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodecpuhighusage"
+
+      - alert: NodeLoad15High
+        expr: node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node 15-minute load average is more than 2x core count"
+          description: "Node {{ $labels.instance }} 15-minute load average is {{ $value }}x the number of cores."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeload15high"
+
+      - alert: NodeNetworkReceiveErrs
+        expr: rate(node_network_receive_errs_total[2m]) > 10
+        for: 1h
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: node-exporter
+          signal: cause
+          category: network
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node network receive error rate is elevated"
+          description: "Node {{ $labels.instance }} interface {{ $labels.device }} is encountering {{ $value | humanize }} errors/s on receive."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworkreceiveerrs"
+
+      - alert: NodeNetworkTransmitErrs
+        expr: rate(node_network_transmit_errs_total[2m]) > 10
+        for: 1h
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: node-exporter
+          signal: cause
+          category: network
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node network transmit error rate is elevated"
+          description: "Node {{ $labels.instance }} interface {{ $labels.device }} is encountering {{ $value | humanize }} errors/s on transmit."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodenetworktransmiterrs"
+
+      - alert: NodeClockSkew
+        expr: |
+          (node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0)
+          or (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0)
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node clock skew is high"
+          description: "Node {{ $labels.instance }} clock is drifting from NTP — check chronyd/ntpd."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodeclockskew"
+
+      - alert: NodeFileDescriptorUsage
+        expr: node_filefd_allocated / node_filefd_maximum > 0.80
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.md
+        annotations:
+          summary: "Node file descriptor usage is high"
+          description: "Node {{ $labels.instance }} is using {{ $value | humanizePercentage }} of its file descriptor limit."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.md#nodefiledescriptorusage"

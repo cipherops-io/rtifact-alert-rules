@@ -1,0 +1,6 @@
+# Default owner for the entire repo.
+*       @rtifact/maintainers
+
+# Per-category owners can be added here as the team grows, e.g.:
+# rules/databases/*    @rtifact/db-team
+# rules/observability/* @rtifact/obs-team

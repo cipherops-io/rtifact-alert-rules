@@ -1,0 +1,118 @@
+# Unit tests for rules/kubernetes/workloads.yaml
+rule_files:
+  - ../../rules/kubernetes/workloads.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # KubePodOOMKilled: positive — restart and OOMKilled in window
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="prod",pod="api-7c",container="api"}'
+        values: '0 0 0 0 0 1 1 1 1 1 1'
+      - series: 'kube_pod_container_status_last_terminated_reason{namespace="prod",pod="api-7c",container="api",reason="OOMKilled"}'
+        values: '0 0 0 0 0 1 1 1 1 1 1'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: KubePodOOMKilled
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: kubernetes
+              signal: symptom
+              category: workload
+              runbook: runbooks/kubernetes/workloads.md
+              namespace: "prod"
+              pod: "api-7c"
+              container: "api"
+            exp_annotations:
+              summary: "Pod container was OOMKilled"
+              description: "Container api in pod prod/api-7c was OOMKilled. Increase memory limit or fix memory leak."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
+
+  # ============================================================
+  # KubePodNotReady: positive — pod not ready for > 15m
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_status_ready{namespace="prod",pod="api-7c",condition="true"}'
+        values: '0x20'    # 20 samples of 0
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePodNotReady
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: kubernetes
+              signal: symptom
+              category: workload
+              runbook: runbooks/kubernetes/workloads.md
+              namespace: "prod"
+              pod: "api-7c"
+              condition: "true"
+            exp_annotations:
+              summary: "Pod has not been ready for too long"
+              description: "Pod prod/api-7c has not been ready for 15 minutes."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
+
+  # ============================================================
+  # KubePVCFillingUp: positive — < 15% free for > 15m
+  # KubePVCCriticalFull: also fires below 5%
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_available_bytes{namespace="prod",persistentvolumeclaim="data"}'
+        values: '40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40 40'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="prod",persistentvolumeclaim="data"}'
+        values: '1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePVCFillingUp
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              priority: P2
+              tech_stack: kubernetes
+              signal: cause
+              category: storage
+              runbook: runbooks/kubernetes/workloads.md
+              namespace: "prod"
+              persistentvolumeclaim: "data"
+            exp_annotations:
+              summary: "PVC has less than 15% free space"
+              description: "PVC prod/data has less than 15% free space remaining."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
+      - eval_time: 16m
+        alertname: KubePVCCriticalFull
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              priority: P1
+              tech_stack: kubernetes
+              signal: cause
+              category: storage
+              runbook: runbooks/kubernetes/workloads.md
+              namespace: "prod"
+              persistentvolumeclaim: "data"
+            exp_annotations:
+              summary: "PVC has less than 5% free space"
+              description: "PVC prod/data has less than 5% free space remaining."
+              runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
+
+  # ============================================================
+  # KubePVCFillingUp: negative — > 15% free
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kubelet_volume_stats_available_bytes{namespace="prod",persistentvolumeclaim="data"}'
+        values: '900 900 900 900 900 900 900 900 900 900 900 900 900 900 900 900 900'
+      - series: 'kubelet_volume_stats_capacity_bytes{namespace="prod",persistentvolumeclaim="data"}'
+        values: '1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000 1000'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: KubePVCFillingUp
+        exp_alerts: []

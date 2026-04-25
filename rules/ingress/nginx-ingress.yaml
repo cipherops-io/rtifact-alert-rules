@@ -1,0 +1,115 @@
+groups:
+  - name: nginx-ingress.rules
+    interval: 30s
+    rules:
+      - alert: NginxIngressDown
+        expr: absent(up{job=~".*nginx.*ingress.*"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "All nginx-ingress controllers are unreachable"
+          description: "No nginx-ingress controller has been reachable for 5 minutes — incoming HTTP/HTTPS traffic is not routed."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressdown"
+
+      - alert: NginxIngressHigh5xxRate
+        expr: |
+          sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+          / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 0.05
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "Ingress 5xx error rate is above 5%"
+          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} 5xx rate is {{ $value | humanizePercentage }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshigh5xxrate"
+
+      - alert: NginxIngressHighLatency
+        expr: |
+          histogram_quantile(0.99,
+            sum by (le, ingress, exported_namespace) (
+              rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
+            )
+          ) > 2
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "Ingress p99 request latency is above 2s"
+          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} p99 latency is {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
+
+      - alert: NginxIngressUpstreamErrors
+        expr: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "Ingress is forwarding 5xx responses from upstream"
+          description: "Ingress {{ $labels.ingress }} upstream {{ $labels.service }} is returning 5xx at {{ $value | humanize }} req/s."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamerrors"
+
+      - alert: NginxIngressCertificateExpiringSoon
+        expr: nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14
+        for: 1h
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: cause
+          category: security
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "Ingress TLS certificate expires within 14 days"
+          description: "Ingress {{ $labels.host }} TLS certificate expires in {{ $value | humanizeDuration }}."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscertificateexpiringsoon"
+
+      - alert: NginxIngressConfigReloadFailed
+        expr: nginx_ingress_controller_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "nginx-ingress configuration reload has failed"
+          description: "Last nginx-ingress config reload on {{ $labels.controller_pod }} failed — running on stale config."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressconfigreloadfailed"
+
+      - alert: NginxIngressHighConnections
+        expr: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: cause
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+        annotations:
+          summary: "nginx-ingress has a very high active connection count"
+          description: "nginx-ingress {{ $labels.controller_pod }} has {{ $value }} active connections."
+          runbook_url: "https://github.com/rtifact/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighconnections"
