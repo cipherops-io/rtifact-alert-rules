@@ -1,0 +1,361 @@
+tech_stack: kubernetes-apiserver
+version: "1.0"
+description: "Runbook for Kubernetes API server control-plane alerts covering availability, request errors, latency, admission webhook slowdown, etcd interaction failures, and client certificate expiry."
+
+match_keywords:
+  - kube apiserver down
+  - apiserver 5xx
+  - apiserver latency
+  - apiserver admission webhook slow
+  - apiserver etcd request errors
+  - kube client cert expiring
+  - control plane outage
+  - kubectl timeout
+
+categories:
+  - CONTROL_PLANE
+  - INFRASTRUCTURE
+  - SECURITY
+  - PERFORMANCE
+
+common_alerts:
+  - name: "KubeAPIServerDown"
+    patterns:
+      - "KubeAPIServerDown"
+      - "apiserver down"
+      - "control plane unreachable"
+      - "kubectl request timeout"
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Validate API endpoint health"
+        description: "Confirm whether failure is API process outage, LB path failure, or DNS/network path break."
+        tool_calls:
+          - tool_id: "tool.get_service_health"
+            description: "Check /healthz and /livez from control-plane network and from client network path."
+      - step: 2
+        title: "Inspect API server process and kubelet/static pod state"
+        description: "Determine if kube-apiserver is crash-looping, unscheduled, or stuck waiting on dependencies."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect kube-apiserver pod/container status, kubelet logs, and recent warning events."
+      - step: 3
+        title: "Correlate with etcd health"
+        description: "API server unavailability is often downstream of etcd quorum or backend quota failure."
+        tool_calls:
+          - tool_id: "tool.get_service_health"
+            description: "Check etcd leader, endpoint health, and write latency."
+    remediation:
+      - action: "restart_apiserver"
+        description: "Restart API server process only after confirming etcd and node prerequisites are healthy."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "Immediate page to SRE/control-plane owners. Treat as production outage with incident bridge."
+
+  - name: "KubeAPIServerErrors"
+    patterns:
+      - "KubeAPIServerErrors"
+      - "apiserver 5xx high"
+      - "internal server error kubernetes api"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify failing verbs and resources"
+        description: "Use labeled metrics to isolate whether failures are read-heavy, write-heavy, or specific API resources."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Break down apiserver_request_total by verb, code, resource, and scope."
+      - step: 2
+        title: "Check dependency pressure"
+        description: "5xx spikes usually map to etcd slowness, webhook timeouts, or authn/authz backend issues."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect error logs and correlate timestamps with etcd and webhook latency."
+    remediation: []
+    escalation: "SRE on-call if 5xx persists beyond 10m or affects write paths for production namespaces."
+
+  - name: "KubeAPIServerLatencyHigh"
+    patterns:
+      - "KubeAPIServerLatencyHigh"
+      - "apiserver p99 latency high"
+      - "kubectl slow responses"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Quantify latency scope"
+        description: "Identify impacted verbs/resources and whether latency is global or endpoint-specific."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect request duration histograms and top resource/verb contributors."
+      - step: 2
+        title: "Correlate control-plane resource pressure"
+        description: "CPU starvation and IO wait on control-plane nodes can push p99 request duration up."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check control-plane CPU, memory, IO, and run queue pressure."
+    remediation: []
+    escalation: "Platform SRE if latency is sustained and impacts operators/controllers or user flows."
+
+  - name: "KubeAPIServerLatencyVeryHigh"
+    patterns:
+      - "KubeAPIServerLatencyVeryHigh"
+      - "apiserver p99 above 4s"
+      - "kubectl command timing out"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm severe latency blast radius"
+        description: "Validate whether scheduler/controllers are timing out and whether writes are blocked."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect p99 latency by verb/resource and evaluate timeout/error overlap."
+      - step: 2
+        title: "Check webhook and etcd bottlenecks"
+        description: "Very high API latency is commonly caused by slow admission webhooks or etcd backend pressure."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Correlate webhook duration and etcd request error metrics."
+    remediation:
+      - action: "rollback_recent_controlplane_change"
+        description: "Rollback recent control-plane config/release changes if latency regression started post-change."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+    escalation: "Immediate SRE + platform architect escalation when p99 >4s is sustained."
+
+  - name: "KubeAPIClientCertExpiring"
+    patterns:
+      - "KubeAPIClientCertExpiring"
+      - "kube client certificate expiring"
+      - "apiserver cert expiry soon"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "List expiring client certificates"
+        description: "Identify components impacted first (kubelet/controller-manager/scheduler/external clients)."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect certificate expiration inventory with owner/component metadata."
+      - step: 2
+        title: "Verify CSR flow and rotation automation"
+        description: "Ensure CSR approval pipeline and auto-rotation are functioning."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Check pending/failed CSRs and signing errors."
+    remediation: []
+    escalation: "Security + platform team if expiry window is <72h or rotation is blocked."
+
+  - name: "KubeAPIServerAdmissionLatency"
+    patterns:
+      - "KubeAPIServerAdmissionLatency"
+      - "admission webhook slow"
+      - "mutating webhook timeout"
+      - "validating webhook timeout"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify slow webhook name/path"
+        description: "Use label `name` and admission duration metrics to isolate the exact webhook."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect admission webhook latency and timeout counters by webhook name."
+      - step: 2
+        title: "Inspect webhook backend service health"
+        description: "Validate endpoint readiness, TLS certs, and upstream dependency timing."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect pod health, service endpoints, and error logs for webhook backend."
+    remediation:
+      - action: "set_failure_policy_ignore_temporarily"
+        description: "Temporary mitigation for non-critical webhook failures to restore API write throughput."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+    escalation: "Platform + security owners due to policy/safety impact when bypassing admission checks."
+
+  - name: "KubeAPIServerEtcdRequestErrors"
+    patterns:
+      - "KubeAPIServerEtcdRequestErrors"
+      - "apiserver etcd grpc errors"
+      - "etcd request failures from apiserver"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Locate failing etcd operations"
+        description: "Determine whether read/write/list operations are failing and at what ratio."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Break down etcd request duration/error counters by operation and grpc code."
+      - step: 2
+        title: "Validate etcd quorum and backend quota"
+        description: "Correlate with etcd leadership changes, fsync latency, and quota exhaustion."
+        tool_calls:
+          - tool_id: "tool.get_service_health"
+            description: "Collect etcd endpoint status, leader, db size, and backend quota metrics."
+    remediation: []
+    escalation: "Escalate to etcd owners and SRE if error ratio is sustained >5m."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture control-plane snapshot"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Collect API server logs, request/error metrics, and warning events."
+    - step: 2
+      title: "Check dependency health"
+      tool_calls:
+        - tool_id: "tool.get_service_health"
+          description: "Validate etcd cluster stability and storage latency."
+        - tool_id: "tool.fetch_metrics"
+          description: "Identify admission webhooks contributing to API latency/failures."
+    - step: 3
+      title: "Generate incident RCA"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Summarize root cause candidates, impact, and confidence."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "up{job='apiserver'}"
+    threshold: "absent for 5m"
+    severity: critical
+  - name: "rate(apiserver_request_total{code=~'5..'}[5m]) / rate(apiserver_request_total[5m])"
+    threshold: "> 5% for 10m"
+    severity: warning
+  - name: "histogram_quantile(0.99, apiserver_request_duration_seconds_bucket)"
+    threshold: "> 1s warning, > 4s critical"
+    severity: high
+  - name: "histogram_quantile(0.99, apiserver_admission_webhook_admission_duration_seconds_bucket)"
+    threshold: "> 1s for 10m"
+    severity: warning
+  - name: "etcd request error ratio from API server"
+    threshold: "> 1% for 5m"
+    severity: warning
+  - name: "apiserver_client_certificate_expiration_seconds p01"
+    threshold: "< 7 days"
+    severity: warning
+
+escalation:
+  P0: "Immediate page and incident bridge. API server unavailable; assume control-plane outage."
+  P1: "Page within 5 minutes; severe control-plane latency can cause widespread timeouts."
+  P2: "Notify SRE/platform owners in on-call channel and triage within 15 minutes."

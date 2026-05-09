@@ -2,126 +2,276 @@ groups:
   - name: kubernetes-apiserver.rules
     interval: 30s
     rules:
+
+      # ---------------------------------------------------------------
+      # 1. API server completely unreachable
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerDown
-        expr: absent(up{job="apiserver"} == 1)
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="apiserver"}) == 0
+          or
+          absent(up{job="apiserver"})
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="apiserver"}) == 0
+            or
+            absent(up{job="apiserver"})
         annotations:
-          summary: "Kubernetes API server is unreachable"
-          description: "No Kubernetes API server has been reachable for 5 minutes — control plane is down."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverdown"
+          summary: "kube-apiserver down: cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} service={{ $labels.rtf_service }}"
+          description: |
+            No kube-apiserver target with `up == 1` has been scraped for 5 minutes
+            (job=`apiserver`). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            The Kubernetes control plane is effectively offline:
+            kubectl, controllers, schedulers, and admission webhooks cannot read
+            or write cluster state. Workloads already running continue, but no
+            new scheduling, scaling, deployment, or status reconciliation will
+            occur. Investigate apiserver pod health, etcd reachability, the load
+            balancer in front of apiservers, and recent control-plane changes.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 2. API server 5xx error rate
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerErrors
         expr: |
-          sum by (verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m]))
-          / sum by (verb) (rate(apiserver_request_total{job="apiserver"}[5m])) > 0.05
+          sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m]))
+          /
+          sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_total{job="apiserver"}[5m])) > 0.05
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m]))
+            /
+            sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_total{job="apiserver"}[5m])) > 0.05
         annotations:
-          summary: "Kubernetes API server 5xx error rate is high"
-          description: "API server is returning 5xx errors at {{ $value | humanizePercentage }} for verb {{ $labels.verb }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiservererrors"
+          summary: "apiserver 5xx {{ $value | humanizePercentage }} verb={{ $labels.verb }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            kube-apiserver is returning 5xx responses on verb `{{ $labels.verb }}`
+            at {{ $value | humanizePercentage }} of requests over the last 10m
+            (threshold: >5%). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            Any client performing `{{ $labels.verb }}` calls -
+            controllers, operators, kubectl, CI/CD pipelines - will see
+            intermittent or persistent failures. Common causes: etcd issues
+            (often co-fires with KubeAPIServerEtcdRequestErrors), failing
+            admission webhooks (check KubeAPIServerAdmissionLatency), apiserver
+            overload, or storage problems for specific resource types.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 3. API server p99 latency elevated
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerLatencyHigh
         expr: |
           histogram_quantile(0.99,
-            sum by (le, verb, resource) (
+            sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
               rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
             )
           ) > 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
+                rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
+              )
+            ) > 1
         annotations:
-          summary: "Kubernetes API server p99 latency is above 1s"
-          description: "API server p99 latency is above 1 second for verb {{ $labels.verb }} resource {{ $labels.resource }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyhigh"
+          summary: "apiserver p99 {{ $value | humanizeDuration }} verb={{ $labels.verb }} resource={{ $labels.resource }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            kube-apiserver p99 latency is {{ $value | humanizeDuration }} for
+            verb `{{ $labels.verb }}` on resource `{{ $labels.resource }}`
+            (threshold: >1s sustained 10m). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            Controllers and reconciliation loops
+            that operate on `{{ $labels.resource }}` will lag; kubectl
+            operations on this resource feel sluggish. WATCH/PROXY/CONNECT
+            verbs are excluded from this alert by design (long-lived by nature).
+            Common causes: slow etcd, slow admission webhooks (check
+            KubeAPIServerAdmissionLatency), large list responses on
+            `{{ $labels.resource }}`, or apiserver CPU saturation.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 4. API server p99 latency critical
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerLatencyVeryHigh
         expr: |
           histogram_quantile(0.99,
-            sum by (le, verb, resource) (
+            sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
               rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
             )
           ) > 4
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
+                rate(apiserver_request_duration_seconds_bucket{job="apiserver",verb!~"WATCH|WATCHLIST|PROXY|CONNECT"}[10m])
+              )
+            ) > 4
         annotations:
-          summary: "Kubernetes API server p99 latency is above 4s"
-          description: "API server p99 latency is above 4 seconds for verb {{ $labels.verb }} resource {{ $labels.resource }} — kubectl will start to time out."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserverlatencyveryhigh"
+          summary: "apiserver p99 CRITICAL {{ $value | humanizeDuration }} verb={{ $labels.verb }} resource={{ $labels.resource }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            kube-apiserver p99 latency is {{ $value | humanizeDuration }} for
+            verb `{{ $labels.verb }}` on resource `{{ $labels.resource }}`
+            (critical threshold: >4s sustained 5m). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            At this level, default
+            client timeouts (kubectl ~10s, controllers commonly 30-60s) are at
+            high risk of being exceeded. Expect failed deployments, stuck
+            reconciliations on `{{ $labels.resource }}`, and admission-dependent
+            writes timing out. Treat as a control-plane incident: check etcd
+            health and disk fsync latency first, then admission webhooks, then
+            apiserver resource pressure.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 5. API client certificate nearing expiry
+      #    NOTE: This metric does not expose which client cert is expiring;
+      #    the value is the lower-percentile lifetime across observed certs.
+      # ---------------------------------------------------------------
       - alert: KubeAPIClientCertExpiring
-        expr: histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400 * 7
+        expr: histogram_quantile(0.01, sum by (job, rtf_cluster_id, rtf_env, rtf_service, le)
+          (rate)) < 86400 * 7
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: apiserver
           signal: cause
           category: security
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: histogram_quantile(0.01, sum by (job, rtf_cluster_id, rtf_env, rtf_service, le)
+            (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400 * 7
         annotations:
-          summary: "Kubernetes API server client certificate is expiring within 7 days"
-          description: "A client certificate used to connect to the API server is expiring in less than 7 days."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiclientcertexpiring"
+          summary: "apiserver client cert expiring in {{ $value | humanizeDuration }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            For job `{{ $labels.job }}`, the 1st-percentile of client
+            certificates presented to kube-apiserver has only
+            {{ $value | humanizeDuration }} of validity remaining
+            (threshold: <7d). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            This metric is aggregated and does NOT identify
+            which specific certificate is expiring. Likely candidates to
+            inspect: kubelet client certs (per node), controller-manager,
+            scheduler, kube-proxy, and any custom components authenticating to
+            the apiserver via x509. If not rotated before expiry, those clients
+            will fail authentication and stop reading/writing cluster state.
+            Run the runbook to enumerate cert expiries on each node and
+            component and rotate proactively.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 6. Admission webhook latency
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerAdmissionLatency
         expr: |
           histogram_quantile(0.99,
-            sum by (le, name) (
+            sum by (le, rtf_cluster_id, rtf_env, rtf_service, name) (
               rate(apiserver_admission_webhook_admission_duration_seconds_bucket{job="apiserver"}[5m])
             )
           ) > 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: apiserver
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, rtf_cluster_id, rtf_env, rtf_service, name) (
+                rate(apiserver_admission_webhook_admission_duration_seconds_bucket{job="apiserver"}[5m])
+              )
+            ) > 1
         annotations:
-          summary: "Kubernetes API server admission webhook is slow"
-          description: "Admission webhook {{ $labels.name }} p99 latency is above 1s — slow webhooks block all writes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveradmissionlatency"
+          summary: "admission webhook={{ $labels.name }} p99={{ $value | humanizeDuration }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            Admission webhook `{{ $labels.name }}` p99 latency is
+            {{ $value | humanizeDuration }} (threshold: >1s sustained 10m).
+            Context: cluster=`{{ $labels.rtf_cluster_id }}`, env=`{{ $labels.rtf_env }}`,
+            service=`{{ $labels.rtf_service }}`.
+            Every API write that matches this webhook's rules waits this long
+            before completing, adding backpressure to apiserver and slowing
+            deployments, scaling, and any controller writing resources covered
+            by this webhook. Investigate the webhook's backing service: pod
+            health, CPU/memory, network path from apiserver to the webhook
+            endpoint, and the webhook's own downstream dependencies. If the
+            webhook is non-essential and severely degraded, consider temporarily
+            setting failurePolicy=Ignore or removing it to restore control-plane
+            throughput.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
 
+      # ---------------------------------------------------------------
+      # 7. apiserver -> etcd request errors
+      # ---------------------------------------------------------------
       - alert: KubeAPIServerEtcdRequestErrors
         expr: |
-          sum by (operation) (rate(etcd_request_duration_seconds_count{job="apiserver",grpc_code!~"OK|Unknown"}[5m]))
-          / sum by (operation) (rate(etcd_request_duration_seconds_count{job="apiserver"}[5m])) > 0.01
+          sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_duration_seconds_count{job="apiserver",grpc_code!~"OK|Unknown"}[5m]))
+          /
+          sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_duration_seconds_count{job="apiserver"}[5m])) > 0.01
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_duration_seconds_count{job="apiserver",grpc_code!~"OK|Unknown"}[5m]))
+            /
+            sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_duration_seconds_count{job="apiserver"}[5m])) > 0.01
         annotations:
-          summary: "Kubernetes API server is experiencing etcd request errors"
-          description: "API server is failing etcd {{ $labels.operation }} requests at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.md#kubeapiserveretcdrequesterrors"
+          summary: "apiserver->etcd op={{ $labels.operation }} error={{ $value | humanizePercentage }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: |
+            kube-apiserver is failing on etcd operation `{{ $labels.operation }}`
+            at {{ $value | humanizePercentage }} of requests over the last 5m
+            (threshold: >1%). Context: cluster=`{{ $labels.rtf_cluster_id }}`,
+            env=`{{ $labels.rtf_env }}`, service=`{{ $labels.rtf_service }}`.
+            The apiserver depends on etcd for every read and
+            write of cluster state, so persistent failures here cause stale
+            reads, write failures, and broader control-plane symptoms - this
+            alert often co-fires with KubeAPIServerErrors and
+            KubeAPIServerLatencyHigh. Likely root causes by failure mode:
+            slow/overloaded etcd disks (DeadlineExceeded), etcd member down or
+            partition (Unavailable), etcd quota / mvcc DB size limit hit
+            (ResourceExhausted), or write contention (FailedPrecondition).
+            Check etcd cluster health, leader elections, fsync latency, and DB
+            size first.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/apiserver.yaml"
