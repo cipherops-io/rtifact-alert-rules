@@ -19,19 +19,24 @@ tests:
         alertname: KubePodOOMKilled
         exp_alerts:
           - exp_labels:
+              sourceType: metric
               severity: critical
               priority: P1
               tech_stack: kubernetes
               signal: symptom
               category: workload
-              runbook: runbooks/kubernetes/workloads.md
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: |
+                increase(kube_pod_container_status_restarts_total[10m]) > 0
+                and on(namespace, pod, container)
+                max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) == 1
               namespace: "prod"
               pod: "api-7c"
               container: "api"
             exp_annotations:
-              summary: "Pod container was OOMKilled"
-              description: "Container api in pod prod/api-7c was OOMKilled. Increase memory limit or fix memory leak."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodoomkilled"
+              summary: "pod OOMKilled: prod/api-7c container=api"
+              description: "Container api in pod prod/api-7c was OOMKilled. Context: cluster=, env=, service=. Investigate memory limits/requests, memory leaks, and burst behavior before repeated restarts impact availability."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
   # ============================================================
   # KubePodNotReady: positive — pod not ready for > 15m
@@ -45,19 +50,21 @@ tests:
         alertname: KubePodNotReady
         exp_alerts:
           - exp_labels:
+              sourceType: metric
               severity: warning
               priority: P2
               tech_stack: kubernetes
               signal: symptom
               category: workload
-              runbook: runbooks/kubernetes/workloads.md
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: 'kube_pod_status_ready{condition="true"} == 0'
               namespace: "prod"
               pod: "api-7c"
               condition: "true"
             exp_annotations:
-              summary: "Pod has not been ready for too long"
-              description: "Pod prod/api-7c has not been ready for 15 minutes."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepodnotready"
+              summary: "pod not ready: prod/api-7c for >15m"
+              description: "Pod prod/api-7c has remained NotReady for >15m. Context: cluster=, env=, service=. Traffic to this workload may be reduced or unavailable."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
   # ============================================================
   # KubePVCFillingUp: positive — < 15% free for > 15m
@@ -74,34 +81,38 @@ tests:
         alertname: KubePVCFillingUp
         exp_alerts:
           - exp_labels:
+              sourceType: metric
               severity: warning
               priority: P2
               tech_stack: kubernetes
               signal: cause
               category: storage
-              runbook: runbooks/kubernetes/workloads.md
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: "kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15"
               namespace: "prod"
               persistentvolumeclaim: "data"
             exp_annotations:
-              summary: "PVC has less than 15% free space"
-              description: "PVC prod/data has less than 15% free space remaining."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvcfillingup"
+              summary: "PVC free space low: prod/data free=4%"
+              description: "PVC prod/data has <15% free space for >15m (current=4%). Context: cluster=, env=, service=. Plan expansion/cleanup to avoid write-path failures."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
       - eval_time: 16m
         alertname: KubePVCCriticalFull
         exp_alerts:
           - exp_labels:
+              sourceType: metric
               severity: critical
               priority: P1
               tech_stack: kubernetes
               signal: cause
               category: storage
-              runbook: runbooks/kubernetes/workloads.md
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: "kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.05"
               namespace: "prod"
               persistentvolumeclaim: "data"
             exp_annotations:
-              summary: "PVC has less than 5% free space"
-              description: "PVC prod/data has less than 5% free space remaining."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.md#kubepvccriticalfull"
+              summary: "PVC free space CRITICAL: prod/data free=4%"
+              description: "PVC prod/data has <5% free space for >5m (current=4%). Context: cluster=, env=, service=. Immediate risk of application write failures and data-path outages."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
   # ============================================================
   # KubePVCFillingUp: negative — > 15% free
