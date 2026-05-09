@@ -3,181 +3,273 @@ groups:
     interval: 30s
     rules:
       - alert: ArgoCDDown
-        expr: up{job=~"argocd.*"} == 0
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd.*"}) == 0
+          or
+          absent(up{job=~"argocd.*"})
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd.*"}) == 0
+            or
+            absent(up{job=~"argocd.*"})
         annotations:
-          summary: "ArgoCD component is down"
-          description: "ArgoCD job {{ $labels.job }} instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddown"
+          summary: "argocd down: job={{ $labels.job }} instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD target is unreachable for >1m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}, job={{ $labels.job }}, instance={{ $labels.instance }}. GitOps reconciliation
+            can halt, delaying drift correction and application rollouts."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDAppOutOfSync
         expr: argocd_app_info{sync_status="OutOfSync"} == 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: argocd_app_info{sync_status="OutOfSync"} == 1
         annotations:
-          summary: "ArgoCD application is OutOfSync"
-          description: "ArgoCD application {{ $labels.name }} in project {{ $labels.project }} has been OutOfSync for more than 10 minutes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappoutofsync"
+          summary: "argocd app OutOfSync: app={{ $labels.name }} project={{ $labels.project }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD application has remained OutOfSync for >10m. Context: app={{ $labels.name }}, project={{ $labels.project
+            }}, namespace={{ $labels.namespace }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Desired and live state differ, increasing configuration drift risk and deployment inconsistency."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDAppDegraded
         expr: argocd_app_info{health_status="Degraded"} == 1
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: argocd_app_info{health_status="Degraded"} == 1
         annotations:
-          summary: "ArgoCD application health is Degraded"
-          description: "ArgoCD application {{ $labels.name }} health is Degraded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappdegraded"
+          summary: "argocd app Degraded: app={{ $labels.name }} project={{ $labels.project }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Application health is Degraded for >5m. Context: app={{ $labels.name }}, project={{ $labels.project }},
+            namespace={{ $labels.namespace }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. User-facing behavior may already be impacted; inspect recent syncs, rollout events, and pod health."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDSyncFailed
         expr: argocd_app_info{operation_phase=~"Error|Failed"} == 1
         for: 2m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: argocd_app_info{operation_phase=~"Error|Failed"} == 1
         annotations:
-          summary: "ArgoCD application sync operation failed"
-          description: "ArgoCD application {{ $labels.name }} last sync operation failed."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdsyncfailed"
+          summary: "argocd sync failed: app={{ $labels.name }} phase={{ $labels.operation_phase }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD sync operation failed for >2m. Context: app={{ $labels.name }}, project={{ $labels.project }},
+            phase={{ $labels.operation_phase }}, namespace={{ $labels.namespace }}, cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Deployment automation is blocked until failure
+            cause is resolved."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDAppSyncRunningLong
         expr: argocd_app_info{operation_phase="Running"} == 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: argocd_app_info{operation_phase="Running"} == 1
         annotations:
-          summary: "ArgoCD application sync has been running too long"
-          description: "ArgoCD application {{ $labels.name }} sync has been running for more than 10 minutes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappsyncrunninglong"
+          summary: "argocd sync long-running: app={{ $labels.name }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Sync operation has remained Running for >10m. Context: app={{ $labels.name }}, project={{ $labels.project
+            }}, namespace={{ $labels.namespace }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Prolonged syncs may indicate stuck hooks, slow API calls, or unreachable manifests."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDRepoServerDown
-        expr: up{job=~"argocd-repo-server.*"} == 0
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-repo-server.*"}) == 0
+          or
+          absent(up{job=~"argocd-repo-server.*"})
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-repo-server.*"}) == 0
+            or
+            absent(up{job=~"argocd-repo-server.*"})
         annotations:
-          summary: "ArgoCD repo-server is down"
-          description: "ArgoCD repo-server is down — all sync operations are blocked."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdreposerverdown"
+          summary: "argocd repo-server down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD repo-server is unavailable for >1m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}, job={{ $labels.job }}, instance={{ $labels.instance }}. Manifest generation
+            and repository access fail, so sync/reconcile operations can stop."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDRepoUnreachable
-        expr: rate(argocd_git_request_total{request_type="fetch",response_code!="200"}[5m]) > 0
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, repo, request_type, response_code) (
+            rate(argocd_git_request_total{request_type="fetch",response_code!="200"}[5m])
+          ) > 0
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, repo, request_type, response_code) (
+              rate(argocd_git_request_total{request_type="fetch",response_code!="200"}[5m])
+            ) > 0
         annotations:
-          summary: "ArgoCD cannot reach a git repository"
-          description: "ArgoCD cannot reach git repository for {{ $labels.repo }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdrepounreachable"
+          summary: "argocd repo fetch errors: repo={{ $labels.repo }} code={{ $labels.response_code }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD git fetch requests are failing for >5m. Context: repo={{ $labels.repo }}, request_type={{ $labels.request_type
+            }}, response_code={{ $labels.response_code }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ $labels.rtf_service }}. Sync attempts can fail or remain stale until repository connectivity/authentication
+            issues are resolved."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDAppControllerCrashLoop
-        expr: rate(kube_pod_container_status_restarts_total{container="argocd-application-controller"}[15m]) * 60 * 15 > 3
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, namespace, pod, container) (
+            increase(kube_pod_container_status_restarts_total{container="argocd-application-controller"}[15m])
+          ) > 3
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, namespace, pod, container) (
+              increase(kube_pod_container_status_restarts_total{container="argocd-application-controller"}[15m])
+            ) > 3
         annotations:
-          summary: "ArgoCD application-controller is crash-looping"
-          description: "ArgoCD application-controller is crash-looping — all GitOps reconciliation is stopped."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdappcontrollercrashloop"
+          summary: "argocd app-controller crashloop: pod={{ $labels.pod }} namespace={{ $labels.namespace }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD application-controller restarted repeatedly (>3 restarts/15m). Context: namespace={{ $labels.namespace
+            }}, pod={{ $labels.pod }}, container={{ $labels.container }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Reconciliation throughput drops and app state can become stale."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDCertificateExpiring
-        expr: (argocd_cert_expiry_timestamp_seconds - time()) / 86400 < 30
+        expr: |
+          min by (rtf_cluster_id, rtf_env, rtf_service, cert_name, instance) (
+            (argocd_cert_expiry_timestamp_seconds - time()) / 86400
+          ) < 30
         for: 1h
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            min by (rtf_cluster_id, rtf_env, rtf_service, cert_name, instance) (
+              (argocd_cert_expiry_timestamp_seconds - time()) / 86400
+            ) < 30
         annotations:
-          summary: "ArgoCD repository certificate is expiring soon"
-          description: "ArgoCD repository certificate expires in {{ $value | humanize }} days for {{ $labels.cert_name }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdcertificateexpiring"
+          summary: "argocd cert expiring: cert={{ $labels.cert_name }} in {{ $value | humanize }} days cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD certificate is close to expiry (<30 days). Context: cert={{ $labels.cert_name }}, instance={{ $labels.instance
+            }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Certificate
+            expiration can break repo access and halt automated sync."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDAppHealthUnknown
         expr: argocd_app_info{health_status="Unknown"} == 1
         for: 15m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: argocd_app_info{health_status="Unknown"} == 1
         annotations:
-          summary: "ArgoCD application health is Unknown"
-          description: "ArgoCD application {{ $labels.name }} health has been Unknown for 15 minutes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdapphealthunknown"
+          summary: "argocd app health Unknown: app={{ $labels.name }} project={{ $labels.project }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD app health has been Unknown for >15m. Context: app={{ $labels.name }}, project={{ $labels.project
+            }}, namespace={{ $labels.namespace }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Health signals are inconclusive, increasing risk of hidden degradation."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDDexDown
-        expr: up{job=~"argocd-dex.*"} == 0
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-dex.*"}) == 0
+          or
+          absent(up{job=~"argocd-dex.*"})
         for: 2m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: symptom
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-dex.*"}) == 0
+            or
+            absent(up{job=~"argocd-dex.*"})
         annotations:
-          summary: "ArgoCD Dex OIDC provider is down"
-          description: "ArgoCD Dex (OIDC provider) is down — SSO login is broken, only local admin accounts work."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocddexdown"
+          summary: "argocd dex down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD Dex (OIDC provider) is unreachable for >2m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{
+            $labels.rtf_env }}, service={{ $labels.rtf_service }}, job={{ $labels.job }}, instance={{ $labels.instance }}.
+            SSO authentication can fail and operator access may be reduced."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
 
       - alert: ArgoCDRedisDown
-        expr: up{job=~"argocd-redis.*"} == 0
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-redis.*"}) == 0
+          or
+          absent(up{job=~"argocd-redis.*"})
         for: 2m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: argocd
           signal: cause
           category: gitops
-          runbook: runbooks/gitops/argocd.md
+          runbook: runbooks/gitops/argocd.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-redis.*"}) == 0
+            or
+            absent(up{job=~"argocd-redis.*"})
         annotations:
-          summary: "ArgoCD Redis is down"
-          description: "ArgoCD Redis is down — session cache unavailable, UI performance degraded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.md#argocdredisdown"
+          summary: "argocd redis down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "ArgoCD Redis is unavailable for >2m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}, job={{ $labels.job }}, instance={{ $labels.instance }}. Session/cache-backed
+            behavior may degrade and API/UI responsiveness can be impacted."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/gitops/argocd.yaml"
