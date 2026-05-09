@@ -1,0 +1,398 @@
+tech_stack: argocd
+version: "1.0"
+description: "Runbook for ArgoCD GitOps incidents: control-plane outages, sync failures, app health degradation, and repository connectivity issues."
+
+match_keywords:
+  - argocd
+  - argo-cd
+  - application-controller
+  - repo-server
+  - dex
+  - redis
+  - outofsync
+  - degraded
+  - syncfailed
+
+categories:
+  - INFRASTRUCTURE
+  - APPLICATION
+  - MONITORING
+
+common_alerts:
+  - name: "ArgoCDDown"
+    patterns:
+      - "ArgoCDDown"
+      - "argocd component is down"
+      - "argocd.*unreachable"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Identify which ArgoCD component is down (server/repo-server/application-controller/dex/redis) and current blast radius."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect pod state, events, and recent logs in namespace argocd."
+      - step: 2
+        title: "Check component-specific impact"
+        description: "Server down affects UI/API; repo-server down blocks new syncs; controller down stops reconciliation."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Search for crash loops, config errors, Redis failures, and API connectivity errors."
+      - step: 3
+        title: "Check resource utilization"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check CPU/memory for argocd-server, repo-server, controller, and redis."
+    remediation:
+      - action: "restart_component"
+        description: "Restart only the impacted component after confirming root cause and maintaining safe operational posture."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall (IMMEDIATE if controller is down)"
+
+  - name: "ArgoCDAppOutOfSync"
+    patterns:
+      - "ArgoCDAppOutOfSync"
+      - "OutOfSync"
+      - "argocd_app_sync_status"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Confirm drift source: manual change, sync disabled, failed sync, or health assessment lag."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture app status and controller events for the affected application."
+      - step: 2
+        title: "Inspect diff and sync policy"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Check comparison/sync errors and confirm whether auto-sync/prune is enabled."
+    remediation:
+      - action: "trigger_manual_sync"
+        description: "Run a controlled sync after reviewing drift and blast radius."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDAppDegraded"
+    patterns:
+      - "ArgoCDAppDegraded"
+      - "Degraded"
+      - "argocd_app_health_status"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Identify unhealthy child resources and failing workloads behind ArgoCD health status."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect resource conditions, pod events, and rollout state."
+      - step: 2
+        title: "Review workload logs"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Analyze failing workload logs to isolate application vs infrastructure causes."
+    remediation:
+      - action: "rollback_application"
+        description: "Rollback application revision if degradation started after a recent sync/deploy."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall + owning service team"
+
+  - name: "ArgoCDSyncFailed"
+    patterns:
+      - "ArgoCDSyncFailed"
+      - "operation_phase=Failed"
+      - "operation_phase=Error"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Identify failing operation stage and exact apply/admission/RBAC error."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture operation state and sync result details."
+      - step: 2
+        title: "Inspect failure cause"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Check controller and repo-server logs for apply failures, webhooks, auth, or repo fetch errors."
+    remediation:
+      - action: "rollback_to_last_successful_revision"
+        description: "Rollback if failure was introduced by a recent manifest change."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDAppSyncRunningLong"
+    patterns:
+      - "ArgoCDAppSyncRunningLong"
+      - "operation_phase=Running"
+      - "sync running too long"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Find blocking resource/hook preventing sync completion."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Check sync operation details, hooks, and health gates."
+      - step: 2
+        title: "Inspect hook jobs and blocked resources"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review pre/post-sync hook logs and failing resource conditions."
+    remediation:
+      - action: "terminate_stuck_operation"
+        description: "Terminate stuck sync operation only after identifying and addressing blocker."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDRepoServerDown"
+    patterns:
+      - "ArgoCDRepoServerDown"
+      - "repo-server down"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect repo-server pod state, events, and resource pressure."
+      - step: 2
+        title: "Check Git/Helm access failures"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for auth failures, network timeouts, x509 errors, and OOM events."
+    remediation:
+      - action: "restart_repo_server"
+        description: "Restart repo-server after validating credentials and remote repository availability."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDRepoUnreachable"
+    patterns:
+      - "ArgoCDRepoUnreachable"
+      - "argocd git request failed"
+      - "fetch response_code != 200"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Validate repo URL, connectivity, and authentication state."
+      - step: 2
+        title: "Review repository access errors"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for 401/403 auth failures, DNS/network timeouts, TLS errors, and host outages."
+    remediation:
+      - action: "restore_repo_access"
+        description: "Fix credentials/connectivity and retry sync safely."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDAppControllerCrashLoop"
+    patterns:
+      - "ArgoCDAppControllerCrashLoop"
+      - "application-controller crash loop"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Controller crash loop is a GitOps control-plane outage for reconciliation."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect controller events, restart history, and dependency health."
+      - step: 2
+        title: "Analyze previous crash logs"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Use previous logs to identify panic, OOM, API access, or Redis dependency failures."
+      - step: 3
+        title: "Check resource and dependency pressure"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate memory headroom and external dependency latencies."
+    remediation:
+      - action: "scale_or_restart_controller"
+        description: "Increase resource limits if OOM, then restart controller."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall (IMMEDIATE)"
+
+  - name: "ArgoCDCertificateExpiring"
+    patterns:
+      - "ArgoCDCertificateExpiring"
+      - "argocd certificate expiring"
+      - "cert expiry < 30d"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Identify certificate scope and expiration timeline."
+      - step: 2
+        title: "Validate TLS chain and consumers"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Check x509/TLS errors across server/repo-server/dex paths."
+    remediation:
+      - action: "rotate_certificate"
+        description: "Renew/rotate certificate before expiry and verify ArgoCD component trust."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall + #security-ops"
+
+  - name: "ArgoCDAppHealthUnknown"
+    patterns:
+      - "ArgoCDAppHealthUnknown"
+      - "health_status=Unknown"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect resource kinds without health checks and controller health evaluations."
+      - step: 2
+        title: "Check health assessment limitations"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review health-check errors for CRDs/custom resources."
+    remediation:
+      - action: "add_health_check_or_fix_resource_state"
+        description: "Define custom health checks for CRDs or remediate unknown resource state."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDDexDown"
+    patterns:
+      - "ArgoCDDexDown"
+      - "dex down"
+      - "oidc provider down"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Confirm Dex pod health and OIDC config/secret validity."
+      - step: 2
+        title: "Inspect auth errors"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for OIDC issuer, TLS, or connector auth failures."
+    remediation:
+      - action: "restart_dex"
+        description: "Restart Dex after fixing invalid provider configuration/secrets."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+  - name: "ArgoCDRedisDown"
+    patterns:
+      - "ArgoCDRedisDown"
+      - "argocd redis down"
+      - "redis unavailable"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Check Redis pod status, storage, and network readiness."
+      - step: 2
+        title: "Inspect dependency failures"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review argocd-server/controller logs for Redis timeouts and request errors."
+    remediation:
+      - action: "recover_redis"
+        description: "Restore Redis availability and then verify ArgoCD API responsiveness."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#gitops-oncall"
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture diagnostics snapshot"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Gather pod states, events, and recent logs for argocd components."
+    - step: 2
+      title: "Review application logs"
+      tool_calls:
+        - tool_id: "tool.read_logs"
+          description: "Filter error logs across server, controller, repo-server, dex, and redis."
+    - step: 3
+      title: "Check resource utilization"
+      tool_calls:
+        - tool_id: "tool.fetch_metrics"
+          description: "Check CPU/memory and request error metrics for ArgoCD components."
+    - step: 4
+      title: "Generate AI root cause analysis"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Correlate sync, health, Git access, auth, and platform dependencies."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Fetch pod logs by app_name or deployment_name"
+    params: ["namespace", "app_name", "deployment_name", "tail_lines", "since"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch pod resource metrics and HPA status"
+    params: ["namespace", "app_name", "deployment_name"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Single-shot snapshot: logs + metrics + events"
+    params: ["namespace", "app_name", "deployment_name"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "kubectl rollout restart — requires human approval"
+    params: ["namespace", "app_name", "deployment_name"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "kubectl scale deployment — requires human approval"
+    params: ["namespace", "app_name", "deployment_name", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "kubectl rollout undo — requires human approval"
+    params: ["namespace", "app_name", "deployment_name"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "AI-powered root cause analysis"
+    params: ["namespace", "app_name", "deployment_name"]
+
+key_metrics:
+  - name: "argocd_app_sync_status"
+    threshold: "OutOfSync > 10m"
+    severity: medium
+  - name: "argocd_app_health_status"
+    threshold: "Degraded/Unknown > 5m"
+    severity: high
+  - name: "argocd_git_request_total"
+    threshold: "fetch failures > 0 for 5m"
+    severity: high
+  - name: "kube_pod_container_status_restarts_total{container=\"argocd-application-controller\"}"
+    threshold: "restarts > 3 in 15m"
+    severity: critical
+  - name: "argocd_cert_expiry_timestamp_seconds"
+    threshold: "cert expiry < 30d"
+    severity: high
+
+escalation:
+  P1: "Page #gitops-oncall immediately. If application-controller is impacted, treat as GitOps control-plane incident."
+  P2: "Notify #gitops-oncall within 15 minutes; involve owning service team when app-specific."
+  P3: "Create backlog ticket and review during platform triage."
+  P4: "Backlog"
