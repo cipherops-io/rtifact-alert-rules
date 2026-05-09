@@ -6,195 +6,251 @@ groups:
         expr: up{job=~"etcd.*"} == 0
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: etcd
           signal: symptom
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: up{job=~"etcd.*"} == 0
         annotations:
-          summary: "etcd member is down"
-          description: "etcd member {{ $labels.instance }} is down — Kubernetes control plane is degraded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddown"
+          summary: "etcd member down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "etcd member {{ $labels.instance }} is unreachable for >1m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Losing etcd members reduces quorum resilience and
+            can quickly escalate to API server write/read instability."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdNoLeader
         expr: etcd_server_has_leader == 0
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: etcd
           signal: symptom
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: etcd_server_has_leader == 0
         annotations:
-          summary: "etcd cluster has no leader"
-          description: "etcd cluster has no leader — ALL Kubernetes API operations (pod scheduling, config changes) are BLOCKED."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdnoleader"
+          summary: "etcd has no leader: cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: "etcd reports no active leader for >1m. Context: instance={{ $labels.instance }}, cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Without a leader, control-plane writes are blocked
+            and Kubernetes API behavior becomes critically degraded."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdLeaderChangesHigh
         expr: increase(etcd_server_leader_changes_seen_total[15m]) > 3
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: increase(etcd_server_leader_changes_seen_total[15m]) > 3
         annotations:
-          summary: "etcd leader changes are frequent"
-          description: "etcd has had {{ $value }} leader changes in the last 15 minutes — indicates instability."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdleaderchangeshigh"
+          summary: "etcd leader churn high: changes={{ $value }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "etcd observed {{ $value }} leader changes in 15m (threshold: >3). Context: instance={{ $labels.instance
+            }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Frequent
+            leadership churn usually indicates network/disk pressure or overloaded control-plane nodes."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdHighCommitDurations
         expr: histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[5m])) > 0.25
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[5m])) > 0.25
         annotations:
-          summary: "etcd backend commit duration p99 is high"
-          description: "etcd commit duration p99 is {{ $value | humanizeDuration }} on {{ $labels.instance }} — disk I/O may be slow."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighcommitdurations"
+          summary: "etcd backend commit p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
+          description: "etcd backend commit duration p99 is {{ $value | humanizeDuration }} (threshold: >250ms for 5m) on instance={{
+            $labels.instance }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Slow backend commits increase API latency and can trigger timeouts under write-heavy workloads."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdHighFsyncDurations
         expr: histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])) > 0.25
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])) > 0.25
         annotations:
-          summary: "etcd WAL fsync duration p99 is high"
-          description: "etcd WAL fsync p99 is {{ $value | humanizeDuration }} — underlying disk is too slow for etcd. Use SSD."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighfsyncdurations"
+          summary: "etcd WAL fsync p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
+          description: "etcd WAL fsync p99 is {{ $value | humanizeDuration }} (threshold: >250ms for 5m). Context: instance={{
+            $labels.instance }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. WAL fsync latency this high commonly indicates disk I/O bottlenecks and causes control-plane write delays."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdDBSizeHigh
         expr: etcd_mvcc_db_total_size_in_bytes > 6442450944
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: etcd_mvcc_db_total_size_in_bytes > 6442450944
         annotations:
-          summary: "etcd database size is approaching the 8GB hard limit"
-          description: "etcd DB size is {{ $value | humanize1024 }}B on {{ $labels.instance }} — approaching the 8GB hard limit. Run compaction."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizehigh"
+          summary: "etcd DB size high: {{ $value | humanize1024 }}B instance={{ $labels.instance }}"
+          description: "etcd database size is {{ $value | humanize1024 }}B (warning threshold: >6GiB) on instance={{ $labels.instance
+            }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}.
+            Near-quota growth increases risk of write rejection; plan compaction and defragmentation."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdDBSizeCritical
         expr: etcd_mvcc_db_total_size_in_bytes > 7516192768
         for: 2m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: etcd_mvcc_db_total_size_in_bytes > 7516192768
         annotations:
-          summary: "etcd database size is critically close to the 8GB hard limit"
-          description: "etcd DB size is {{ $value | humanize1024 }}B — critically close to 8GB limit. Compact and defrag IMMEDIATELY."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddbsizecritical"
+          summary: "etcd DB size CRITICAL: {{ $value | humanize1024 }}B instance={{ $labels.instance }}"
+          description: "etcd database size is {{ $value | humanize1024 }}B (critical threshold: >7GiB), dangerously close to the
+            8GiB backend quota. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Immediate compaction/defrag is required to avoid write outages."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdHighNetworkPeerRTT
         expr: histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[5m])) > 0.15
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[5m])) > 0.15
         annotations:
-          summary: "etcd peer network round-trip time is high"
-          description: "etcd peer network RTT p99 is {{ $value | humanizeDuration }} — check network between control plane nodes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighnetworkpeerrtt"
+          summary: "etcd peer RTT high: p99={{ $value | humanizeDuration }} instance={{ $labels.instance }}"
+          description: "etcd peer round-trip latency p99 is {{ $value | humanizeDuration }} (threshold: >150ms for 5m). Context:
+            cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}, instance={{
+            $labels.instance }}. Elevated peer RTT destabilizes Raft and increases commit/apply latency."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdHighGRPCErrors
         expr: |
-          rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m])
-          / rate(grpc_server_handled_total{job=~"etcd.*"}[5m]) > 0.01
+          sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m]))
+          /
+          sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handled_total{job=~"etcd.*"}[5m])) > 0.01
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: symptom
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m]))
+            /
+            sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handled_total{job=~"etcd.*"}[5m])) > 0.01
         annotations:
-          summary: "etcd gRPC error rate is elevated"
-          description: "etcd gRPC error rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighgrpcerrors"
+          summary: "etcd gRPC errors high: {{ $value | humanizePercentage }} instance={{ $labels.instance }}"
+          description: "etcd gRPC error ratio is {{ $value | humanizePercentage }} (threshold: >1% for 5m) on instance={{
+            $labels.instance }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Persistent RPC failures can propagate to API server errors and control-plane request failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdDefragNeeded
         expr: etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.50
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P3
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.50
         annotations:
-          summary: "etcd database fragmentation is high — defragmentation recommended"
-          description: "etcd DB fragmentation ratio is {{ $value | humanize }} on {{ $labels.instance }} — DB size is 50% larger than actual data. Run defragmentation."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcddefragneeded"
+          summary: "etcd fragmentation high: ratio={{ $value | humanize }} instance={{ $labels.instance }}"
+          description: "etcd fragmentation ratio is {{ $value | humanize }} (threshold: >1.5 for 10m) on instance={{ $labels.instance
+            }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}.
+            Fragmentation inflates DB size and raises quota pressure; schedule defrag during a safe window."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdBackendQuotaExhausted
         expr: etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: etcd
           signal: symptom
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes
         annotations:
-          summary: "etcd backend quota is exhausted — all writes are rejected"
-          description: "etcd backend quota is EXHAUSTED on {{ $labels.instance }} — ALL writes are REJECTED. Compact and defrag immediately."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdbackendquotaexhausted"
+          summary: "etcd quota exhausted: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "etcd backend quota has been exhausted on instance={{ $labels.instance }}. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. New writes are rejected, causing severe Kubernetes
+            API failures. Compact and defragment immediately, then verify etcd health and API recovery."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdHighApplyDurations
         expr: histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) > 0.10
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: control-plane
           runbook: runbooks/kubernetes/etcd.md
+          query: histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) > 0.10
         annotations:
-          summary: "etcd apply duration p99 is high"
-          description: "etcd apply duration p99 is {{ $value | humanizeDuration }} — cluster may be overloaded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdhighapplydurations"
+          summary: "etcd apply p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
+          description: "etcd apply duration p99 is {{ $value | humanizeDuration }} (threshold: >100ms for 5m). Context: instance={{
+            $labels.instance }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Slow apply path increases end-to-end control-plane latency and queue buildup."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"
 
       - alert: EtcdCertificateExpiringSoon
         expr: (etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30
         for: 1h
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: etcd
           signal: cause
           category: security
           runbook: runbooks/kubernetes/etcd.md
+          query: (etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30
         annotations:
-          summary: "etcd client certificate is expiring within 30 days"
-          description: "etcd client certificate on {{ $labels.instance }} expires in {{ $value | humanize }} days."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.md#etcdcertificateexpiringsoon"
+          summary: "etcd cert expiring soon: instance={{ $labels.instance }} in {{ $value | humanize }} days"
+          description: "etcd client certificate expires in {{ $value | humanize }} days (threshold: <30d). Context: instance={{
+            $labels.instance }}, cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Delayed rotation can cause authentication failures and control-plane disruption."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/etcd.yaml"

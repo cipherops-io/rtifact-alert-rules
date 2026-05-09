@@ -1,0 +1,467 @@
+tech_stack: kubernetes-workloads
+version: "1.0"
+description: "Runbook for Kubernetes workload alerts across pods, rollouts, batch jobs, autoscaling, and persistent volumes. Includes diagnosis flows, remediation guidance, and escalation rules for production operations."
+
+match_keywords:
+  - kubernetes workloads
+  - crashloopbackoff
+  - oomkilled
+  - imagepullbackoff
+  - pod pending
+  - rollout stuck
+  - hpa max replicas
+  - pvc full
+  - persistent volume failed
+  - cronjob suspended
+
+categories:
+  - CONTAINER
+  - APPLICATION
+  - INFRASTRUCTURE
+  - STORAGE
+  - AUTOSCALING
+
+common_alerts:
+  - name: "KubePodCrashLooping"
+    patterns: ["KubePodCrashLooping", "CrashLoopBackOff", "container restart loop"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture pod state and events"
+        description: "Collect restart count, last state reason, and warning events before the next restart cycle."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect describe output for BackOff, Failed, OOMKilled, and probe errors."
+      - step: 2
+        title: "Read previous container logs"
+        description: "Use previous logs to inspect the crashed process, not the fresh restarted container."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Fetch logs with previous=true and search for panic, config errors, connection failures, and OOM signatures."
+    remediation:
+      - action: "rollback_deployment"
+        description: "Rollback if loops started immediately after a release."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded."
+
+  - name: "KubePodOOMKilled"
+    patterns: ["KubePodOOMKilled", "OOMKilled", "out of memory"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Validate memory pressure"
+        description: "Correlate OOM reason with container limits and node pressure."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check pod memory usage and compare with requests/limits."
+      - step: 2
+        title: "Confirm termination reason"
+        description: "Validate exit code and reason from last terminated container state."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Look for exit code 137 and reason OOMKilled."
+    remediation:
+      - action: "scale_out_replicas"
+        description: "Temporarily spread load while memory limits are corrected."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "SRE for limit tuning; app team if leak or runaway workload behavior is suspected."
+
+  - name: "KubeContainerWaiting"
+    patterns: ["KubeContainerWaiting", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify waiting reason"
+        description: "Reason label determines path: pull issues, config errors, or runtime startup failures."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect waiting reason and related events."
+    remediation: []
+    escalation: "Platform team if wait reason is image pull or secret/config reference failures."
+
+  - name: "KubePodNotReady"
+    patterns: ["KubePodNotReady", "readiness probe failed", "pod not ready"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Check readiness failures"
+        description: "Validate probe endpoint response, startup timing, and dependency readiness."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect readiness events and probe configuration from pod spec."
+      - step: 2
+        title: "Inspect app logs"
+        description: "Find endpoint failures, dependency errors, or startup timeouts."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review logs around probe failures and restarts."
+    remediation:
+      - action: "restart_deployment"
+        description: "Apply rolling restart only for transient stuck states."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "App team if readiness endpoint is failing due to application behavior."
+
+  - name: "KubeDeploymentReplicasMismatch"
+    patterns: ["KubeDeploymentReplicasMismatch", "deployment replicas mismatch"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Compare desired vs available replicas"
+        description: "Determine whether pods are pending, crashing, or evicted."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect deployment conditions and associated pod status."
+    remediation: []
+    escalation: "SRE if sustained mismatch impacts availability for more than one release window."
+
+  - name: "KubeDeploymentRolloutStuck"
+    patterns: ["KubeDeploymentRolloutStuck", "ProgressDeadlineExceeded", "rollout stuck"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify failing revision"
+        description: "Inspect rollout history and identify new ReplicaSet pods failing readiness/scheduling."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Review deployment conditions and new pod lifecycle events."
+      - step: 2
+        title: "Validate application startup"
+        description: "Check failing pods for config, migration, and dependency startup errors."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Read logs from pods in the new revision."
+    remediation:
+      - action: "rollback_deployment"
+        description: "Rollback to last known good revision to restore service quickly."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "Immediate app-team + SRE escalation for production rollout failures."
+
+  - name: "KubeStatefulSetReplicasMismatch"
+    patterns: ["KubeStatefulSetReplicasMismatch", "statefulset not ready"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Check ordinal readiness"
+        description: "StatefulSets progress in order; inspect the first non-ready ordinal pod."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Sort pods by name and inspect lowest failing ordinal."
+    remediation: []
+    escalation: "App team + storage owners if stateful workload health is blocked by storage or bootstrapping."
+
+  - name: "KubeDaemonSetNotScheduled"
+    patterns: ["KubeDaemonSetNotScheduled", "daemonset not scheduled", "taint mismatch"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Validate scheduling constraints"
+        description: "Review taints/tolerations, node selectors, and resource requests."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect DaemonSet desired/current/ready and node scheduling events."
+    remediation: []
+    escalation: "Platform team if daemon workload is required for node observability or security controls."
+
+  - name: "KubePodImagePullBackOff"
+    patterns: ["KubePodImagePullBackOff", "ImagePullBackOff", "ErrImagePull"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Determine pull failure mode"
+        description: "Differentiate auth failure, missing tag, registry outage, or DNS/network issue."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Review pull event messages from describe output."
+    remediation:
+      - action: "rollback_deployment"
+        description: "Rollback when image/tag regression is confirmed."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "Platform team if pull secrets, registry credentials, or connectivity are broken."
+
+  - name: "KubeJobFailed"
+    patterns: ["KubeJobFailed", "job failed", "BackoffLimitExceeded"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Inspect failed job pods"
+        description: "Review failed pod logs and job status counters."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Collect logs from failed job pods using job label selectors."
+    remediation: []
+    escalation: "App team for batch logic failures; SRE for repeated infrastructure-induced failures."
+
+  - name: "KubeCronJobSuspended"
+    patterns: ["KubeCronJobSuspended", "cronjob suspended", "spec.suspend"]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm intended suspension"
+        description: "Verify whether suspension is planned maintenance or accidental state drift."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect cronjob spec and recent schedule history."
+    remediation: []
+    escalation: "Service owner if missed schedules impact downstream SLAs."
+
+  - name: "KubePodEvicted"
+    patterns: ["KubePodEvicted", "evicted", "node pressure"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify eviction cause"
+        description: "Map pod eviction to node pressure: memory, disk, or PID."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect pod events and node conditions."
+      - step: 2
+        title: "Assess node health"
+        description: "Confirm cluster-wide vs node-local resource pressure."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check node utilization and pressure conditions."
+    remediation: []
+    escalation: "SRE and infrastructure teams for sustained node pressure or repeated mass evictions."
+
+  - name: "KubePodPendingTooLong"
+    patterns: ["KubePodPendingTooLong", "pod pending", "FailedScheduling", "Unschedulable"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Inspect scheduler events"
+        description: "Validate if pending is due to capacity, affinity, taints, or PVC binding."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Review scheduling events and placement constraints."
+    remediation: []
+    escalation: "SRE if unschedulable condition persists and affects service availability."
+
+  - name: "KubePersistentVolumeError"
+    patterns: ["KubePersistentVolumeError", "persistent volume failed", "volume lost", "phase pending"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Check PV lifecycle state"
+        description: "Inspect PV phase and storage backend errors from CSI/controller logs."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect PV state, bound PVC, and storage event trail."
+    remediation: []
+    escalation: "Storage/platform team immediately when PV enters Failed or Lost state."
+
+  - name: "KubePVCFillingUp"
+    patterns: ["KubePVCFillingUp", "pvc filling up", "volume low free space"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm free space trend"
+        description: "Validate sustained growth and identify consuming workloads."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect PVC consumption and associated pod disk usage."
+    remediation: []
+    escalation: "Service owner and storage team if growth trend indicates near-term exhaustion."
+
+  - name: "KubePVCCriticalFull"
+    patterns: ["KubePVCCriticalFull", "pvc critical full", "disk nearly full"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Stabilize critical storage usage"
+        description: "Identify immediate cleanup or emergency expansion options."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Confirm available bytes and current write pressure."
+    remediation: []
+    escalation: "Immediate page to storage/platform and owning service team."
+
+  - name: "KubeHpaMaxedOut"
+    patterns: ["KubeHpaMaxedOut", "hpa max replicas", "ScalingLimited"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Validate scaling saturation"
+        description: "Confirm HPA desired replicas are pinned at max and identify driving metric."
+        tool_calls:
+          - tool_id: "tool.get_hpa_state"
+            description: "Collect min/max/current/desired values and metric targets."
+      - step: 2
+        title: "Correlate with pod pressure"
+        description: "Check whether pods remain CPU/memory constrained even at max replicas."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Compare pod utilization against requests and limits."
+    remediation: []
+    escalation: "SRE and service owner for HPA policy/limit tuning and capacity planning."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture initial snapshot"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Collect pod status, events, deployment conditions, and related objects."
+    - step: 2
+      title: "Inspect logs and metrics"
+      tool_calls:
+        - tool_id: "tool.read_logs"
+          description: "Read current and previous logs for failing containers."
+        - tool_id: "tool.fetch_metrics"
+          description: "Review pod/node resource utilization and saturation indicators."
+    - step: 3
+      title: "Generate RCA narrative"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Produce root-cause summary with confidence and blast-radius estimate."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "kube_pod_container_status_waiting_reason"
+    threshold: "reason=CrashLoopBackOff, ErrImagePull, ImagePullBackOff"
+    severity: high
+  - name: "kube_pod_container_status_restarts_total"
+    threshold: "increase > 5 in 15m"
+    severity: critical
+  - name: "kube_pod_status_ready"
+    threshold: "condition=true equals 0 for 15m"
+    severity: high
+  - name: "kube_deployment_status_replicas_available"
+    threshold: "below desired replicas for 15m"
+    severity: high
+  - name: "kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes"
+    threshold: "< 15% warning, < 5% critical"
+    severity: high
+  - name: "kube_horizontalpodautoscaler_status_desired_replicas"
+    threshold: "equal to max replicas for 15m"
+    severity: medium
+
+escalation:
+  P1: "Immediate page: SRE + owning service team. Production impact likely."
+  P2: "Notify platform and service owner in on-call channel; investigate within 15 minutes."
+  P3: "Open scheduled follow-up task; resolve during business hours."

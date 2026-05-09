@@ -1,0 +1,546 @@
+tech_stack: etcd
+version: "1.0"
+description: "Production runbook for etcd control-plane health: quorum, leader stability, latency, storage pressure, fragmentation, and certificate expiry."
+
+match_keywords:
+  - etcd
+  - etcd-server
+  - no leader
+  - lost quorum
+  - nospace
+  - wal fsync
+  - backend quota
+  - defrag
+  - grpc errors
+  - leader changes
+
+categories:
+  - INFRASTRUCTURE
+  - MONITORING
+
+common_alerts:
+  - name: "EtcdDown"
+    patterns:
+      - "EtcdDown"
+      - "up{job=~\"etcd.*\"} == 0"
+      - "member unreachable"
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Identify impacted member(s), running replica count, and whether quorum risk exists."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect etcd pod states, restart counts, and warning events across all members."
+      - step: 2
+        title: "Validate endpoint and member health"
+        description: "Confirm cluster/member health and current leader."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Check for heartbeat timeouts, transport errors, disk I/O stalls, and member crash loops."
+      - step: 3
+        title: "Check resource and node pressure"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check CPU, memory, disk latency, and node network state for affected members."
+    remediation:
+      - action: "restart_unhealthy_member"
+        description: "Restart only the failed member while preserving quorum; never perform concurrent restarts."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#oncall-infra (IMMEDIATE); potential control-plane incident"
+
+  - name: "EtcdNoLeader"
+    patterns:
+      - "EtcdNoLeader"
+      - "etcd_server_has_leader == 0"
+      - "cluster has no leader"
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        description: "Treat as critical control-plane outage until leader is restored."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect full state for all etcd members to determine quorum and election loops."
+      - step: 2
+        title: "Review raft election failures"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for no leader, lost quorum, proposal dropped, election timeout, and peer dial errors."
+      - step: 3
+        title: "Correlate disk/network bottlenecks"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate WAL fsync, backend commit, and peer RTT metrics for election instability."
+    remediation:
+      - action: "recover_quorum"
+        description: "Recover missing members safely and restore quorum before any topology modifications."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#oncall-infra + platform lead (CRITICAL)"
+
+  - name: "EtcdLeaderChangesHigh"
+    patterns:
+      - "EtcdLeaderChangesHigh"
+      - "increase(etcd_server_leader_changes_seen_total[15m]) > 3"
+      - "frequent leader election"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture election cadence and member restart correlation in the same time window."
+      - step: 2
+        title: "Investigate election root cause"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Search for heartbeat misses, raft transport failures, and election timeout events."
+      - step: 3
+        title: "Validate performance signals"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check fsync/commit p99 and peer RTT; leader churn often follows disk/network instability."
+    remediation:
+      - action: "stabilize_members"
+        description: "Restart unstable member only after isolating underlying disk/network cause."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdHighCommitDurations"
+    patterns:
+      - "EtcdHighCommitDurations"
+      - "backend_commit_duration"
+      - "apply request took too long"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect commit latency, DB size, and node resource pressure."
+      - step: 2
+        title: "Inspect latency warnings"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for slow apply, slow read-only range, and storage latency warnings."
+      - step: 3
+        title: "Check disk and fsync metrics"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate backend commit p99, WAL fsync p99, and host I/O saturation."
+    remediation:
+      - action: "reduce_io_contention"
+        description: "Mitigate disk contention and defragment if DB bloat contributes to latency."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdHighFsyncDurations"
+    patterns:
+      - "EtcdHighFsyncDurations"
+      - "wal_fsync_duration"
+      - "slow fdatasync"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture fsync spikes and co-firing leader/network alerts."
+      - step: 2
+        title: "Review storage warnings"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Search for slow fdatasync and storage backend write latency warnings."
+      - step: 3
+        title: "Validate node disk performance"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check disk queue depth, fsync p99, and noisy-neighbor I/O contention."
+    remediation:
+      - action: "recover_slow_member"
+        description: "Restart degraded member after confirming storage health and quorum safety."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#oncall-infra"
+
+  - name: "EtcdDBSizeHigh"
+    patterns:
+      - "EtcdDBSizeHigh"
+      - "db_total_size_bytes > 6GiB"
+      - "database approaching quota"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect DB size trends, compaction status, and space alarms."
+      - step: 2
+        title: "Review compaction/space logs"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for compaction failures, mvcc growth, and quota warnings."
+      - step: 3
+        title: "Check size and fragmentation metrics"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate total size, in-use size, and growth velocity."
+    remediation:
+      - action: "compact_and_defrag"
+        description: "Perform controlled etcd compaction and rolling defrag to reclaim space."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdDBSizeCritical"
+    patterns:
+      - "EtcdDBSizeCritical"
+      - "db_total_size_bytes > 7GiB"
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Confirm proximity to backend quota and write-failure risk."
+      - step: 2
+        title: "Review quota risk indicators"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Look for quota exceeded/NOSPACE warnings."
+    remediation:
+      - action: "urgent_compaction_defrag"
+        description: "Run compaction/defrag urgently and verify member health after each operation."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#oncall-infra (HIGH urgency)"
+
+  - name: "EtcdHighNetworkPeerRTT"
+    patterns:
+      - "EtcdHighNetworkPeerRTT"
+      - "peer_round_trip_time"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture peer RTT outliers and impacted members."
+      - step: 2
+        title: "Review peer transport failures"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Inspect connection resets, timeouts, and raft transport warnings."
+      - step: 3
+        title: "Check network saturation"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate cross-node latency, packet loss, and throughput ceilings."
+    remediation:
+      - action: "stabilize_network_path"
+        description: "Address network instability before disruptive etcd operations."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdHighGRPCErrors"
+    patterns:
+      - "EtcdHighGRPCErrors"
+      - "grpc error rate"
+      - "DeadlineExceeded"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture gRPC error codes and correlation with latency/leader alerts."
+      - step: 2
+        title: "Inspect error code patterns"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Classify errors by code and operation path."
+      - step: 3
+        title: "Validate request latency and member health"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Check whether errors follow latency spikes, quota pressure, or member restarts."
+    remediation:
+      - action: "recover_failing_member"
+        description: "Recover member only after isolating underlying quota/latency/network causes."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdDefragNeeded"
+    patterns:
+      - "EtcdDefragNeeded"
+      - "fragmentation > 1.5"
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Measure fragmentation and DB growth trend before maintenance."
+      - step: 2
+        title: "Assess maintenance window"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Ensure healthy quorum and stable latency before running defrag."
+    remediation:
+      - action: "run_rolling_defrag"
+        description: "Defragment members one-by-one during low-risk window."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdBackendQuotaExhausted"
+    patterns:
+      - "EtcdBackendQuotaExhausted"
+      - "NOSPACE"
+      - "quota exhausted"
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Confirm write rejection and identify highest-contributing data growth."
+      - step: 2
+        title: "Review NOSPACE alarms"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Inspect alarm lifecycle and failed write operations."
+      - step: 3
+        title: "Check DB and in-use size"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate fragmentation and space reclamation potential."
+    remediation:
+      - action: "emergency_compaction_defrag_disarm"
+        description: "Run compact+defrag safely and disarm alarm after verifying reclaimed space."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#oncall-infra (CRITICAL control-plane write outage)"
+
+  - name: "EtcdHighApplyDurations"
+    patterns:
+      - "EtcdHighApplyDurations"
+      - "apply_duration p99"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture apply latency vs commit/fsync/peer latency context."
+      - step: 2
+        title: "Inspect overload signals"
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Validate if write load or storage latency is driving slow apply."
+    remediation:
+      - action: "reduce_write_pressure"
+        description: "Reduce high-churn writes and stabilize member performance."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts"
+
+  - name: "EtcdCertificateExpiringSoon"
+    patterns:
+      - "EtcdCertificateExpiringSoon"
+      - "cert expiry < 30d"
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Capture diagnostics snapshot"
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Identify expiring certs and component dependencies."
+      - step: 2
+        title: "Verify cert lifecycle and renewal path"
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review TLS/x509 warnings and cert rotation automation status."
+    remediation:
+      - action: "rotate_etcd_certs"
+        description: "Rotate etcd certs before expiry and verify cluster/member health after rollout."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "#infra-alerts + #security-ops"
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture diagnostics snapshot"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Collect etcd pod states, events, and recent logs."
+    - step: 2
+      title: "Review logs"
+      tool_calls:
+        - tool_id: "tool.read_logs"
+          description: "Focus on leader changes, quorum loss, storage latency, NOSPACE, and RPC failures."
+    - step: 3
+      title: "Check metrics"
+      tool_calls:
+        - tool_id: "tool.fetch_metrics"
+          description: "Validate fsync/commit/apply latency, DB size, peer RTT, and error rates."
+    - step: 4
+      title: "Generate RCA"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Correlate control-plane symptom chain and identify root dependency bottleneck."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "etcd_server_has_leader"
+    threshold: "0 for > 1m"
+    severity: critical
+  - name: "etcd_server_leader_changes_seen_total"
+    threshold: "increase > 3 in 15m"
+    severity: high
+  - name: "etcd_disk_wal_fsync_duration_seconds"
+    threshold: "p99 > 250ms"
+    severity: high
+  - name: "etcd_disk_backend_commit_duration_seconds"
+    threshold: "p99 > 250ms"
+    severity: high
+  - name: "etcd_mvcc_db_total_size_in_bytes"
+    threshold: "> 6GiB warning, > 7GiB critical"
+    severity: high
+  - name: "grpc_server_handled_total"
+    threshold: "error ratio > 1% in 5m"
+    severity: high
+
+escalation:
+  P0: "Page #oncall-infra immediately. Treat as potential Kubernetes control-plane outage."
+  P1: "Escalate to infrastructure lead within 10 minutes."
+  P2: "Notify #infra-alerts and assign owner for remediation."
+  P3: "Create maintenance/capacity ticket for planned correction."

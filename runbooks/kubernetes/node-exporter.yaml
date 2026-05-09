@@ -1,0 +1,343 @@
+tech_stack: kubernetes-node-exporter
+version: "1.0"
+description: "Runbook for node-exporter host-level alerts, including exporter availability, filesystem capacity/inodes, node CPU and memory pressure, load saturation, NIC errors, clock skew, and file descriptor exhaustion."
+
+match_keywords:
+  - node exporter down
+  - filesystem almost out of space
+  - filesystem out of space
+  - inode exhaustion
+  - node memory high
+  - node cpu high
+  - node load high
+  - network receive errors
+  - network transmit errors
+  - node clock skew
+  - file descriptor usage high
+
+categories:
+  - NODE
+  - STORAGE
+  - NETWORK
+  - PERFORMANCE
+  - MONITORING
+
+common_alerts:
+  - name: "NodeExporterDown"
+    patterns: ["NodeExporterDown", "node exporter unreachable", "host metrics missing"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm exporter pod/service state"
+        description: "Check if node-exporter is down on one node or across multiple nodes."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect daemonset pod status, events, and target scrape errors."
+    remediation: []
+    escalation: "Platform monitoring owner if scrape coverage gap persists over one alert window."
+
+  - name: "NodeFilesystemAlmostOutOfSpace"
+    patterns: ["NodeFilesystemAlmostOutOfSpace", "disk low warning", "filesystem below 10 percent"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify mountpoint pressure source"
+        description: "Locate top directories and workloads contributing to disk growth."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect df/du breakdown for impacted mountpoint and runtime log/image paths."
+    remediation: []
+    escalation: "SRE if growth trend predicts critical threshold within 24 hours."
+
+  - name: "NodeFilesystemOutOfSpace"
+    patterns: ["NodeFilesystemOutOfSpace", "disk critically low", "filesystem below 3 percent"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Stabilize disk capacity urgently"
+        description: "Confirm mountpoint nearing exhaustion and isolate immediate cleanup options."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect live disk usage and write pressure for affected mountpoint."
+    remediation: []
+    escalation: "Immediate page to SRE/infra; node may fail scheduling and runtime operations."
+
+  - name: "NodeFilesystemAlmostOutOfFiles"
+    patterns: ["NodeFilesystemAlmostOutOfFiles", "inode low", "filesystem inode exhaustion"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Find inode-heavy paths"
+        description: "Identify directories with high file count and small file churn."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect inode usage by filesystem and top file-count directories."
+    remediation: []
+    escalation: "Escalate to owning service teams if app file churn drives inode depletion."
+
+  - name: "NodeMemoryHighUsage"
+    patterns: ["NodeMemoryHighUsage", "node memory above 90", "host memory pressure"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify memory consumers"
+        description: "Correlate node memory saturation with top pods/processes."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Capture node memory metrics and top pod/process memory usage."
+    remediation: []
+    escalation: "SRE when sustained memory pressure risks OOM kills or pod evictions."
+
+  - name: "NodeCPUHighUsage"
+    patterns: ["NodeCPUHighUsage", "node cpu above 90", "host cpu saturation"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Locate CPU hot workloads"
+        description: "Determine if saturation is bursty or sustained and identify top CPU consumers."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Collect CPU utilization by node and top pods/processes over alert window."
+    remediation: []
+    escalation: "SRE if sustained CPU saturation impacts cluster workloads or control-plane components."
+
+  - name: "NodeLoad15High"
+    patterns: ["NodeLoad15High", "load average high", "node load above core ratio"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Compare load vs CPU and IO"
+        description: "High load can be CPU saturation, IO wait, or blocked task accumulation."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect load average, CPU state breakdown, and IO wait indicators."
+    remediation: []
+    escalation: "Platform team if high load is persistent and correlated with latency spikes."
+
+  - name: "NodeNetworkReceiveErrs"
+    patterns: ["NodeNetworkReceiveErrs", "nic rx errors", "network receive errors high"]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Validate NIC health and driver signals"
+        description: "Correlate interface errors with kernel logs and host networking health."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Collect NIC error counters, driver stats, and dmesg network warnings."
+    remediation: []
+    escalation: "Infra/network team if errors persist and affect packet delivery."
+
+  - name: "NodeNetworkTransmitErrs"
+    patterns: ["NodeNetworkTransmitErrs", "nic tx errors", "network transmit errors high"]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Inspect transmit path errors"
+        description: "Check for interface drops, driver faults, and upstream switch issues."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Collect TX error counters and link state diagnostics."
+    remediation: []
+    escalation: "Infra/network team when sustained TX errors are observed."
+
+  - name: "NodeClockSkew"
+    patterns: ["NodeClockSkew", "time drift", "ntp skew"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Verify time sync source and drift"
+        description: "Check chrony/ntp sync state and offset trend."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect NTP sync status, peer state, and drift offset metrics."
+    remediation: []
+    escalation: "SRE + infra if drift threatens TLS validation, leader election, or tracing consistency."
+
+  - name: "NodeFileDescriptorUsage"
+    patterns: ["NodeFileDescriptorUsage", "fd usage high", "open files high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Find top FD consumers"
+        description: "Identify processes with abnormal open FD growth."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect per-process file descriptor counts and growth trend."
+    remediation: []
+    escalation: "SRE + owning team if usage trends toward hard limit."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture node health snapshot"
+      tool_calls:
+        - tool_id: "tool.fetch_metrics"
+          description: "Collect CPU, memory, filesystem, network, and load indicators."
+    - step: 2
+      title: "Inspect host diagnostics"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Gather storage and inode utilization details."
+        - tool_id: "tool.get_node_pressure"
+          description: "Gather NIC and host network diagnostics."
+    - step: 3
+      title: "Generate RCA summary"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Produce impact-focused root-cause summary and mitigation guidance."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "up{job=~'node-exporter|node_exporter'}"
+    threshold: "== 0 for 10m"
+    severity: warning
+  - name: "node_filesystem_avail_bytes / node_filesystem_size_bytes"
+    threshold: "< 10% warning, < 3% critical"
+    severity: high
+  - name: "node_filesystem_files_free / node_filesystem_files"
+    threshold: "< 10%"
+    severity: warning
+  - name: "1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)"
+    threshold: "> 90% for 10m"
+    severity: warning
+  - name: "1 - avg(rate(node_cpu_seconds_total{mode='idle'}[5m]))"
+    threshold: "> 90% for 15m"
+    severity: warning
+  - name: "node_load15 / core_count"
+    threshold: "> 2 for 15m"
+    severity: warning
+  - name: "rate(node_network_receive_errs_total[2m]), rate(node_network_transmit_errs_total[2m])"
+    threshold: "> 10 errors/s for 1h"
+    severity: warning
+  - name: "node_timex_offset_seconds"
+    threshold: "|offset| > 50ms with worsening drift"
+    severity: warning
+  - name: "node_filefd_allocated / node_filefd_maximum"
+    threshold: "> 80% for 10m"
+    severity: warning
+
+escalation:
+  P1: "Immediate page to SRE/infra for critical node capacity risk."
+  P2: "Notify platform on-call and triage within 15 minutes."
+  P3: "Track and remediate during maintenance window unless impact increases."

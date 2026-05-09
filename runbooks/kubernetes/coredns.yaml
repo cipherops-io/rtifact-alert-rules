@@ -1,0 +1,308 @@
+tech_stack: kubernetes-coredns
+version: "1.0"
+description: "Runbook for CoreDNS alert handling in Kubernetes clusters, including DNS availability, panics, latency degradation, forwarder failures, and cache inefficiency."
+
+match_keywords:
+  - coredns down
+  - dns resolution failure
+  - coredns panic
+  - dns latency high
+  - servfail
+  - refused dns response
+  - coredns forward errors
+  - coredns cache hit ratio low
+
+categories:
+  - NETWORK
+  - CONTROL_PLANE
+  - PERFORMANCE
+  - INFRASTRUCTURE
+
+common_alerts:
+  - name: "CoreDNSDown"
+    patterns: ["CoreDNSDown", "dns unavailable", "cluster dns broken"]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Validate CoreDNS pod availability"
+        description: "Confirm whether all CoreDNS pods are down, unschedulable, or failing readiness."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect pod status, events, and recent logs for CoreDNS in kube-system."
+      - step: 2
+        title: "Run in-cluster DNS probe"
+        description: "Verify DNS failure from workload perspective using test pod queries."
+        tool_calls:
+          - tool_id: "tool.get_service_health"
+            description: "Run nslookup/dig checks for kubernetes.default and external domains."
+    remediation:
+      - action: "restart_coredns"
+        description: "Restart CoreDNS deployment only after checking node and cluster network health."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "Immediate P0 page to SRE/platform networking team."
+
+  - name: "CoreDNSPanicCount"
+    patterns: ["CoreDNSPanicCount", "coredns panic", "panic in coredns logs"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify panic signature"
+        description: "Capture panic stack traces and correlate with recent config/version changes."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Extract panic stack traces and offending plugin path from CoreDNS logs."
+      - step: 2
+        title: "Check rollout history"
+        description: "Determine if panic began after CoreDNS image or Corefile changes."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect deployment revisions and rollout timeline."
+    remediation:
+      - action: "rollback_coredns"
+        description: "Rollback CoreDNS deployment to last known stable revision."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "Platform networking owner if panic persists after rollback."
+
+  - name: "CoreDNSLatencyHigh"
+    patterns: ["CoreDNSLatencyHigh", "dns p99 latency", "slow dns resolution"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure latency distribution"
+        description: "Identify impacted zones/servers and whether latency is local or upstream-induced."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect request duration metrics grouped by zone, server, and instance."
+      - step: 2
+        title: "Check CoreDNS resource pressure"
+        description: "CPU throttling or memory pressure often causes high DNS response time."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture pod resource usage and throttling indicators."
+    remediation: []
+    escalation: "SRE triage if p99 remains elevated beyond 15m and impacts workloads."
+
+  - name: "CoreDNSErrorsHigh"
+    patterns: ["CoreDNSErrorsHigh", "SERVFAIL", "REFUSED", "dns error response rate"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Break down error response classes"
+        description: "Determine if failures map to config issues, missing records, or upstream resolver problems."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect rcode distribution by zone and query type."
+      - step: 2
+        title: "Validate Corefile and plugin chain"
+        description: "Misordered or invalid Corefile directives can cause broad SERVFAIL/REFUSED errors."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Fetch current Corefile and validate plugin config against known-good baseline."
+    remediation: []
+    escalation: "Networking/platform owner if error ratio >3% persists over multiple zones."
+
+  - name: "CoreDNSForwardErrorsHigh"
+    patterns: ["CoreDNSForwardErrorsHigh", "forward plugin errors", "upstream dns failing"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify failing upstream resolvers"
+        description: "Pinpoint upstream target (`to`) returning failures and quantify impact."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Group forward response errors by upstream resolver target."
+      - step: 2
+        title: "Validate node-level resolver path"
+        description: "Check node DNS and network route health for upstream resolver connectivity."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Inspect node resolv.conf and connectivity checks to upstream resolvers."
+    remediation: []
+    escalation: "Escalate to infra/network team for upstream resolver outages or route failures."
+
+  - name: "CoreDNSCacheHitsLow"
+    patterns: ["CoreDNSCacheHitsLow", "low cache hit ratio", "high cache misses coredns"]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm sustained low cache efficiency"
+        description: "Differentiate short-term traffic shifts from persistent cache inefficiency."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Compare cache hit/miss trend and query cardinality per instance."
+      - step: 2
+        title: "Review TTL and query patterns"
+        description: "Low TTLs and high-cardinality query streams can reduce cache effectiveness."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Review cache plugin config and identify workloads issuing unbounded unique lookups."
+    remediation: []
+    escalation: "Create performance tuning task for platform and affected service teams."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture CoreDNS health snapshot"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Collect pod state, events, logs, and resource health."
+    - step: 2
+      title: "Run DNS functional probes"
+      tool_calls:
+        - tool_id: "tool.get_service_health"
+          description: "Test internal and external DNS resolution from cluster workload path."
+    - step: 3
+      title: "Generate RCA"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Produce root-cause summary with impact and confidence."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "up{job=~'.*coredns.*'}"
+    threshold: "absent for 5m"
+    severity: critical
+  - name: "rate(coredns_panics_total[5m])"
+    threshold: "> 0 for 5m"
+    severity: critical
+  - name: "histogram_quantile(0.99, coredns_dns_request_duration_seconds_bucket)"
+    threshold: "> 0.5s for 5m"
+    severity: warning
+  - name: "SERVFAIL|REFUSED response ratio"
+    threshold: "> 3% for 5m"
+    severity: warning
+  - name: "forwarder error ratio"
+    threshold: "> 3% for 5m"
+    severity: warning
+  - name: "cache hit ratio"
+    threshold: "< 50% for 30m"
+    severity: warning
+
+escalation:
+  P0: "Immediate incident bridge. Cluster service discovery is down."
+  P1: "Page platform networking owner; production DNS reliability at risk."
+  P2: "Notify on-call SRE/platform channel and triage within 15 minutes."
+  P3: "Schedule optimization follow-up for cache and DNS query hygiene."

@@ -3,103 +3,146 @@ groups:
     interval: 30s
     rules:
       - alert: CoreDNSDown
-        expr: absent(up{job=~".*coredns.*"} == 1)
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*coredns.*"}) == 0
+          or
+          absent(up{job=~".*coredns.*"})
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: coredns
           signal: symptom
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*coredns.*"}) == 0
+            or
+            absent(up{job=~".*coredns.*"})
         annotations:
-          summary: "CoreDNS is unreachable"
-          description: "No CoreDNS instance has been reachable for 5 minutes — cluster DNS resolution is broken."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsdown"
+          summary: "CoreDNS down: cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: "No CoreDNS target is healthy for 5m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. DNS resolution for in-cluster service names is likely failing, which can
+            cascade into app outages, failed readiness checks, and control-plane instability."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"
 
       - alert: CoreDNSPanicCount
-        expr: rate(coredns_panics_total[5m]) > 0
+        expr: sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_panics_total[5m])) > 0
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: coredns
           signal: symptom
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_panics_total[5m])) > 0
         annotations:
-          summary: "CoreDNS is panicking"
-          description: "CoreDNS instance {{ $labels.instance }} is panicking at {{ $value | humanize }} panics/s."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednspaniccount"
+          summary: "CoreDNS panic detected: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "CoreDNS instance {{ $labels.instance }} is panicking at {{ $value | humanize }} panics/s. Context:
+            cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Repeated panics
+            cause DNS query failures and restarts, leading to intermittent service discovery outages."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"
 
       - alert: CoreDNSLatencyHigh
         expr: |
           histogram_quantile(0.99,
-            sum by (le, server, zone) (
+            sum by (le, rtf_cluster_id, rtf_env, rtf_service, server, zone) (
               rate(coredns_dns_request_duration_seconds_bucket[5m])
             )
           ) > 0.5
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: coredns
           signal: symptom
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, rtf_cluster_id, rtf_env, rtf_service, server, zone) (
+                rate(coredns_dns_request_duration_seconds_bucket[5m])
+              )
+            ) > 0.5
         annotations:
-          summary: "CoreDNS p99 request latency is above 500ms"
-          description: "CoreDNS p99 latency for zone {{ $labels.zone }} is {{ $value | humanizeDuration }} — DNS lookups are slow cluster-wide."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednslatencyhigh"
+          summary: "CoreDNS p99 latency high: zone={{ $labels.zone }} server={{ $labels.server }} cluster={{ $labels.rtf_cluster_id }}"
+          description: "CoreDNS p99 request latency is {{ $value | humanizeDuration }} for zone={{ $labels.zone }} and server={{
+            $labels.server }} (threshold: >500ms for 5m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Slow DNS increases end-to-end request latency and can trigger upstream
+            timeouts in chatty microservices."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"
 
       - alert: CoreDNSErrorsHigh
         expr: |
-          sum by (server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL|REFUSED"}[5m]))
-          / sum by (server, zone) (rate(coredns_dns_responses_total[5m])) > 0.03
+          sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL|REFUSED"}[5m]))
+          / sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total[5m])) > 0.03
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: coredns
           signal: symptom
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL|REFUSED"}[5m]))
+            / sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total[5m])) > 0.03
         annotations:
-          summary: "CoreDNS error response rate is above 3%"
-          description: "CoreDNS is returning SERVFAIL/REFUSED at {{ $value | humanizePercentage }} for zone {{ $labels.zone }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednserrorshigh"
+          summary: "CoreDNS error rate high: {{ $value | humanizePercentage }} zone={{ $labels.zone }} cluster={{ $labels.rtf_cluster_id }}"
+          description: "CoreDNS SERVFAIL/REFUSED ratio is {{ $value | humanizePercentage }} for zone={{ $labels.zone }} server={{
+            $labels.server }} (threshold: >3% for 5m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Name resolution failures at this rate will cause partial application outages."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"
 
       - alert: CoreDNSForwardErrorsHigh
         expr: |
-          sum by (instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL|REFUSED|FORMERR"}[5m]))
-          / sum by (instance, to) (rate(coredns_forward_responses_total[5m])) > 0.03
+          sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL|REFUSED|FORMERR"}[5m]))
+          / sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total[5m])) > 0.03
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: coredns
           signal: symptom
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL|REFUSED|FORMERR"}[5m]))
+            / sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total[5m])) > 0.03
         annotations:
-          summary: "CoreDNS forwarder is failing requests"
-          description: "CoreDNS forward to upstream {{ $labels.to }} is failing at {{ $value | humanizePercentage }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednsforwarderrorshigh"
+          summary: "CoreDNS forward errors: {{ $value | humanizePercentage }} upstream={{ $labels.to }} cluster={{ $labels.rtf_cluster_id }}"
+          description: "CoreDNS forwarder on instance={{ $labels.instance }} is failing to upstream={{ $labels.to }} at {{ $value
+            | humanizePercentage }} (threshold: >3% for 5m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Upstream resolver or network-path degradation is likely."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"
 
       - alert: CoreDNSCacheHitsLow
         expr: |
-          sum by (instance) (rate(coredns_cache_hits_total[5m]))
-          / (sum by (instance) (rate(coredns_cache_hits_total[5m]))
-            + sum by (instance) (rate(coredns_cache_misses_total[5m]))) < 0.50
+          sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
+          / (sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
+            + sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_misses_total[5m]))) < 0.50
         for: 30m
         labels:
+          sourceType: metric
           severity: warning
           priority: P3
           tech_stack: coredns
           signal: cause
           category: network
           runbook: runbooks/kubernetes/coredns.md
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
+            / (sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
+              + sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_misses_total[5m]))) < 0.50
         annotations:
-          summary: "CoreDNS cache hit ratio is low"
-          description: "CoreDNS cache hit ratio on {{ $labels.instance }} is {{ $value | humanizePercentage }} — high upstream pressure."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.md#corednscachehitslow"
+          summary: "CoreDNS cache hit ratio low: {{ $value | humanizePercentage }} instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }}"
+          description: "CoreDNS cache hit ratio is {{ $value | humanizePercentage }} on instance={{ $labels.instance }} (threshold:
+            <50% for 30m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Low cache efficiency increases upstream DNS load and can amplify latency or upstream failure impact."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/coredns.yaml"

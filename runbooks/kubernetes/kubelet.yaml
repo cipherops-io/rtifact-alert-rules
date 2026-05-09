@@ -1,0 +1,355 @@
+tech_stack: kubernetes-kubelet
+version: "1.0"
+description: "Runbook for kubelet and node-condition alerts, covering kubelet reachability, node readiness, pressure conditions, pod lifecycle latency, pod density saturation, and kubelet client certificate expiry."
+
+match_keywords:
+  - kubelet down
+  - node not ready
+  - memory pressure
+  - disk pressure
+  - pid pressure
+  - network unavailable
+  - pleg latency high
+  - pod startup latency
+  - too many pods on node
+  - kubelet cert expiring
+
+categories:
+  - NODE
+  - CONTROL_PLANE
+  - PERFORMANCE
+  - SECURITY
+  - NETWORK
+
+common_alerts:
+  - name: "KubeletDown"
+    patterns: ["KubeletDown", "kubelet unreachable", "all kubelet targets down"]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Validate scrape and endpoint path"
+        description: "Confirm if outage is kubelet failure or monitoring path break (ServiceMonitor/endpoint mismatch)."
+        tool_calls:
+          - tool_id: "tool.get_service_health"
+            description: "Probe kubelet /healthz and metrics endpoints for representative nodes."
+      - step: 2
+        title: "Inspect node agent health"
+        description: "Check kubelet service state and container runtime status on affected nodes."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture kubelet runtime status, kubelet logs, and container runtime availability."
+    remediation: []
+    escalation: "Immediate page to SRE/platform. Treat as cluster-level node observability outage."
+
+  - name: "KubeletNodeNotReady"
+    patterns: ["KubeletNodeNotReady", "node NotReady", "kubelet heartbeat missing"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm node condition timeline"
+        description: "Identify when node transitioned to NotReady and whether taints/evictions started."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Collect node condition transitions, taints, and event history."
+      - step: 2
+        title: "Check kubelet and runtime services"
+        description: "Determine if kubelet process crash, runtime issue, or network partition is root cause."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect kubelet logs, runtime service status, and network reachability."
+    remediation:
+      - action: "cordon_and_drain_node"
+        description: "If node remains unstable, cordon and drain to protect workload availability."
+        tool_id: "forge.drain_node"
+        requires_approval: true
+    escalation: "SRE and infrastructure owners if node does not recover within one remediation cycle."
+
+  - name: "KubeletMemoryPressure"
+    patterns: ["KubeletMemoryPressure", "node memory pressure", "eviction threshold memory"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Assess node memory saturation"
+        description: "Identify top memory consumers and check if pod overcommit drives eviction risk."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Fetch node memory usage plus top memory-consuming pods/containers."
+    remediation: []
+    escalation: "SRE platform team when sustained memory pressure threatens multiple workloads."
+
+  - name: "KubeletDiskPressure"
+    patterns: ["KubeletDiskPressure", "node disk pressure", "ephemeral storage full"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify disk hotspots"
+        description: "Check image cache, container logs, and ephemeral volumes driving disk exhaustion."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect filesystem usage and top paths under container runtime/log directories."
+    remediation: []
+    escalation: "Infra/SRE if disk pressure persists after cleanup and image pruning."
+
+  - name: "KubeletPIDPressure"
+    patterns: ["KubeletPIDPressure", "node pid pressure", "process limit reached"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Check process exhaustion"
+        description: "Find runaway process patterns and compare process count to pid_max."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Capture process counts by cgroup/container and host pid utilization."
+    remediation: []
+    escalation: "SRE + owning app team if process leak/fork storm is identified."
+
+  - name: "KubeletNetworkUnavailable"
+    patterns: ["KubeletNetworkUnavailable", "node network unavailable", "cni unavailable"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Validate CNI and node network path"
+        description: "Determine whether issue is CNI pod failure, host network break, or route mismatch."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Check CNI daemon pods, node routing status, and plugin health on affected node."
+    remediation: []
+    escalation: "Networking/platform team for CNI-level outages or host route failures."
+
+  - name: "KubeletPodLifecycleEventGeneratorLatencyHigh"
+    patterns: ["KubeletPodLifecycleEventGeneratorLatencyHigh", "PLEG latency high", "pleg relist slow"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure kubelet lifecycle latency"
+        description: "Confirm prolonged PLEG relist time and correlate with runtime or disk saturation."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect PLEG duration histograms and node-level resource pressure."
+    remediation: []
+    escalation: "SRE if high PLEG latency risks node readiness degradation."
+
+  - name: "KubeletPodStartupLatencyHigh"
+    patterns: ["KubeletPodStartupLatencyHigh", "pod startup slow", "kubelet start duration high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify startup bottlenecks"
+        description: "Differentiate image pull delay, init-container runtime, and probe gate delays."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Inspect pod start duration metrics and per-node startup distribution."
+      - step: 2
+        title: "Correlate with image and runtime behavior"
+        description: "Check image pull times and container runtime health on impacted nodes."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Review kubelet/runtime logs around slow startup intervals."
+    remediation: []
+    escalation: "Platform + app teams if latency impacts rollout SLOs."
+
+  - name: "KubeletTooManyPods"
+    patterns: ["KubeletTooManyPods", "node pod capacity high", "max pods reached"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm pod density saturation"
+        description: "Check pod count against node pod capacity and identify noisy density hotspots."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Collect running pods, allocatable pod capacity, and scheduling pressure indicators."
+    remediation: []
+    escalation: "SRE for capacity scaling or kubelet max-pods policy review."
+
+  - name: "KubeletClientCertExpiring"
+    patterns: ["KubeletClientCertExpiring", "kubelet certificate expiring", "node csr pending"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Audit kubelet cert TTL"
+        description: "Identify nodes with near-expiry certs and check renewal workflow status."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "List kubelet client certificate TTL and owning nodes."
+      - step: 2
+        title: "Validate CSR pipeline"
+        description: "Confirm automatic cert rotation and CSR approval path are working."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect pending/failed CSRs for kubelet identities."
+    remediation: []
+    escalation: "Security + platform team when expiry is <72h and CSRs are blocked."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Capture node and kubelet baseline"
+      tool_calls:
+        - tool_id: "tool.capture_diagnostics"
+          description: "Collect kubelet status, runtime health, and recent warning events."
+    - step: 2
+      title: "Inspect node resource and condition metrics"
+      tool_calls:
+        - tool_id: "tool.fetch_metrics"
+          description: "Review CPU, memory, disk, pid, pod density, and node condition states."
+    - step: 3
+      title: "Generate RCA summary"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Produce incident-ready root-cause narrative with confidence and impact."
+
+available_tools:
+  - tool_id: "tool.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "Read logs for target workloads/services."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "tool.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "Fetch metrics for services, pods, nodes, and cluster entities."
+    params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.list_services"
+    endpoint: "/api/tools/list-services"
+    description: "List discovered services and their health context."
+    params: ["namespace", "label_selector"]
+  - tool_id: "tool.detect_anomalies"
+    endpoint: "/api/tools/detect-anomalies"
+    description: "Run anomaly detection against selected telemetry windows."
+    params: ["scope", "window", "signals"]
+  - tool_id: "tool.get_service_health"
+    endpoint: "/api/tools/get-service-health"
+    description: "Fetch service-level health summary and status."
+    params: ["namespace", "service"]
+  - tool_id: "tool.detect_log_spike"
+    endpoint: "/api/tools/detect-log-spike"
+    description: "Detect sudden spikes in log volume/error logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.cluster_error_patterns"
+    endpoint: "/api/tools/cluster-error-patterns"
+    description: "Analyze recurring cluster-wide error signatures."
+    params: ["window", "namespace", "service"]
+  - tool_id: "tool.find_new_error_signatures"
+    endpoint: "/api/tools/find-new-error-signatures"
+    description: "Find newly emerging error signatures from logs."
+    params: ["namespace", "service", "window"]
+  - tool_id: "tool.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "Capture consolidated diagnostics bundle."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "tool.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "Generate root-cause analysis from collected telemetry."
+    params: ["context", "window"]
+  - tool_id: "tool.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "Score confidence for candidate root causes."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "tool.get_pod_health"
+    endpoint: "/api/tools/get-pod-health"
+    description: "Get health status for pods in scope."
+    params: ["namespace", "pod", "label_selector"]
+  - tool_id: "tool.get_crash_context"
+    endpoint: "/api/tools/get-crash-context"
+    description: "Fetch contextual crash metadata and recent failures."
+    params: ["namespace", "pod", "container"]
+  - tool_id: "tool.get_resource_saturation"
+    endpoint: "/api/tools/get-resource-saturation"
+    description: "Measure CPU/memory/disk/network saturation signals."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "tool.get_oom_events"
+    endpoint: "/api/tools/get-oom-events"
+    description: "Retrieve OOM kill events and related metadata."
+    params: ["namespace", "pod", "window"]
+  - tool_id: "tool.get_deployment_health"
+    endpoint: "/api/tools/get-deployment-health"
+    description: "Fetch deployment rollout and availability health."
+    params: ["namespace", "deployment"]
+  - tool_id: "tool.get_hpa_state"
+    endpoint: "/api/tools/get-hpa-state"
+    description: "Fetch HPA desired/current/max state and conditions."
+    params: ["namespace", "hpa"]
+  - tool_id: "tool.get_node_pressure"
+    endpoint: "/api/tools/get-node-pressure"
+    description: "Fetch node pressure status (memory/disk/pid/network)."
+    params: ["node"]
+  - tool_id: "tool.get_pending_pods"
+    endpoint: "/api/tools/get-pending-pods"
+    description: "List pending pods with scheduling failure reasons."
+    params: ["namespace", "label_selector"]
+  - tool_id: "forge.read_logs"
+    endpoint: "/api/tools/read-logs"
+    description: "MCP Forge log reader API."
+    params: ["namespace", "service", "pod", "container", "since", "tail_lines"]
+  - tool_id: "forge.fetch_metrics"
+    endpoint: "/api/tools/fetch-metrics"
+    description: "MCP Forge metrics fetch API."
+    params: ["namespace", "service", "pod", "node", "window"]
+  - tool_id: "forge.capture_diagnostics"
+    endpoint: "/api/tools/capture-diagnostics"
+    description: "MCP Forge diagnostics capture API."
+    params: ["namespace", "service", "pod", "node"]
+  - tool_id: "forge.generate_root_cause"
+    endpoint: "/api/tools/generate-root-cause"
+    description: "MCP Forge root cause generation API."
+    params: ["context", "window"]
+  - tool_id: "forge.confidence_scoring"
+    endpoint: "/api/tools/confidence-scoring"
+    description: "MCP Forge confidence scoring API."
+    params: ["hypotheses", "evidence"]
+  - tool_id: "forge.restart_deployment"
+    endpoint: "/api/tools/restart-deployment"
+    description: "Restart deployment action API."
+    params: ["namespace", "deployment"]
+  - tool_id: "forge.scale_deployment"
+    endpoint: "/api/tools/scale-deployment"
+    description: "Scale deployment action API."
+    params: ["namespace", "deployment", "replicas"]
+  - tool_id: "forge.revert_deployment"
+    endpoint: "/api/tools/revert-deployment"
+    description: "Rollback deployment action API."
+    params: ["namespace", "deployment", "revision"]
+  - tool_id: "forge.describe_hpa"
+    endpoint: "/api/tools/describe-hpa"
+    description: "Describe HPA action API."
+    params: ["namespace", "hpa"]
+  - tool_id: "forge.drain_node"
+    endpoint: "/api/tools/drain-node"
+    description: "Drain node action API."
+    params: ["node", "ignore_daemonsets", "delete_emptydir_data"]
+  - tool_id: "forge.patch_resources"
+    endpoint: "/api/tools/patch-resources"
+    description: "Patch resource requests/limits action API."
+    params: ["namespace", "kind", "name", "patch"]
+
+key_metrics:
+  - name: "up{job='kubelet'}"
+    threshold: "absent for 5m"
+    severity: critical
+  - name: "kube_node_status_condition{condition='Ready',status='true'}"
+    threshold: "0 for 10m"
+    severity: critical
+  - name: "kube_node_status_condition{condition='MemoryPressure',status='true'}"
+    threshold: "1 for 5m"
+    severity: critical
+  - name: "kube_node_status_condition{condition='DiskPressure',status='true'}"
+    threshold: "1 for 5m"
+    severity: critical
+  - name: "kube_node_status_condition{condition='PIDPressure',status='true'}"
+    threshold: "1 for 5m"
+    severity: critical
+  - name: "histogram_quantile(0.99, rate(kubelet_pleg_relist_duration_seconds_bucket[5m]))"
+    threshold: "> 10s"
+    severity: warning
+  - name: "histogram_quantile(0.99, rate(kubelet_pod_start_duration_seconds_bucket[5m]))"
+    threshold: "> 60s"
+    severity: warning
+  - name: "kubelet_running_pods / kube_node_status_capacity{resource='pods'}"
+    threshold: "> 95% for 15m"
+    severity: warning
+  - name: "kubelet_certificate_manager_client_ttl_seconds"
+    threshold: "< 7 days"
+    severity: warning
+
+escalation:
+  P0: "Immediate page and incident bridge. Kubelet reachability failure is cluster-wide risk."
+  P1: "Page SRE and infrastructure owners. Node stability and eviction risk is high."
+  P2: "Notify platform on-call and triage within 15 minutes."
