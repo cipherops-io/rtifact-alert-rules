@@ -15,7 +15,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: |
             max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m]) >= 1
             or
@@ -40,7 +40,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: |
             increase(kube_pod_container_status_restarts_total[10m]) > 0
             and on(namespace, pod, container)
@@ -62,7 +62,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1
         annotations:
           summary: "container waiting too long: {{ $labels.namespace }}/{{ $labels.pod }} reason={{ $labels.reason }}"
@@ -81,7 +81,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_pod_status_ready{condition="true"} == 0
         annotations:
           summary: "pod not ready: {{ $labels.namespace }}/{{ $labels.pod }} for >15m"
@@ -99,7 +99,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: rollout
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
         annotations:
           summary: "deployment replicas mismatch: {{ $labels.namespace }}/{{ $labels.deployment }}"
@@ -118,7 +118,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: rollout
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_deployment_status_condition{condition="Progressing",status="false"} == 1
         annotations:
           summary: "deployment rollout stuck: {{ $labels.namespace }}/{{ $labels.deployment }}"
@@ -137,7 +137,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: rollout
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_statefulset_status_replicas_ready != kube_statefulset_replicas
         annotations:
           summary: "statefulset replicas not ready: {{ $labels.namespace }}/{{ $labels.statefulset }}"
@@ -156,7 +156,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: rollout
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_ready
         annotations:
           summary: "daemonset not fully ready: {{ $labels.namespace }}/{{ $labels.daemonset }}"
@@ -175,7 +175,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
         annotations:
           summary: "image pull failure: {{ $labels.namespace }}/{{ $labels.pod }} reason={{ $labels.reason }}"
@@ -194,7 +194,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: batch
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_job_status_failed > 0 and kube_job_status_succeeded == 0
         annotations:
           summary: "job failed: {{ $labels.namespace }}/{{ $labels.job_name }}"
@@ -213,7 +213,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: batch
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_cronjob_spec_suspend == 1
         annotations:
           summary: "cronjob suspended: {{ $labels.namespace }}/{{ $labels.cronjob }}"
@@ -232,7 +232,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: workload
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_pod_status_reason{reason="Evicted"} == 1
         annotations:
           summary: "pod evicted: {{ $labels.namespace }}/{{ $labels.pod }}"
@@ -250,7 +250,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: scheduling
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_pod_status_phase{phase="Pending"} == 1
         annotations:
           summary: "pod pending too long: {{ $labels.namespace }}/{{ $labels.pod }}"
@@ -269,7 +269,7 @@ groups:
           tech_stack: kubernetes
           signal: symptom
           category: storage
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kube_persistentvolume_status_phase{phase=~"Failed|Lost|Pending"} == 1
         annotations:
           summary: "persistent volume unhealthy: pv={{ $labels.persistentvolume }} phase={{ $labels.phase }}"
@@ -288,7 +288,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: storage
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
         annotations:
           summary: "PVC free space low: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} free={{ $value | humanizePercentage }}"
@@ -307,7 +307,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: storage
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.05
         annotations:
           summary: "PVC free space CRITICAL: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} free={{ $value | humanizePercentage }}"
@@ -331,7 +331,7 @@ groups:
           tech_stack: kubernetes
           signal: cause
           category: autoscaling
-          runbook: runbooks/kubernetes/workloads.md
+          runbook: runbooks/kubernetes/workloads.yaml
           query: |
             kube_horizontalpodautoscaler_status_desired_replicas
               >= kube_horizontalpodautoscaler_spec_max_replicas

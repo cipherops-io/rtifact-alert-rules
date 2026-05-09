@@ -12,7 +12,7 @@ groups:
           tech_stack: node-exporter
           signal: symptom
           category: monitoring
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: up{job=~"node-exporter|node_exporter"} == 0
         annotations:
           summary: "node-exporter down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
@@ -34,7 +34,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: storage
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
               / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
@@ -59,7 +59,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: storage
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
               / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.03
@@ -84,7 +84,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: storage
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (node_filesystem_files_free{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
               / node_filesystem_files{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
@@ -107,7 +107,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: node
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
         annotations:
@@ -128,7 +128,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: node
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (1 - avg by (instance, rtf_cluster_id, rtf_env, rtf_service) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90
         annotations:
@@ -148,7 +148,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: node
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
         annotations:
           summary: "node load high: instance={{ $labels.instance }} load/core={{ $value }}"
@@ -167,7 +167,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: network
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: rate(node_network_receive_errs_total[2m]) > 10
         annotations:
           summary: "node RX errors high: {{ $labels.instance }} {{ $labels.device }} rate={{ $value | humanize }}/s"
@@ -186,7 +186,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: network
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: rate(node_network_transmit_errs_total[2m]) > 10
         annotations:
           summary: "node TX errors high: {{ $labels.instance }} {{ $labels.device }} rate={{ $value | humanize }}/s"
@@ -207,7 +207,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: node
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: |
             (node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0)
             or (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0)
@@ -228,7 +228,7 @@ groups:
           tech_stack: node-exporter
           signal: cause
           category: node
-          runbook: runbooks/kubernetes/node-exporter.md
+          runbook: runbooks/kubernetes/node-exporter.yaml
           query: node_filefd_allocated / node_filefd_maximum > 0.80
         annotations:
           summary: "node FD usage high: instance={{ $labels.instance }} usage={{ $value | humanizePercentage }}"

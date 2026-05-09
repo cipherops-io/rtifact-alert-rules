@@ -12,7 +12,7 @@ groups:
           tech_stack: etcd
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: up{job=~"etcd.*"} == 0
         annotations:
           summary: "etcd member down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
@@ -31,7 +31,7 @@ groups:
           tech_stack: etcd
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: etcd_server_has_leader == 0
         annotations:
           summary: "etcd has no leader: cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
@@ -50,7 +50,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: increase(etcd_server_leader_changes_seen_total[15m]) > 3
         annotations:
           summary: "etcd leader churn high: changes={{ $value }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
@@ -69,7 +69,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[5m])) > 0.25
         annotations:
           summary: "etcd backend commit p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
@@ -88,7 +88,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m])) > 0.25
         annotations:
           summary: "etcd WAL fsync p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
@@ -107,7 +107,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: etcd_mvcc_db_total_size_in_bytes > 6442450944
         annotations:
           summary: "etcd DB size high: {{ $value | humanize1024 }}B instance={{ $labels.instance }}"
@@ -126,7 +126,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: etcd_mvcc_db_total_size_in_bytes > 7516192768
         annotations:
           summary: "etcd DB size CRITICAL: {{ $value | humanize1024 }}B instance={{ $labels.instance }}"
@@ -145,7 +145,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[5m])) > 0.15
         annotations:
           summary: "etcd peer RTT high: p99={{ $value | humanizeDuration }} instance={{ $labels.instance }}"
@@ -167,7 +167,7 @@ groups:
           tech_stack: etcd
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m]))
             /
@@ -189,7 +189,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.50
         annotations:
           summary: "etcd fragmentation high: ratio={{ $value | humanize }} instance={{ $labels.instance }}"
@@ -208,7 +208,7 @@ groups:
           tech_stack: etcd
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes
         annotations:
           summary: "etcd quota exhausted: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
@@ -227,7 +227,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) > 0.10
         annotations:
           summary: "etcd apply p99 high: {{ $value | humanizeDuration }} instance={{ $labels.instance }}"
@@ -246,7 +246,7 @@ groups:
           tech_stack: etcd
           signal: cause
           category: security
-          runbook: runbooks/kubernetes/etcd.md
+          runbook: runbooks/kubernetes/etcd.yaml
           query: (etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30
         annotations:
           summary: "etcd cert expiring soon: instance={{ $labels.instance }} in {{ $value | humanize }} days"

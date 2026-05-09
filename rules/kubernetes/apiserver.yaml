@@ -19,7 +19,7 @@ groups:
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="apiserver"}) == 0
             or
@@ -54,7 +54,7 @@ groups:
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m]))
             /
@@ -92,7 +92,7 @@ groups:
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             histogram_quantile(0.99,
               sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
@@ -133,7 +133,7 @@ groups:
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             histogram_quantile(0.99,
               sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb, resource) (
@@ -172,7 +172,7 @@ groups:
           tech_stack: apiserver
           signal: cause
           category: security
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: histogram_quantile(0.01, sum by (job, rtf_cluster_id, rtf_env, rtf_service, le)
             (rate(apiserver_client_certificate_expiration_seconds_bucket{job="apiserver"}[5m]))) < 86400 * 7
         annotations:
@@ -211,7 +211,7 @@ groups:
           tech_stack: apiserver
           signal: cause
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             histogram_quantile(0.99,
               sum by (le, rtf_cluster_id, rtf_env, rtf_service, name) (
@@ -252,7 +252,7 @@ groups:
           tech_stack: apiserver
           signal: symptom
           category: control-plane
-          runbook: runbooks/kubernetes/apiserver.md
+          runbook: runbooks/kubernetes/apiserver.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_duration_seconds_count{job="apiserver",grpc_code!~"OK|Unknown"}[5m]))
             /

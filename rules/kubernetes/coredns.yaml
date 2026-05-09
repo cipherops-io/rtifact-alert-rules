@@ -15,7 +15,7 @@ groups:
           tech_stack: coredns
           signal: symptom
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*coredns.*"}) == 0
             or
@@ -37,7 +37,7 @@ groups:
           tech_stack: coredns
           signal: symptom
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_panics_total[5m])) > 0
         annotations:
           summary: "CoreDNS panic detected: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
@@ -61,7 +61,7 @@ groups:
           tech_stack: coredns
           signal: symptom
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: |
             histogram_quantile(0.99,
               sum by (le, rtf_cluster_id, rtf_env, rtf_service, server, zone) (
@@ -88,7 +88,7 @@ groups:
           tech_stack: coredns
           signal: symptom
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL|REFUSED"}[5m]))
             / sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_responses_total[5m])) > 0.03
@@ -111,7 +111,7 @@ groups:
           tech_stack: coredns
           signal: symptom
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL|REFUSED|FORMERR"}[5m]))
             / sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forward_responses_total[5m])) > 0.03
@@ -135,7 +135,7 @@ groups:
           tech_stack: coredns
           signal: cause
           category: network
-          runbook: runbooks/kubernetes/coredns.md
+          runbook: runbooks/kubernetes/coredns.yaml
           query: |
             sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
             / (sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hits_total[5m]))
