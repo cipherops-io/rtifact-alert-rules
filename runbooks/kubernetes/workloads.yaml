@@ -33,16 +33,11 @@ common_alerts:
           - tool_id: "tool.capture_diagnostics"
             description: "Inspect describe output for BackOff, Failed, OOMKilled, and probe errors."
       - step: 2
-        title: "Read previous container logs"
+        title: "Read Crash Context"
         description: "Use previous logs to inspect the crashed process, not the fresh restarted container."
         tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Fetch logs with previous=true and search for panic, config errors, connection failures, and OOM signatures."
-    remediation:
-      - action: "rollback_deployment"
-        description: "Rollback if loops started immediately after a release."
-        tool_id: "forge.revert_deployment"
-        requires_approval: true
+          - tool_id: "tool.get_crash_context"
+            description: "Fetch crash context for the pod that got crashed."
     escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded."
 
   - name: "KubePodOOMKilled"
