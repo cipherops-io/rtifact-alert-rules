@@ -38,9 +38,14 @@ common_alerts:
         tool_calls:
           - tool_id: "tool.get_crash_context"
             description: "Fetch crash context for the pod that got crashed."
+    remediation:   # only for suggestion
+      - action: "rollback_deployment"
+        description: "Rollback if loops started immediately after a release."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
     escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded."
 
-  - name: "KubePodOOMKilled"
+  - name: "KubePodOOMKilled"   # need to add Get Crash Context
     patterns: ["KubePodOOMKilled", "OOMKilled", "out of memory"]
     priority: P1
     diagnostic_steps:
@@ -48,7 +53,7 @@ common_alerts:
         title: "Validate memory pressure"
         description: "Correlate OOM reason with container limits and node pressure."
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
+          - tool_id: "tool.fetch_metrics"   # also check with node-pressure and resource saturation.
             description: "Check pod memory usage and compare with requests/limits."
       - step: 2
         title: "Confirm termination reason"
@@ -56,7 +61,13 @@ common_alerts:
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
             description: "Look for exit code 137 and reason OOMKilled."
-    remediation:
+      - step: 3
+        title: "Read Crash Context"
+        description: "Use previous logs to inspect the crashed process, not the fresh restarted container."
+        tool_calls:
+          - tool_id: "tool.get_crash_context"
+            description: "Fetch crash context for the pod that got crashed."
+    remediation:   # only for suggestion
       - action: "scale_out_replicas"
         description: "Temporarily spread load while memory limits are corrected."
         tool_id: "forge.scale_deployment"
@@ -68,12 +79,12 @@ common_alerts:
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify waiting reason"
+        title: "Identify waiting reason"    # check if waiting reason is provided by capture diagnostics         # review from vm
         description: "Reason label determines path: pull issues, config errors, or runtime startup failures."
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
             description: "Inspect waiting reason and related events."
-    remediation: []
+    remediation: []   # only for suggestion
     escalation: "Platform team if wait reason is image pull or secret/config reference failures."
 
   - name: "KubePodNotReady"
@@ -92,7 +103,7 @@ common_alerts:
         tool_calls:
           - tool_id: "tool.read_logs"
             description: "Review logs around probe failures and restarts."
-    remediation:
+    remediation:  # suggest only
       - action: "restart_deployment"
         description: "Apply rolling restart only for transient stuck states."
         tool_id: "forge.restart_deployment"
@@ -107,7 +118,7 @@ common_alerts:
         title: "Compare desired vs available replicas"
         description: "Determine whether pods are pending, crashing, or evicted."
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
+          - tool_id: "tool.capture_diagnostics"  # need to add what is desired and required pod cnt in capture_diagnostics tool
             description: "Inspect deployment conditions and associated pod status."
     remediation: []
     escalation: "SRE if sustained mismatch impacts availability for more than one release window."
@@ -128,14 +139,14 @@ common_alerts:
         tool_calls:
           - tool_id: "tool.read_logs"
             description: "Read logs from pods in the new revision."
-    remediation:
+    remediation: # only suggest
       - action: "rollback_deployment"
         description: "Rollback to last known good revision to restore service quickly."
         tool_id: "forge.revert_deployment"
         requires_approval: true
     escalation: "Immediate app-team + SRE escalation for production rollout failures."
 
-  - name: "KubeStatefulSetReplicasMismatch"
+  - name: "KubeStatefulSetReplicasMismatch"   # need to reproduce
     patterns: ["KubeStatefulSetReplicasMismatch", "statefulset not ready"]
     priority: P1
     diagnostic_steps:
@@ -148,7 +159,7 @@ common_alerts:
     remediation: []
     escalation: "App team + storage owners if stateful workload health is blocked by storage or bootstrapping."
 
-  - name: "KubeDaemonSetNotScheduled"
+  - name: "KubeDaemonSetNotScheduled"  # need to reproduce
     patterns: ["KubeDaemonSetNotScheduled", "daemonset not scheduled", "taint mismatch"]
     priority: P2
     diagnostic_steps:
@@ -171,7 +182,7 @@ common_alerts:
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
             description: "Review pull event messages from describe output."
-    remediation:
+    remediation:  # only suggestion
       - action: "rollback_deployment"
         description: "Rollback when image/tag regression is confirmed."
         tool_id: "forge.revert_deployment"
@@ -186,12 +197,12 @@ common_alerts:
         title: "Inspect failed job pods"
         description: "Review failed pod logs and job status counters."
         tool_calls:
-          - tool_id: "tool.read_logs"
+          - tool_id: "tool.read_logs"   # need to add new tool to get job fail reason
             description: "Collect logs from failed job pods using job label selectors."
     remediation: []
     escalation: "App team for batch logic failures; SRE for repeated infrastructure-induced failures."
 
-  - name: "KubeCronJobSuspended"
+  - name: "KubeCronJobSuspended"  # need to reproduce
     patterns: ["KubeCronJobSuspended", "cronjob suspended", "spec.suspend"]
     priority: P3
     diagnostic_steps:
@@ -218,7 +229,7 @@ common_alerts:
         title: "Assess node health"
         description: "Confirm cluster-wide vs node-local resource pressure."
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
+          - tool_id: "tool.fetch_metrics"    # need to add node pressure tool call instead of fetch metrics
             description: "Check node utilization and pressure conditions."
     remediation: []
     escalation: "SRE and infrastructure teams for sustained node pressure or repeated mass evictions."
@@ -231,12 +242,12 @@ common_alerts:
         title: "Inspect scheduler events"
         description: "Validate if pending is due to capacity, affinity, taints, or PVC binding."
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
+          - tool_id: "tool.capture_diagnostics"    # need to add new tool
             description: "Review scheduling events and placement constraints."
     remediation: []
     escalation: "SRE if unschedulable condition persists and affects service availability."
 
-  - name: "KubePersistentVolumeError"
+  - name: "KubePersistentVolumeError"    # need to reproduce
     patterns: ["KubePersistentVolumeError", "persistent volume failed", "volume lost", "phase pending"]
     priority: P1
     diagnostic_steps:
@@ -244,7 +255,7 @@ common_alerts:
         title: "Check PV lifecycle state"
         description: "Inspect PV phase and storage backend errors from CSI/controller logs."
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
+          - tool_id: "tool.capture_diagnostics"   # need to add support for pv
             description: "Collect PV state, bound PVC, and storage event trail."
     remediation: []
     escalation: "Storage/platform team immediately when PV enters Failed or Lost state."
@@ -257,7 +268,7 @@ common_alerts:
         title: "Confirm free space trend"
         description: "Validate sustained growth and identify consuming workloads."
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
+          - tool_id: "tool.fetch_metrics"    # need to handle separately pvc thing
             description: "Inspect PVC consumption and associated pod disk usage."
     remediation: []
     escalation: "Service owner and storage team if growth trend indicates near-term exhaustion."
@@ -270,7 +281,7 @@ common_alerts:
         title: "Stabilize critical storage usage"
         description: "Identify immediate cleanup or emergency expansion options."
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
+          - tool_id: "tool.fetch_metrics"   # need to handle separately
             description: "Confirm available bytes and current write pressure."
     remediation: []
     escalation: "Immediate page to storage/platform and owning service team."
@@ -283,7 +294,7 @@ common_alerts:
         title: "Validate scaling saturation"
         description: "Confirm HPA desired replicas are pinned at max and identify driving metric."
         tool_calls:
-          - tool_id: "tool.get_hpa_state"
+          - tool_id: "tool.get_hpa_state"  # need to optimize the tool response
             description: "Collect min/max/current/desired values and metric targets."
       - step: 2
         title: "Correlate with pod pressure"
