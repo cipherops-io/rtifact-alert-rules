@@ -6,6 +6,7 @@ match_keywords:
   - kubernetes workloads
   - crashloopbackoff
   - oomkilled
+  - cpu throttling
   - imagepullbackoff
   - pod pending
   - rollout stuck
@@ -73,6 +74,39 @@ common_alerts:
         tool_id: "forge.scale_deployment"
         requires_approval: true
     escalation: "SRE for limit tuning; app team if leak or runaway workload behavior is suspected."
+
+  - name: "KubePodCPUThrottlingHigh"
+    patterns: ["KubePodCPUThrottlingHigh", "CPU throttling", "container CPU throttled", "CFS throttling"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm throttling ratio"
+        description: "Validate that throttled CFS periods are sustained above the threshold and isolate the affected container."
+        tool_calls:
+          - tool_id: "tool.fetch_metrics"
+            description: "Compare container_cpu_cfs_throttled_periods_total and container_cpu_cfs_periods_total for the affected namespace/pod/container."
+      - step: 2
+        title: "Compare CPU usage with limits"
+        description: "Check whether the workload is hitting a low CPU limit, running under burstable QoS, or contending with other pods on the node."
+        tool_calls:
+          - tool_id: "tool.get_resource_saturation"
+            description: "Review CPU usage, CPU requests/limits, pod QoS, and node CPU saturation for the alert window."
+      - step: 3
+        title: "Inspect workload impact"
+        description: "Correlate throttling with latency, timeout spikes, failed requests, or slowed background processing."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review application logs for timeouts, queue buildup, deadline exceeded errors, and slow processing during the throttling window."
+    remediation:
+      - action: "patch_resources"
+        description: "Tune CPU limits/requests when throttling is caused by an undersized limit. Consider removing CPU limits for latency-sensitive workloads after review."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "scale_out_replicas"
+        description: "Temporarily add replicas if throttling is load-driven and the service can scale horizontally."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "SRE and owning service team if throttling correlates with latency, timeout spikes, or failed customer traffic."
 
   - name: "KubeContainerWaiting"
     patterns: ["KubeContainerWaiting", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
@@ -454,6 +488,9 @@ key_metrics:
   - name: "kube_pod_container_status_restarts_total"
     threshold: "increase > 5 in 15m"
     severity: critical
+  - name: "container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total"
+    threshold: "> 25% throttled periods for 10m"
+    severity: medium
   - name: "kube_pod_status_ready"
     threshold: "condition=true equals 0 for 15m"
     severity: high
