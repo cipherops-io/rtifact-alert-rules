@@ -152,18 +152,18 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ArgoCDDown` | critical | P1 | 1m | symptom | `up{job=~"argocd.*"} == 0` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDAppOutOfSync` | warning | P2 | 10m | cause | `argocd_app_info{sync_status="OutOfSync"} == 1` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDAppDegraded` | critical | P1 | 5m | symptom | `argocd_app_info{health_status="Degraded"} == 1` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDSyncFailed` | warning | P2 | 2m | symptom | `argocd_app_info{operation_phase=~"Error\|Failed"} == 1` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDAppSyncRunningLong` | warning | P2 | 10m | cause | `argocd_app_info{operation_phase="Running"} == 1` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDRepoServerDown` | critical | P1 | 1m | symptom | `up{job=~"argocd-repo-server.*"} == 0` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDRepoUnreachable` | warning | P2 | 5m | cause | `rate(argocd_git_request_total{request_type="fetch",response_code!="200"}[5m]) >…` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDAppControllerCrashLoop` | critical | P1 | 5m | symptom | `rate(kube_pod_container_status_restarts_total{container="argocd-application-con…` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDCertificateExpiring` | warning | P2 | 1h | cause | `(argocd_cert_expiry_timestamp_seconds - time()) / 86400 < 30` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDAppHealthUnknown` | warning | P2 | 15m | cause | `argocd_app_info{health_status="Unknown"} == 1` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDDexDown` | warning | P2 | 2m | symptom | `up{job=~"argocd-dex.*"} == 0` | [argocd.md](runbooks/gitops/argocd.md) |
-| `ArgoCDRedisDown` | warning | P2 | 2m | cause | `up{job=~"argocd-redis.*"} == 0` | [argocd.md](runbooks/gitops/argocd.md) |
+| `ArgoCDDown` | critical | P1 | 1m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd.*…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDAppOutOfSync` | warning | P2 | 10m | cause | `argocd_app_info{sync_status="OutOfSync"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDAppDegraded` | critical | P1 | 5m | symptom | `argocd_app_info{health_status="Degraded"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDSyncFailed` | warning | P2 | 2m | symptom | `argocd_app_info{operation_phase=~"Error\|Failed"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDAppSyncRunningLong` | warning | P2 | 10m | cause | `argocd_app_info{operation_phase="Running"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDRepoServerDown` | critical | P1 | 1m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-r…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDRepoUnreachable` | warning | P2 | 5m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, repo, request_type, response_code…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDAppControllerCrashLoop` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, namespace, pod, container) ( incr…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDCertificateExpiring` | warning | P2 | 1h | cause | `min by (rtf_cluster_id, rtf_env, rtf_service, cert_name, instance) ( (argocd_ce…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDAppHealthUnknown` | warning | P2 | 15m | cause | `argocd_app_info{health_status="Unknown"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDDexDown` | warning | P2 | 2m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-d…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDRedisDown` | warning | P2 | 2m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-r…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
 
 ## ingress
 
@@ -185,105 +185,105 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KubeAPIServerDown` | critical | P0 | 5m | symptom | `absent(up{job="apiserver"} == 1)` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIServerErrors` | warning | P2 | 10m | symptom | `sum by (verb) (rate(apiserver_request_total{job="apiserver",code=~"5.."}[5m])) …` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIServerLatencyHigh` | warning | P2 | 10m | symptom | `histogram_quantile(0.99, sum by (le, verb, resource) ( rate(apiserver_request_d…` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIServerLatencyVeryHigh` | critical | P1 | 5m | symptom | `histogram_quantile(0.99, sum by (le, verb, resource) ( rate(apiserver_request_d…` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIClientCertExpiring` | warning | P2 | 5m | cause | `histogram_quantile(0.01, sum by (job, le) (rate(apiserver_client_certificate_ex…` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIServerAdmissionLatency` | warning | P2 | 10m | cause | `histogram_quantile(0.99, sum by (le, name) ( rate(apiserver_admission_webhook_a…` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
-| `KubeAPIServerEtcdRequestErrors` | warning | P2 | 5m | symptom | `sum by (operation) (rate(etcd_request_duration_seconds_count{job="apiserver",gr…` | [apiserver.md](runbooks/kubernetes/apiserver.md) |
+| `KubeAPIServerDown` | critical | P0 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="apiserver"}) == 0 or abs…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIServerErrors` | warning | P2 | 10m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, verb) (rate(apiserver_request_tot…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIServerLatencyHigh` | warning | P2 | 10m | symptom | `histogram_quantile(0.99, sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIServerLatencyVeryHigh` | critical | P1 | 5m | symptom | `histogram_quantile(0.99, sum by (le, rtf_cluster_id, rtf_env, rtf_service, verb…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIClientCertExpiring` | warning | P2 | 5m | cause | `histogram_quantile(0.01, sum by (job, rtf_cluster_id, rtf_env, rtf_service, le)…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIServerAdmissionLatency` | warning | P2 | 10m | cause | `histogram_quantile(0.99, sum by (le, rtf_cluster_id, rtf_env, rtf_service, name…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
+| `KubeAPIServerEtcdRequestErrors` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_dur…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
 
 ### `rules/kubernetes/coredns.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `CoreDNSDown` | critical | P0 | 5m | symptom | `absent(up{job=~".*coredns.*"} == 1)` | [coredns.md](runbooks/kubernetes/coredns.md) |
-| `CoreDNSPanicCount` | critical | P1 | 5m | symptom | `rate(coredns_panics_total[5m]) > 0` | [coredns.md](runbooks/kubernetes/coredns.md) |
-| `CoreDNSLatencyHigh` | warning | P2 | 5m | symptom | `histogram_quantile(0.99, sum by (le, server, zone) ( rate(coredns_dns_request_d…` | [coredns.md](runbooks/kubernetes/coredns.md) |
-| `CoreDNSErrorsHigh` | warning | P2 | 5m | symptom | `sum by (server, zone) (rate(coredns_dns_responses_total{rcode=~"SERVFAIL\|REFUSE…` | [coredns.md](runbooks/kubernetes/coredns.md) |
-| `CoreDNSForwardErrorsHigh` | warning | P2 | 5m | symptom | `sum by (instance, to) (rate(coredns_forward_responses_total{rcode=~"SERVFAIL\|RE…` | [coredns.md](runbooks/kubernetes/coredns.md) |
-| `CoreDNSCacheHitsLow` | warning | P3 | 30m | cause | `sum by (instance) (rate(coredns_cache_hits_total[5m])) / (sum by (instance) (ra…` | [coredns.md](runbooks/kubernetes/coredns.md) |
+| `CoreDNSDown` | critical | P0 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*coredns.*"}) == 0 or …` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
+| `CoreDNSPanicCount` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_panics_to…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
+| `CoreDNSLatencyHigh` | warning | P2 | 5m | symptom | `histogram_quantile(0.99, sum by (le, rtf_cluster_id, rtf_env, rtf_service, serv…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
+| `CoreDNSErrorsHigh` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, server, zone) (rate(coredns_dns_r…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
+| `CoreDNSForwardErrorsHigh` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forwa…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
+| `CoreDNSCacheHitsLow` | warning | P3 | 30m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hit…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
 
 ### `rules/kubernetes/etcd.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `EtcdDown` | critical | P0 | 1m | symptom | `up{job=~"etcd.*"} == 0` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdNoLeader` | critical | P0 | 1m | symptom | `etcd_server_has_leader == 0` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdLeaderChangesHigh` | warning | P2 | 5m | cause | `increase(etcd_server_leader_changes_seen_total[15m]) > 3` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdHighCommitDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdHighFsyncDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m]))…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdDBSizeHigh` | warning | P2 | 5m | cause | `etcd_mvcc_db_total_size_in_bytes > 6442450944` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdDBSizeCritical` | critical | P1 | 2m | cause | `etcd_mvcc_db_total_size_in_bytes > 7516192768` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdHighNetworkPeerRTT` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdHighGRPCErrors` | warning | P2 | 5m | symptom | `rate(grpc_server_handled_total{grpc_code!="OK",job=~"etcd.*"}[5m]) / rate(grpc_…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdDefragNeeded` | warning | P3 | 10m | cause | `etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdBackendQuotaExhausted` | critical | P0 | 1m | symptom | `etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdHighApplyDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) >…` | [etcd.md](runbooks/kubernetes/etcd.md) |
-| `EtcdCertificateExpiringSoon` | warning | P2 | 1h | cause | `(etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30` | [etcd.md](runbooks/kubernetes/etcd.md) |
+| `EtcdDown` | critical | P0 | 1m | symptom | `up{job=~"etcd.*"} == 0` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdNoLeader` | critical | P0 | 1m | symptom | `etcd_server_has_leader == 0` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdLeaderChangesHigh` | warning | P2 | 5m | cause | `increase(etcd_server_leader_changes_seen_total[15m]) > 3` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdHighCommitDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_disk_backend_commit_duration_seconds_bucket[…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdHighFsyncDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_disk_wal_fsync_duration_seconds_bucket[5m]))…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdDBSizeHigh` | warning | P2 | 5m | cause | `etcd_mvcc_db_total_size_in_bytes > 6442450944` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdDBSizeCritical` | critical | P1 | 2m | cause | `etcd_mvcc_db_total_size_in_bytes > 7516192768` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdHighNetworkPeerRTT` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_network_peer_round_trip_time_seconds_bucket[…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdHighGRPCErrors` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(grpc_server_handl…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdDefragNeeded` | warning | P3 | 10m | cause | `etcd_mvcc_db_total_size_in_bytes / etcd_mvcc_db_total_size_in_use_in_bytes > 1.…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdBackendQuotaExhausted` | critical | P0 | 1m | symptom | `etcd_mvcc_db_total_size_in_bytes >= etcd_server_quota_backend_bytes` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdHighApplyDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) >…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
+| `EtcdCertificateExpiringSoon` | warning | P2 | 1h | cause | `(etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
 
 ### `rules/kubernetes/kube-state-metrics.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KubeStateMetricsDown` | warning | P2 | 10m | symptom | `absent(up{job=~".*kube-state-metrics.*"} == 1)` | [kube-state-metrics.md](runbooks/kubernetes/kube-state-metrics.md) |
-| `KubeStateMetricsListErrors` | warning | P2 | 15m | symptom | `sum (rate(kube_state_metrics_list_total{result="error"}[5m])) / sum (rate(kube_…` | [kube-state-metrics.md](runbooks/kubernetes/kube-state-metrics.md) |
-| `KubeStateMetricsWatchErrors` | warning | P2 | 15m | symptom | `sum (rate(kube_state_metrics_watch_total{result="error"}[5m])) / sum (rate(kube…` | [kube-state-metrics.md](runbooks/kubernetes/kube-state-metrics.md) |
-| `KubeStateMetricsShardingMismatch` | warning | P3 | 15m | cause | `stdvar (kube_state_metrics_total_shards) != 0` | [kube-state-metrics.md](runbooks/kubernetes/kube-state-metrics.md) |
-| `KubeStateMetricsShardsMissing` | warning | P2 | 15m | symptom | `2 ^ max (kube_state_metrics_total_shards) - 1 - sum (2 ^ max by (shard_ordinal)…` | [kube-state-metrics.md](runbooks/kubernetes/kube-state-metrics.md) |
+| `KubeStateMetricsDown` | warning | P2 | 10m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*kube-state-metrics.*"…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
+| `KubeStateMetricsListErrors` | warning | P2 | 15m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (rate(kube_state_metrics_list_tot…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
+| `KubeStateMetricsWatchErrors` | warning | P2 | 15m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (rate(kube_state_metrics_watch_to…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
+| `KubeStateMetricsShardingMismatch` | warning | P3 | 15m | cause | `stdvar by (rtf_cluster_id, rtf_env, rtf_service) (kube_state_metrics_total_shar…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
+| `KubeStateMetricsShardsMissing` | warning | P2 | 15m | symptom | `2 ^ max by (rtf_cluster_id, rtf_env, rtf_service) (kube_state_metrics_total_sha…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
 
 ### `rules/kubernetes/kubelet.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KubeletDown` | critical | P0 | 5m | symptom | `absent(up{job="kubelet"} == 1)` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletNodeNotReady` | critical | P1 | 10m | symptom | `kube_node_status_condition{condition="Ready",status="true"} == 0` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletMemoryPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="MemoryPressure",status="true"} == 1` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletDiskPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="DiskPressure",status="true"} == 1` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletPIDPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="PIDPressure",status="true"} == 1` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletNetworkUnavailable` | critical | P1 | 5m | symptom | `kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletPodLifecycleEventGeneratorLatencyHigh` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(kubelet_pleg_relist_duration_seconds_bucket{job="…` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletPodStartupLatencyHigh` | warning | P2 | 15m | cause | `histogram_quantile(0.99, rate(kubelet_pod_start_duration_seconds_bucket{job="ku…` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletTooManyPods` | warning | P2 | 15m | cause | `max by (node) (kubelet_running_pods{job="kubelet"}) / max by (node) (kube_node_…` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
-| `KubeletClientCertExpiring` | warning | P2 | 5m | cause | `kubelet_certificate_manager_client_ttl_seconds < 86400 * 7` | [kubelet.md](runbooks/kubernetes/kubelet.md) |
+| `KubeletDown` | critical | P0 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="kubelet"}) == 0 or absen…` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletNodeNotReady` | critical | P1 | 10m | symptom | `kube_node_status_condition{condition="Ready",status="true"} == 0` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletMemoryPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="MemoryPressure",status="true"} == 1` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletDiskPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="DiskPressure",status="true"} == 1` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletPIDPressure` | critical | P1 | 5m | cause | `kube_node_status_condition{condition="PIDPressure",status="true"} == 1` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletNetworkUnavailable` | critical | P1 | 5m | symptom | `kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletPodLifecycleEventGeneratorLatencyHigh` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(kubelet_pleg_relist_duration_seconds_bucket{job="…` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletPodStartupLatencyHigh` | warning | P2 | 15m | cause | `histogram_quantile(0.99, rate(kubelet_pod_start_duration_seconds_bucket{job="ku…` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletTooManyPods` | warning | P2 | 15m | cause | `max by (node) (kubelet_running_pods{job="kubelet"}) / max by (node) (kube_node_…` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
+| `KubeletClientCertExpiring` | warning | P2 | 5m | cause | `kubelet_certificate_manager_client_ttl_seconds < 86400 * 7` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
 
 ### `rules/kubernetes/node-exporter.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `NodeExporterDown` | warning | P2 | 10m | symptom | `up{job=~"node-exporter\|node_exporter"} == 0` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeFilesystemAlmostOutOfSpace` | warning | P2 | 30m | cause | `(node_filesystem_avail_bytes{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / nod…` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeFilesystemOutOfSpace` | critical | P1 | 10m | cause | `(node_filesystem_avail_bytes{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / nod…` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeFilesystemAlmostOutOfFiles` | warning | P2 | 30m | cause | `(node_filesystem_files_free{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / node…` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeMemoryHighUsage` | warning | P2 | 10m | cause | `(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeCPUHighUsage` | warning | P2 | 15m | cause | `(1 - avg by (instance) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeLoad15High` | warning | P2 | 15m | cause | `node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) >…` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeNetworkReceiveErrs` | warning | P3 | 1h | cause | `rate(node_network_receive_errs_total[2m]) > 10` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeNetworkTransmitErrs` | warning | P3 | 1h | cause | `rate(node_network_transmit_errs_total[2m]) > 10` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeClockSkew` | warning | P2 | 10m | cause | `(node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0…` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
-| `NodeFileDescriptorUsage` | warning | P2 | 10m | cause | `node_filefd_allocated / node_filefd_maximum > 0.80` | [node-exporter.md](runbooks/kubernetes/node-exporter.md) |
+| `NodeExporterDown` | warning | P2 | 10m | symptom | `up{job=~"node-exporter\|node_exporter"} == 0` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeFilesystemAlmostOutOfSpace` | warning | P2 | 30m | cause | `(node_filesystem_avail_bytes{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / nod…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeFilesystemOutOfSpace` | critical | P1 | 10m | cause | `(node_filesystem_avail_bytes{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / nod…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeFilesystemAlmostOutOfFiles` | warning | P2 | 30m | cause | `(node_filesystem_files_free{fstype!~"tmpfs\|fuse.lxcfs\|squashfs\|overlay"} / node…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeMemoryHighUsage` | warning | P2 | 10m | cause | `(1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeCPUHighUsage` | warning | P2 | 15m | cause | `(1 - avg by (instance, rtf_cluster_id, rtf_env, rtf_service) (rate(node_cpu_sec…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeLoad15High` | warning | P2 | 15m | cause | `node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) >…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeNetworkReceiveErrs` | warning | P3 | 1h | cause | `rate(node_network_receive_errs_total[2m]) > 10` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeNetworkTransmitErrs` | warning | P3 | 1h | cause | `rate(node_network_transmit_errs_total[2m]) > 10` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeClockSkew` | warning | P2 | 10m | cause | `(node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
+| `NodeFileDescriptorUsage` | warning | P2 | 10m | cause | `node_filefd_allocated / node_filefd_maximum > 0.80` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
 
 ### `rules/kubernetes/workloads.yaml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KubePodCrashLooping` | critical | P1 | 5m | symptom | `max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePodOOMKilled` | critical | P1 | 0m | symptom | `increase(kube_pod_container_status_restarts_total[10m]) > 0 and on(namespace, p…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeContainerWaiting` | warning | P2 | 1h | cause | `kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeDeploymentReplicasMismatch` | warning | P2 | 15m | symptom | `kube_deployment_spec_replicas != kube_deployment_status_replicas_available` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeDeploymentRolloutStuck` | warning | P2 | 15m | cause | `kube_deployment_status_condition{condition="Progressing",status="false"} == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeStatefulSetReplicasMismatch` | critical | P1 | 10m | symptom | `kube_statefulset_status_replicas_ready != kube_statefulset_replicas` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeDaemonSetNotScheduled` | warning | P2 | 15m | symptom | `kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePodImagePullBackOff` | warning | P2 | 5m | symptom | `kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff\|ErrImagePull…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeJobFailed` | warning | P2 | 15m | symptom | `kube_job_status_failed > 0 and kube_job_status_succeeded == 0` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeCronJobSuspended` | warning | P3 | 1h | cause | `kube_cronjob_spec_suspend == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePodEvicted` | warning | P2 | 0m | symptom | `kube_pod_status_reason{reason="Evicted"} == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePodPendingTooLong` | warning | P2 | 15m | cause | `kube_pod_status_phase{phase="Pending"} == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePersistentVolumeError` | critical | P1 | 10m | symptom | `kube_persistentvolume_status_phase{phase=~"Failed\|Lost\|Pending"} == 1` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePVCFillingUp` | warning | P2 | 15m | cause | `kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubePVCCriticalFull` | critical | P1 | 5m | cause | `kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.…` | [workloads.md](runbooks/kubernetes/workloads.md) |
-| `KubeHpaMaxedOut` | warning | P2 | 15m | cause | `kube_horizontalpodautoscaler_status_desired_replicas >= kube_horizontalpodautos…` | [workloads.md](runbooks/kubernetes/workloads.md) |
+| `KubePodCrashLooping` | critical | P1 | 5m | symptom | `max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodOOMKilled` | critical | P1 | 0m | symptom | `increase(kube_pod_container_status_restarts_total[10m]) > 0 and on(namespace, p…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeContainerWaiting` | warning | P2 | 1h | cause | `kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeDeploymentReplicasMismatch` | warning | P2 | 15m | symptom | `kube_deployment_spec_replicas != kube_deployment_status_replicas_available` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeDeploymentRolloutStuck` | warning | P2 | 15m | cause | `kube_deployment_status_condition{condition="Progressing",status="false"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeStatefulSetReplicasMismatch` | critical | P1 | 10m | symptom | `kube_statefulset_status_replicas_ready != kube_statefulset_replicas` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeDaemonSetNotScheduled` | warning | P2 | 15m | symptom | `kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodImagePullBackOff` | warning | P2 | 5m | symptom | `kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff\|ErrImagePull…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeJobFailed` | warning | P2 | 15m | symptom | `kube_job_status_failed > 0 and kube_job_status_succeeded == 0` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeCronJobSuspended` | warning | P3 | 1h | cause | `kube_cronjob_spec_suspend == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodEvicted` | warning | P2 | 0m | symptom | `kube_pod_status_reason{reason="Evicted"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodPendingTooLong` | warning | P2 | 15m | cause | `kube_pod_status_phase{phase="Pending"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePersistentVolumeError` | critical | P1 | 10m | symptom | `kube_persistentvolume_status_phase{phase=~"Failed\|Lost\|Pending"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePVCFillingUp` | warning | P2 | 15m | cause | `kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePVCCriticalFull` | critical | P1 | 5m | cause | `kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubeHpaMaxedOut` | warning | P2 | 15m | cause | `kube_horizontalpodautoscaler_status_desired_replicas >= kube_horizontalpodautos…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 
 ## messaging
 

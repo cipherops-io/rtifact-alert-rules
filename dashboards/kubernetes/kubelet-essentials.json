@@ -1,0 +1,314 @@
+{
+  "annotations": {"list": []},
+  "description": "Production kubelet dashboard. PLEG, pod lifecycle, runtime ops, storage, cgroup, network/RPC, and process resources. Perses-compatible (stat + timeseries only, no overrides/transformations).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false, "icon": "external link", "includeVars": false, "keepTime": false, "tags": [], "targetBlank": true,
+      "title": "Runbook: kubelet",
+      "tooltip": "Runbook in rtifact-alert-rules",
+      "type": "link",
+      "url": "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "id": 100, "panels": [], "title": "Cluster snapshot", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of nodes currently exposing kubelet metrics.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 3}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1}, "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "count(kubelet_node_name{cluster=~\"$cluster\",instance=~\"$instance\"})", "instant": true, "legendFormat": "Kubelets", "refId": "A"}],
+      "title": "Active kubelets", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Sum of pods currently being managed by all kubelets.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1}, "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(kubelet_running_pods{cluster=~\"$cluster\",instance=~\"$instance\"})", "instant": true, "legendFormat": "Pods", "refId": "A"}],
+      "title": "Running pods", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Sum of containers currently running across all kubelets.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1}, "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(kubelet_running_containers{cluster=~\"$cluster\",instance=~\"$instance\"})", "instant": true, "legendFormat": "Containers", "refId": "A"}],
+      "title": "Running containers", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Volumes currently mounted (actual state). Should match desired.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1}, "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(volume_manager_total_volumes{cluster=~\"$cluster\",instance=~\"$instance\",state=\"actual_state_of_world\"}) OR vector(0)", "instant": true, "legendFormat": "Actual", "refId": "A"}],
+      "title": "Volumes (actual)", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Desired volume count. If this diverges from 'actual', volumes are stuck attaching/detaching.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1}, "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(volume_manager_total_volumes{cluster=~\"$cluster\",instance=~\"$instance\",state=\"desired_state_of_world\"}) OR vector(0)", "instant": true, "legendFormat": "Desired", "refId": "A"}],
+      "title": "Volumes (desired)", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Cluster-wide PLEG relist duration p99. Sustained > 10s causes nodes to go NotReady.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1}, "id": 6,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(kubelet_pleg_relist_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "instant": true, "legendFormat": "p99", "refId": "A"}],
+      "title": "PLEG relist p99", "type": "stat"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "id": 101, "panels": [], "title": "PLEG (Pod Lifecycle Event Generator)", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "PLEG relist duration percentiles. The kubelet runs a relist every interval to detect pod state changes; if this gets slow the node goes NotReady.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 5}, {"color": "red", "value": 10}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6}, "id": 7,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.5, sum by (le) (rate(kubelet_pleg_relist_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.9, sum by (le) (rate(kubelet_pleg_relist_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p90", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(kubelet_pleg_relist_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p99", "refId": "C"}
+      ],
+      "title": "PLEG relist duration (p50/p90/p99)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 nodes by PLEG relist interval p99. Healthy = ~1s. Spikes mean kubelet is falling behind pod state changes.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6}, "id": 8,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, histogram_quantile(0.99, sum by (le, instance) (rate(kubelet_pleg_relist_interval_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m]))))", "legendFormat": "{{instance}}", "refId": "A"}],
+      "title": "Top 10 nodes by PLEG relist interval p99", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}, "id": 102, "panels": [], "title": "Pod lifecycle", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Pod start duration percentiles. Time between the pod being scheduled and its containers reporting ready.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 60}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15}, "id": 9,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.5, sum by (le) (rate(kubelet_pod_start_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(kubelet_pod_start_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Pod start duration (p50 / p99)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Pod startup SLI duration percentiles. Excludes image pull time — measures pure scheduling-to-ready latency. Used by k8s for SLOs.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15}, "id": 10,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.5, sum by (le) (rate(kubelet_pod_start_sli_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p50", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le) (rate(kubelet_pod_start_sli_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "p99", "refId": "B"}
+      ],
+      "title": "Pod start SLI duration (p50 / p99)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Pod worker duration p99 by operation phase (create/update/sync/kill).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 24, "x": 0, "y": 23}, "id": 11,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le, operation_type) (rate(kubelet_pod_worker_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "Pod worker duration p99 by operation type", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31}, "id": 103, "panels": [], "title": "Container runtime operations", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Rate of container runtime operations by type (CRI calls to containerd / CRI-O).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32}, "id": 12,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (operation_type) (rate(kubelet_runtime_operations_total{cluster=~\"$cluster\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "Runtime ops rate by type", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Rate of failed runtime operations by type. Sustained > 0 indicates container runtime issues.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 32}, "id": 13,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (operation_type) (rate(kubelet_runtime_operations_errors_total{cluster=~\"$cluster\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "Runtime ops error rate by type", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "p99 latency for runtime operations (e.g. RunPodSandbox, ContainerStatus).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32}, "id": 14,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le, operation_type) (rate(kubelet_runtime_operations_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "Runtime ops duration p99 by type", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40}, "id": 104, "panels": [], "title": "Storage operations", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Rate of CSI / volume operations by type (mount, attach, expand, etc.).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41}, "id": 15,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (operation_name) (rate(storage_operation_duration_seconds_count{cluster=~\"$cluster\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation_name}}", "refId": "A"}],
+      "title": "Storage ops rate by type", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "p99 latency for storage operations.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 120}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41}, "id": 16,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le, operation_name) (rate(storage_operation_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{operation_name}}", "refId": "A"}],
+      "title": "Storage ops duration p99 by type", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 49}, "id": 105, "panels": [], "title": "CGroup manager", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Rate of cgroup manager operations.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 50}, "id": 17,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (operation_type) (rate(kubelet_cgroup_manager_duration_seconds_count{cluster=~\"$cluster\",instance=~\"$instance\"}[5m]))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "CGroup manager ops rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "p99 latency for cgroup manager operations.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 50}, "id": 18,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le, operation_type) (rate(kubelet_cgroup_manager_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\"}[5m])))", "legendFormat": "{{operation_type}}", "refId": "A"}],
+      "title": "CGroup manager duration p99", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 58}, "id": 106, "panels": [], "title": "Volume usage", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 PVCs by % capacity used. Lines climbing to 100% need expansion.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "linear", "lineWidth": 2, "showPoints": "auto", "spanNulls": true}, "mappings": [], "max": 1, "min": 0, "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 0.8}, {"color": "red", "value": 0.9}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 59}, "id": 19,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, kubelet_volume_stats_used_bytes{cluster=~\"$cluster\",instance=~\"$instance\"} / kubelet_volume_stats_capacity_bytes{cluster=~\"$cluster\",instance=~\"$instance\"})", "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}", "refId": "A"}],
+      "title": "Top 10 PVCs by % used", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Time since last successful PLEG relist by node. Sustained > 60s = node will go NotReady.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 30}, {"color": "red", "value": 60}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 59}, "id": 20,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, time() - kubelet_pleg_last_seen_seconds{cluster=~\"$cluster\",instance=~\"$instance\"})", "legendFormat": "{{instance}}", "refId": "A"}],
+      "title": "Top 10 nodes by PLEG last-seen lag", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 67}, "id": 107, "panels": [], "title": "API client (kubelet to apiserver)", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Rate of HTTP requests from kubelet to the Kubernetes API server, by verb.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}]}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 68}, "id": 21,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (verb) (rate(rest_client_requests_total{cluster=~\"$cluster\",instance=~\"$instance\",job=~\"kubelet|.*kubelet.*\"}[5m]))", "legendFormat": "{{verb}}", "refId": "A"}],
+      "title": "Kubelet -> apiserver request rate by verb", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Error responses (non-2xx, non-3xx) returned by the apiserver to the kubelet.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "reqps"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 68}, "id": 22,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum by (code) (rate(rest_client_requests_total{cluster=~\"$cluster\",instance=~\"$instance\",job=~\"kubelet|.*kubelet.*\",code=~\"4..|5..\"}[5m]))", "legendFormat": "{{code}}", "refId": "A"}],
+      "title": "Kubelet -> apiserver error rate by code", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "p99 request latency from kubelet to apiserver.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 3}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 68}, "id": 23,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "histogram_quantile(0.99, sum by (le, verb) (rate(rest_client_request_duration_seconds_bucket{cluster=~\"$cluster\",instance=~\"$instance\",job=~\"kubelet|.*kubelet.*\"}[5m])))", "legendFormat": "{{verb}}", "refId": "A"}],
+      "title": "Kubelet -> apiserver p99 latency by verb", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 76}, "id": 108, "panels": [], "title": "Kubelet process & certificates", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Memory used by the kubelet process per node (top 10).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "bytes"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 77}, "id": 24,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, process_resident_memory_bytes{cluster=~\"$cluster\",instance=~\"$instance\",job=~\"kubelet|.*kubelet.*\"})", "legendFormat": "{{instance}}", "refId": "A"}],
+      "title": "Kubelet memory (top 10)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Kubelet CPU usage (top 10 nodes).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "percentunit"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 77}, "id": 25,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, rate(process_cpu_seconds_total{cluster=~\"$cluster\",instance=~\"$instance\",job=~\"kubelet|.*kubelet.*\"}[5m]))", "legendFormat": "{{instance}}", "refId": "A"}],
+      "title": "Kubelet CPU rate (top 10)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Days remaining on kubelet client certificate (auth to apiserver). Should auto-rotate; sustained drop = rotation broken.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 7}, {"color": "green", "value": 30}]}, "unit": "d"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 77}, "id": 26,
+      "options": {"legend": {"calcs": ["min", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "kubelet_certificate_manager_client_ttl_seconds{cluster=~\"$cluster\",instance=~\"$instance\"} / 86400", "legendFormat": "client {{instance}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "kubelet_certificate_manager_server_ttl_seconds{cluster=~\"$cluster\",instance=~\"$instance\"} / 86400", "legendFormat": "server {{instance}}", "refId": "B"}
+      ],
+      "title": "Certificate days remaining", "type": "timeseries"
+    }
+  ],
+  "refresh": "30s", "revision": 1, "schemaVersion": 39,
+  "tags": ["kubernetes", "kubelet", "rtifact", "essentials", "perses-compatible"],
+  "templating": {
+    "list": [
+      {"current": {"selected": false, "text": "Prometheus", "value": "Prometheus"}, "hide": 0, "includeAll": false, "label": "Datasource", "multi": false, "name": "datasource", "options": [], "query": "prometheus", "queryValue": "", "refresh": 1, "regex": "", "skipUrlSync": false, "type": "datasource"},
+      {"current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${datasource}"}, "definition": "label_values(kubelet_node_name, cluster)", "hide": 0, "includeAll": true, "label": "Cluster", "multi": true, "name": "cluster", "options": [], "query": {"qryType": 1, "query": "label_values(kubelet_node_name, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 2, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"},
+      {"current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${datasource}"}, "definition": "label_values(kubelet_node_name{cluster=~\"$cluster\"}, instance)", "hide": 0, "includeAll": true, "label": "Node (instance)", "multi": true, "name": "instance", "options": [], "query": {"qryType": 1, "query": "label_values(kubelet_node_name{cluster=~\"$cluster\"}, instance)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 2, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]},
+  "timezone": "",
+  "title": "Kubernetes / kubelet — Production",
+  "uid": "rtifact-kubelet-production",
+  "version": 1, "weekStart": ""
+}
