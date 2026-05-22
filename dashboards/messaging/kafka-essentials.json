@@ -1,0 +1,289 @@
+{
+  "annotations": {"list": []},
+  "description": "Production Kafka dashboard. Cluster health, partition health, consumer-group lag, topic throughput, and app-side message processing. Built from kafka_exporter metrics. Perses-compatible (stat + timeseries only).",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [
+    {
+      "asDropdown": false, "icon": "external link", "includeVars": false, "keepTime": false, "tags": [], "targetBlank": true,
+      "title": "Runbook: kafka",
+      "tooltip": "Runbook in rtifact-alert-rules",
+      "type": "link",
+      "url": "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md"
+    }
+  ],
+  "liveNow": false,
+  "panels": [
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0}, "id": 100, "panels": [], "title": "Cluster snapshot", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Active Kafka brokers (from kafka_exporter).",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 3}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1}, "id": 1,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "max(kafka_brokers{cluster=~\"$cluster\"}) OR vector(0)", "instant": true, "legendFormat": "Brokers", "refId": "A"}],
+      "title": "Active brokers", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Total user topics (excludes internal topics like __consumer_offsets).",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1}, "id": 2,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "count(group by (topic) (kafka_topic_partitions{cluster=~\"$cluster\",topic!~\"__.*|_.*\"})) OR vector(0)", "instant": true, "legendFormat": "Topics", "refId": "A"}],
+      "title": "Topics", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Total partitions across all user topics.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1}, "id": 3,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(kafka_topic_partitions{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}) OR vector(0)", "instant": true, "legendFormat": "Partitions", "refId": "A"}],
+      "title": "Partitions", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Total under-replicated partitions across all topics. Should be 0.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1}, "id": 4,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(kafka_topic_partition_under_replicated_partition{cluster=~\"$cluster\"} == 1) OR vector(0)", "instant": true, "legendFormat": "URP", "refId": "A"}],
+      "title": "Under-replicated partitions", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Offline partitions — these are unavailable for both reads and writes. Should be 0.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1}, "id": 5,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "sum(kafka_offline_partitions{cluster=~\"$cluster\"}) OR vector(0)", "instant": true, "legendFormat": "Offline", "refId": "A"}],
+      "title": "Offline partitions", "type": "stat"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of consumer groups currently registered.",
+      "fieldConfig": {"defaults": {"color": {"mode": "thresholds"}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1}, "id": 6,
+      "options": {"colorMode": "value", "graphMode": "area", "justifyMode": "auto", "orientation": "auto", "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false}, "textMode": "auto"},
+      "pluginVersion": "10.4.0",
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "count(group by (consumergroup) (kafka_consumergroup_members{cluster=~\"$cluster\"})) OR vector(0)", "instant": true, "legendFormat": "Groups", "refId": "A"}],
+      "title": "Consumer groups", "type": "stat"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5}, "id": 101, "panels": [], "title": "Topic & partition health", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 user topics by partition count.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 6}, "id": 7,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (kafka_topic_partitions{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by partition count", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 topics by under-replicated partition count over time. Sustained > 0 = ISR shrink, broker fell behind, or replication broken.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "red", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 6}, "id": 8,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (kafka_topic_partition_under_replicated_partition{cluster=~\"$cluster\",topic!~\"__.*|_.*\"} == 1))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by URP count", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of partitions whose current leader is NOT the preferred leader. Sustained > 0 = leader imbalance; run preferred-leader-election.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 6}, "id": 9,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "label_replace(count(kafka_topic_partition_leader_is_preferred{cluster=~\"$cluster\"} == 0) OR vector(0), \"kind\", \"non_preferred_leaders\", \"\", \"\")", "legendFormat": "{{kind}}", "refId": "A"}],
+      "title": "Partitions on non-preferred leader", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14}, "id": 102, "panels": [], "title": "Consumer group lag", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 consumer groups by total lag across all topics. Sustained growth = consumer falling behind.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10000}, {"color": "red", "value": 100000}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15}, "id": 10,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (consumergroup) (kafka_consumergroup_lag_sum{cluster=~\"$cluster\"}))", "legendFormat": "{{consumergroup}}", "refId": "A"}],
+      "title": "Top 10 consumer groups by total lag", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 (consumer-group, topic) pairs by lag. Pinpoints the specific topic that's behind.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 10000}, {"color": "red", "value": 100000}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15}, "id": 11,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (consumergroup, topic) (kafka_consumergroup_lag{cluster=~\"$cluster\"}))", "legendFormat": "{{consumergroup}}/{{topic}}", "refId": "A"}],
+      "title": "Top 10 (group, topic) by lag", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Lag growth velocity (deriv over 10m) per consumer group. Positive = consumer falling behind producers.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 23}, "id": 12,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, deriv(sum by (consumergroup) (kafka_consumergroup_lag_sum{cluster=~\"$cluster\"})[10m:1m]))", "legendFormat": "{{consumergroup}}", "refId": "A"}],
+      "title": "Top 10 consumer groups by lag growth (deriv 10m)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of active members per consumer group. Drops to 0 = consumer process down; sustained < expected = pods missing.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 23}, "id": 13,
+      "options": {"legend": {"calcs": ["min", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (consumergroup) (kafka_consumergroup_members{cluster=~\"$cluster\"}))", "legendFormat": "{{consumergroup}}", "refId": "A"}],
+      "title": "Consumer group member count (top 10)", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 31}, "id": 103, "panels": [], "title": "Throughput & offsets", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 topics by message ingress rate (rate of high-water-mark increase).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 32}, "id": 14,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (rate(kafka_topic_partition_current_offset{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}[5m])))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by message ingress rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 topics by current offset (high-water mark). Lifetime message count per topic.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 32}, "id": 15,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (kafka_topic_partition_current_offset{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by current offset", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 topics by retention range (current_offset - oldest_offset). Captures messages currently retained per topic.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 32}, "id": 16,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (kafka_topic_partition_current_offset{cluster=~\"$cluster\",topic!~\"__.*|_.*\"} - kafka_topic_partition_oldest_offset{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by retained-messages range", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40}, "id": 104, "panels": [], "title": "Application processing", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Application-side message ingress rate (top 10 producers / consumers by job).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41}, "id": 17,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (job) (rate(kafka_messages_in_total{cluster=~\"$cluster\"}[5m])))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by messages-in rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Application-side message processing rate per job.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41}, "id": 18,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (job) (rate(kafka_messages_processed_total{cluster=~\"$cluster\"}[5m])))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by messages-processed rate", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Application-side messages currently in-flight per job. Sustained growth indicates the consumer is falling behind producer rate.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 100}, {"color": "red", "value": 1000}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 49}, "id": 19,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (job) (kafka_messages_in_progress{cluster=~\"$cluster\"}))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by in-progress messages", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Per-job consumer throughput (messages/second) reported by the application.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 49}, "id": 20,
+      "options": {"legend": {"calcs": ["max", "mean"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (job) (kafka_consumer_throughput_per_second{cluster=~\"$cluster\"}))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by consumer throughput", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 57}, "id": 105, "panels": [], "title": "Application processing latency", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Cluster-wide message processing duration percentiles (p50/p95/p99).",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 58}, "id": 21,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "label_replace(histogram_quantile(0.5, sum by (le) (rate(kafka_message_processing_duration_seconds_bucket{cluster=~\"$cluster\"}[5m]))), \"quantile\", \"p50\", \"\", \"\")", "legendFormat": "{{quantile}}", "refId": "A"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "label_replace(histogram_quantile(0.95, sum by (le) (rate(kafka_message_processing_duration_seconds_bucket{cluster=~\"$cluster\"}[5m]))), \"quantile\", \"p95\", \"\", \"\")", "legendFormat": "{{quantile}}", "refId": "B"},
+        {"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "label_replace(histogram_quantile(0.99, sum by (le) (rate(kafka_message_processing_duration_seconds_bucket{cluster=~\"$cluster\"}[5m]))), \"quantile\", \"p99\", \"\", \"\")", "legendFormat": "{{quantile}}", "refId": "C"}
+      ],
+      "title": "Processing duration (p50/p95/p99)", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 jobs by p99 message processing duration.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "green", "value": null}, {"color": "yellow", "value": 1}, {"color": "red", "value": 5}]}, "unit": "s"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 8, "y": 58}, "id": 22,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, histogram_quantile(0.99, sum by (le, job) (rate(kafka_message_processing_duration_seconds_bucket{cluster=~\"$cluster\"}[5m]))))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by p99 processing latency", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Application processing rate (messages/sec) reported as a gauge by the application.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "ops"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 8, "x": 16, "y": 58}, "id": 23,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (job) (kafka_message_processing_rate_per_second{cluster=~\"$cluster\"}))", "legendFormat": "{{job}}", "refId": "A"}],
+      "title": "Top 10 jobs by processing rate", "type": "timeseries"
+    },
+
+    {"collapsed": false, "gridPos": {"h": 1, "w": 24, "x": 0, "y": 66}, "id": 106, "panels": [], "title": "Brokers & replicas", "type": "row"},
+
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Number of Kafka brokers over time. Drops indicate broker outages.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "stepAfter", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "yellow", "value": 1}, {"color": "green", "value": 3}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 67}, "id": 24,
+      "options": {"legend": {"calcs": ["min", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "label_replace(max(kafka_brokers{cluster=~\"$cluster\"}), \"kind\", \"brokers\", \"\", \"\")", "legendFormat": "{{kind}}", "refId": "A"}],
+      "title": "Broker count over time", "type": "timeseries"
+    },
+    {
+      "datasource": {"type": "prometheus", "uid": "${datasource}"},
+      "description": "Top 10 topics by total in-sync-replica count.",
+      "fieldConfig": {"defaults": {"color": {"mode": "palette-classic"}, "custom": {"drawStyle": "line", "fillOpacity": 10, "gradientMode": "none", "lineInterpolation": "smooth", "lineWidth": 2, "showPoints": "never", "spanNulls": true}, "mappings": [], "thresholds": {"mode": "absolute", "steps": [{"color": "blue", "value": null}]}, "unit": "none"}, "overrides": []},
+      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 67}, "id": 25,
+      "options": {"legend": {"calcs": ["max", "lastNotNull"], "displayMode": "list", "placement": "bottom", "showLegend": true}, "tooltip": {"mode": "multi", "sort": "desc"}},
+      "targets": [{"datasource": {"type": "prometheus", "uid": "${datasource}"}, "expr": "topk(10, sum by (topic) (kafka_topic_partition_in_sync_replica{cluster=~\"$cluster\",topic!~\"__.*|_.*\"}))", "legendFormat": "{{topic}}", "refId": "A"}],
+      "title": "Top 10 topics by in-sync replicas", "type": "timeseries"
+    }
+  ],
+  "refresh": "30s", "revision": 1, "schemaVersion": 39,
+  "tags": ["messaging", "kafka", "rtifact", "essentials", "perses-compatible"],
+  "templating": {
+    "list": [
+      {"current": {"selected": false, "text": "Prometheus", "value": "Prometheus"}, "hide": 0, "includeAll": false, "label": "Datasource", "multi": false, "name": "datasource", "options": [], "query": "prometheus", "queryValue": "", "refresh": 1, "regex": "", "skipUrlSync": false, "type": "datasource"},
+      {"current": {"selected": true, "text": "All", "value": "$__all"}, "datasource": {"type": "prometheus", "uid": "${datasource}"}, "definition": "label_values(kafka_brokers, cluster)", "hide": 0, "includeAll": true, "label": "Cluster", "multi": true, "name": "cluster", "options": [], "query": {"qryType": 1, "query": "label_values(kafka_brokers, cluster)", "refId": "PrometheusVariableQueryEditor-VariableQuery"}, "refresh": 2, "regex": "", "skipUrlSync": false, "sort": 1, "type": "query"}
+    ]
+  },
+  "time": {"from": "now-3h", "to": "now"},
+  "timepicker": {"refresh_intervals": ["10s", "30s", "1m", "5m", "15m", "30m", "1h", "2h", "1d"]},
+  "timezone": "",
+  "title": "Messaging / Kafka — Production",
+  "uid": "rtifact-kafka-production",
+  "version": 1, "weekStart": ""
+}
