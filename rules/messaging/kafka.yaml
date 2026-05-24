@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: up{job=~"kafka.*"} == 0
         annotations:
           summary: "Kafka broker is unreachable"
           description: "Kafka broker {{ $labels.instance }} is unreachable."
@@ -27,6 +28,7 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_server_replicamanager_underreplicatedpartitions > 0
         annotations:
           summary: "Kafka has under-replicated partitions"
           description: "Kafka has {{ $value }} under-replicated partitions on {{ $labels.instance }}."
@@ -42,6 +44,7 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_controller_kafkacontroller_offlinepartitionscount > 0
         annotations:
           summary: "Kafka has offline partitions"
           description: "Kafka has {{ $value }} offline partitions — these partitions are unavailable for reads and writes."
@@ -57,9 +60,11 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_consumergroup_lag > 10000
         annotations:
           summary: "Kafka consumer group lag is high"
-          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has lag of {{ $value }} messages."
+          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has lag of {{ $value
+            }} messages."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplaghigh"
 
       - alert: KafkaConsumerGroupLagCritical
@@ -72,9 +77,11 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_consumergroup_lag > 100000
         annotations:
           summary: "Kafka consumer group lag is critically high"
-          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has critical lag of {{ $value }} messages."
+          description: "Kafka consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} has critical lag of
+            {{ $value }} messages."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplagcritical"
 
       - alert: KafkaConsumerGroupLagGrowing
@@ -87,9 +94,11 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: deriv(kafka_consumergroup_lag[10m]) > 0
         annotations:
           summary: "Kafka consumer group lag is growing"
-          description: "Kafka consumer group {{ $labels.consumergroup }} lag is growing consistently for 10 minutes — consumer is not keeping up."
+          description: "Kafka consumer group {{ $labels.consumergroup }} lag is growing consistently for 10 minutes — consumer
+            is not keeping up."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaconsumergrouplaggrowing"
 
       - alert: KafkaLeaderElectionRateHigh
@@ -102,6 +111,7 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: rate(kafka_controller_kafkacontroller_leaderelectionrate[5m]) > 5
         annotations:
           summary: "Kafka leader election rate is high"
           description: "Kafka leader election rate is {{ $value }}/min — indicates broker instability."
@@ -117,6 +127,7 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: rate(kafka_server_replicamanager_isrshrinks_total[5m]) > 1
         annotations:
           summary: "Kafka ISR shrink rate is high"
           description: "Kafka ISR shrink rate is {{ $value }}/min — replicas are falling out of sync."
@@ -135,6 +146,10 @@ groups:
           signal: cause
           category: storage
           runbook: runbooks/messaging/kafka.md
+          query: |
+            (node_filesystem_size_bytes{mountpoint="/var/lib/kafka"}
+              - node_filesystem_free_bytes{mountpoint="/var/lib/kafka"})
+            / node_filesystem_size_bytes{mountpoint="/var/lib/kafka"} > 0.80
         annotations:
           summary: "Kafka broker disk usage is high"
           description: "Kafka broker disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
@@ -150,6 +165,7 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_network_socketserver_networkprocessoravgidlepercent < 0.20
         annotations:
           summary: "Kafka network processor idle percent is low"
           description: "Kafka network processor idle is {{ $value | humanizePercentage }} — broker network is saturated."
@@ -165,6 +181,7 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_server_requesthandlerpool_requesthandleravgidlepercent < 0.10
         annotations:
           summary: "Kafka request handler idle percent is critically low"
           description: "Kafka request handler idle is {{ $value | humanizePercentage }} — broker is overloaded."
@@ -182,6 +199,9 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: |
+            rate(kafka_server_brokertopicmetrics_failedproducerequests_total[5m])
+            / rate(kafka_server_brokertopicmetrics_totalproducerequests_total[5m]) > 0.01
         annotations:
           summary: "Kafka producer request error rate is high"
           description: "Kafka producer error rate is {{ $value | humanizePercentage }} on {{ $labels.instance }}."
@@ -197,6 +217,7 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_log_logflushstats_logflushtimems > 1000
         annotations:
           summary: "Kafka log flush latency is high"
           description: "Kafka log flush latency p99 is {{ $value }}ms on {{ $labels.instance }} — disk I/O may be a bottleneck."
@@ -212,7 +233,9 @@ groups:
           signal: symptom
           category: messaging
           runbook: runbooks/messaging/kafka.md
+          query: kafka_controller_kafkacontroller_activecontrollercount != 1
         annotations:
           summary: "Kafka active controller count is not 1"
-          description: "Kafka active controller count is {{ $value }} — expected exactly 1. This indicates a split-brain or no-controller situation."
+          description: "Kafka active controller count is {{ $value }} — expected exactly 1. This indicates a split-brain or
+            no-controller situation."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md#kafkaactivecontrollercountabnormal"

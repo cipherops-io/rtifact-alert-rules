@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: absent(up{job=~"alertmanager|.*alertmanager.*"} == 1)
         annotations:
           summary: "All Alertmanager instances are down"
           description: "No Alertmanager has been reachable for 5 minutes — alerts are not being routed or sent anywhere."
@@ -27,9 +28,11 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: alertmanager_config_last_reload_successful == 0
         annotations:
           summary: "Alertmanager config reload failed"
-          description: "Alertmanager on {{ $labels.instance }} failed to reload its configuration — running on the previous version."
+          description: "Alertmanager on {{ $labels.instance }} failed to reload its configuration — running on the previous
+            version."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerconfigreloadfailed"
 
       - alert: AlertmanagerNotificationsFailing
@@ -44,9 +47,13 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: |
+            sum by (integration) (rate(alertmanager_notifications_failed_total[5m]))
+            / sum by (integration) (rate(alertmanager_notifications_total[5m])) > 0.01
         annotations:
           summary: "Alertmanager notification delivery is failing"
-          description: "Alertmanager is failing to send {{ $value | humanizePercentage }} of notifications via {{ $labels.integration }}."
+          description: "Alertmanager is failing to send {{ $value | humanizePercentage }} of notifications via {{ $labels.integration
+            }}."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagernotificationsfailing"
 
       - alert: AlertmanagerClusterFailedPeers
@@ -59,9 +66,11 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: max_over_time(alertmanager_cluster_failed_peers[5m]) > 0
         annotations:
           summary: "Alertmanager cluster has failed peers"
-          description: "Alertmanager {{ $labels.instance }} reports {{ $value }} failed peer(s) — duplicate notifications likely."
+          description: "Alertmanager {{ $labels.instance }} reports {{ $value }} failed peer(s) — duplicate notifications
+            likely."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterfailedpeers"
 
       - alert: AlertmanagerClusterDown
@@ -76,9 +85,13 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: |
+            (count by (job) (avg_over_time(up{job=~".*alertmanager.*"}[5m]) < 0.5)
+            / count by (job) (up{job=~".*alertmanager.*"})) >= 0.5
         annotations:
           summary: "Half or more of the Alertmanager cluster is down"
-          description: "{{ $value | humanizePercentage }} of the Alertmanager replicas in job {{ $labels.job }} have been down for at least the last 5 minutes."
+          description: "{{ $value | humanizePercentage }} of the Alertmanager replicas in job {{ $labels.job }} have been
+            down for at least the last 5 minutes."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/alertmanager.md#alertmanagerclusterdown"
 
       - alert: AlertmanagerSilencesGrowing
@@ -91,6 +104,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/alertmanager.md
+          query: rate(alertmanager_silences[1h]) > 0.5
         annotations:
           summary: "Alertmanager silence count is growing rapidly"
           description: "Alertmanager silence count is growing at {{ $value | humanize }}/s — review for stale silences."

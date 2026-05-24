@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/grafana.md
+          query: absent(up{job=~"grafana|.*grafana.*"} == 1)
         annotations:
           summary: "Grafana is unreachable"
           description: "No Grafana instance has been reachable for 10 minutes — dashboards are unavailable."
@@ -29,6 +30,9 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/grafana.md
+          query: |
+            sum by (handler) (rate(grafana_http_request_duration_seconds_count{status_code=~"5.."}[5m]))
+            / sum by (handler) (rate(grafana_http_request_duration_seconds_count[5m])) > 0.05
         annotations:
           summary: "Grafana HTTP 5xx error rate is high"
           description: "Grafana handler {{ $labels.handler }} is returning 5xx at {{ $value | humanizePercentage }}."
@@ -44,6 +48,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/grafana.md
+          query: rate(grafana_datasource_request_total{code!~"2.."}[5m]) > 0.1
         annotations:
           summary: "Grafana is experiencing datasource errors"
           description: "Grafana datasource {{ $labels.datasource }} is returning errors at {{ $value | humanize }} req/s."
@@ -62,6 +67,10 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/grafana.md
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, handler) (rate(grafana_http_request_duration_seconds_bucket[5m]))
+            ) > 5
         annotations:
           summary: "Grafana p99 request latency is above 5s"
           description: "Grafana handler {{ $labels.handler }} p99 latency is {{ $value | humanizeDuration }} — UI feels sluggish."

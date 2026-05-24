@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/loki.md
+          query: up{job=~"loki.*"} == 0
         annotations:
           summary: "Loki is down"
           description: "Loki job {{ $labels.job }} instance {{ $labels.instance }} has been unreachable for more than 1 minute."
@@ -29,9 +30,13 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/loki.md
+          query: |
+            sum by (tenant) (rate(loki_distributor_lines_received_total[5m]))
+            / sum by (tenant) (loki_limits_per_tenant_override_config{limit_name="ingestion_rate_mb"}) > 0.80
         annotations:
           summary: "Loki ingestion rate is approaching its limit"
-          description: "Loki tenant {{ $labels.tenant }} ingestion rate is above 80% of its configured limit — log drops are imminent."
+          description: "Loki tenant {{ $labels.tenant }} ingestion rate is above 80% of its configured limit — log drops are
+            imminent."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokiingestionratenearlimit"
 
       - alert: LokiIngestionRateExceeded
@@ -44,6 +49,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/loki.md
+          query: rate(loki_distributor_ingester_appends_failures_total[5m]) > 0
         annotations:
           summary: "Loki ingestion rate limit is being exceeded"
           description: "Loki ingestion rate limit is being exceeded — logs are being dropped."
@@ -59,6 +65,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/loki.md
+          query: rate(loki_query_frontend_queries_total{status="timeout"}[5m]) > 0
         annotations:
           summary: "Loki queries are timing out"
           description: "Loki queries are timing out — check query range and log volume."
@@ -74,6 +81,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/loki.md
+          query: rate(loki_boltdb_shipper_compact_tables_operation_failures_total[5m]) > 0
         annotations:
           summary: "Loki compactor is failing"
           description: "Loki compactor is failing — TSDB/BoltDB compaction errors. Storage may grow unboundedly."
@@ -89,6 +97,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/loki.md
+          query: loki_ring_members{state!="ACTIVE"} > 0
         annotations:
           summary: "Loki ring has non-ACTIVE members"
           description: "Loki ring has {{ $value }} non-ACTIVE members — distributed write/read may be degraded."
@@ -104,6 +113,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/loki.md
+          query: rate(loki_ingester_chunks_flushed_total{reason="failed"}[5m]) > 0
         annotations:
           summary: "Loki ingester chunk flush is failing"
           description: "Loki ingester chunk flush is failing — logs may be lost."
@@ -119,6 +129,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/loki.md
+          query: loki_query_scheduler_queue_length > 1000
         annotations:
           summary: "Loki query scheduler queue depth is too high"
           description: "Loki query scheduler queue depth is {{ $value }} — querier capacity is insufficient."
@@ -134,6 +145,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/loki.md
+          query: rate(loki_ruler_evaluation_failures_total[5m]) > 0
         annotations:
           summary: "Loki Ruler rule evaluation is failing"
           description: "Loki Ruler rule evaluation is failing — log-based alerts may not fire."

@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: up{job=~"fastapi.*|python.*"} == 0
         annotations:
           summary: "FastAPI application is down"
           description: "FastAPI application {{ $labels.job }}/{{ $labels.instance }} is down."
@@ -29,6 +30,9 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: |
+            rate(http_requests_total{status_code=~"5..",job=~"fastapi.*|python.*"}[5m])
+            / rate(http_requests_total{job=~"fastapi.*|python.*"}[5m]) > 0.01
         annotations:
           summary: "FastAPI HTTP 5xx error rate is high"
           description: "FastAPI app {{ $labels.instance }} HTTP 5xx error rate is {{ $value | humanizePercentage }}."
@@ -44,6 +48,7 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket{job=~"fastapi.*|python.*"}[5m])) > 2
         annotations:
           summary: "FastAPI HTTP p99 latency is high"
           description: "FastAPI app {{ $labels.instance }} HTTP p99 latency is {{ $value | humanizeDuration }}."
@@ -59,9 +64,11 @@ groups:
           signal: cause
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: rate(process_cpu_seconds_total{job=~"fastapi.*|python.*"}[5m]) > 0.80
         annotations:
           summary: "FastAPI process CPU usage is high"
-          description: "FastAPI app {{ $labels.instance }} CPU usage is {{ $value | humanizePercentage }} — check for blocking sync code in async handlers."
+          description: "FastAPI app {{ $labels.instance }} CPU usage is {{ $value | humanizePercentage }} — check for blocking
+            sync code in async handlers."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighcpuusage"
 
       - alert: FastAPIDBConnectionPoolExhausted
@@ -76,9 +83,13 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: |
+            sqlalchemy_pool_checkedout{job=~"fastapi.*|python.*"}
+            / sqlalchemy_pool_size{job=~"fastapi.*|python.*"} > 0.95
         annotations:
           summary: "FastAPI SQLAlchemy connection pool is nearly exhausted"
-          description: "FastAPI app {{ $labels.instance }} SQLAlchemy pool is {{ $value | humanizePercentage }} used — DB queries are queuing."
+          description: "FastAPI app {{ $labels.instance }} SQLAlchemy pool is {{ $value | humanizePercentage }} used — DB
+            queries are queuing."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapidbconnectionpoolexhausted"
 
       - alert: FastAPIKafkaConsumerLagHigh
@@ -91,6 +102,7 @@ groups:
           signal: cause
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: kafka_consumergroup_lag{job=~"fastapi.*|python.*"} > 10000
         annotations:
           summary: "FastAPI Kafka consumer group lag is high"
           description: "FastAPI Kafka consumer group {{ $labels.consumergroup }} lag is {{ $value }} messages."
@@ -106,6 +118,7 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: rate(celery_task_failed_total{job=~"fastapi.*|python.*|celery.*"}[5m]) > 0
         annotations:
           summary: "FastAPI background or Celery tasks are failing"
           description: "FastAPI background/Celery tasks are failing at {{ $value }}/s on {{ $labels.instance }}."
@@ -123,9 +136,13 @@ groups:
           signal: cause
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: |
+            process_open_fds{job=~"fastapi.*|python.*"}
+            / process_max_fds{job=~"fastapi.*|python.*"} > 0.80
         annotations:
           summary: "FastAPI open file descriptors are near the limit"
-          description: "FastAPI app {{ $labels.instance }} open file descriptors at {{ $value | humanizePercentage }} of limit — check for connection leaks."
+          description: "FastAPI app {{ $labels.instance }} open file descriptors at {{ $value | humanizePercentage }} of limit
+            — check for connection leaks."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapihighopenconnections"
 
       - alert: FastAPIErrorRateCritical
@@ -140,7 +157,11 @@ groups:
           signal: symptom
           category: app
           runbook: runbooks/runtimes/python-fastapi.md
+          query: |
+            rate(http_requests_total{status_code=~"5..",job=~"fastapi.*|python.*"}[5m])
+            / rate(http_requests_total{job=~"fastapi.*|python.*"}[5m]) > 0.50
         annotations:
           summary: "FastAPI error rate exceeds 50% — circuit breaker or total downstream failure"
-          description: "FastAPI app {{ $labels.instance }} has > 50% error rate — likely circuit breaker open or downstream total failure."
+          description: "FastAPI app {{ $labels.instance }} has > 50% error rate — likely circuit breaker open or downstream
+            total failure."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/runtimes/python-fastapi.md#fastapierrorratecritical"

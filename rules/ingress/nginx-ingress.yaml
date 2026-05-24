@@ -12,9 +12,11 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: absent(up{job=~".*nginx.*ingress.*"} == 1)
         annotations:
           summary: "All nginx-ingress controllers are unreachable"
-          description: "No nginx-ingress controller has been reachable for 5 minutes — incoming HTTP/HTTPS traffic is not routed."
+          description: "No nginx-ingress controller has been reachable for 5 minutes — incoming HTTP/HTTPS traffic is not
+            routed."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressdown"
 
       - alert: NginxIngressHigh5xxRate
@@ -29,9 +31,13 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
+            / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 0.05
         annotations:
           summary: "Ingress 5xx error rate is above 5%"
-          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} 5xx rate is {{ $value | humanizePercentage }}."
+          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} 5xx rate is {{ $value | humanizePercentage
+            }}."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshigh5xxrate"
 
       - alert: NginxIngressHighLatency
@@ -49,9 +55,16 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            histogram_quantile(0.99,
+              sum by (le, ingress, exported_namespace) (
+                rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
+              )
+            ) > 2
         annotations:
           summary: "Ingress p99 request latency is above 2s"
-          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} p99 latency is {{ $value | humanizeDuration }}."
+          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} p99 latency is {{ $value | humanizeDuration
+            }}."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
 
       - alert: NginxIngressUpstreamErrors
@@ -64,9 +77,11 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1
         annotations:
           summary: "Ingress is forwarding 5xx responses from upstream"
-          description: "Ingress {{ $labels.ingress }} upstream {{ $labels.service }} is returning 5xx at {{ $value | humanize }} req/s."
+          description: "Ingress {{ $labels.ingress }} upstream {{ $labels.service }} is returning 5xx at {{ $value | humanize
+            }} req/s."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamerrors"
 
       - alert: NginxIngressCertificateExpiringSoon
@@ -79,6 +94,7 @@ groups:
           signal: cause
           category: security
           runbook: runbooks/ingress/nginx-ingress.md
+          query: nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14
         annotations:
           summary: "Ingress TLS certificate expires within 14 days"
           description: "Ingress {{ $labels.host }} TLS certificate expires in {{ $value | humanizeDuration }}."
@@ -94,6 +110,7 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: nginx_ingress_controller_config_last_reload_successful == 0
         annotations:
           summary: "nginx-ingress configuration reload has failed"
           description: "Last nginx-ingress config reload on {{ $labels.controller_pod }} failed — running on stale config."
@@ -109,6 +126,7 @@ groups:
           signal: cause
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
+          query: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
         annotations:
           summary: "nginx-ingress has a very high active connection count"
           description: "nginx-ingress {{ $labels.controller_pod }} has {{ $value }} active connections."

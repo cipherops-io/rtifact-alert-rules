@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/mysql.md
+          query: up{job=~"mysql.*"} == 0
         annotations:
           summary: "MySQL instance is down"
           description: "MySQL instance {{ $labels.instance }} has been unreachable for more than 1 minute."
@@ -27,6 +28,7 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_global_status_threads_connected / mysql_global_variables_max_connections > 0.80
         annotations:
           summary: "MySQL connection count is approaching the limit"
           description: "MySQL connections at {{ $value | humanizePercentage }} of max_connections on {{ $labels.instance }}."
@@ -42,9 +44,11 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_global_status_threads_running > 60
         annotations:
           summary: "MySQL has a high number of threads running"
-          description: "MySQL has {{ $value }} threads running on {{ $labels.instance }}, which may indicate query contention or an overloaded instance."
+          description: "MySQL has {{ $value }} threads running on {{ $labels.instance }}, which may indicate query contention
+            or an overloaded instance."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlhighthreadsrunning"
 
       - alert: MySQLSlowQueries
@@ -57,9 +61,11 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/mysql.md
+          query: rate(mysql_global_status_slow_queries[5m]) > 0.05
         annotations:
           summary: "MySQL slow query rate is elevated"
-          description: "MySQL slow query rate is {{ $value | humanize }} queries/s on {{ $labels.instance }}. Review and optimize slow queries."
+          description: "MySQL slow query rate is {{ $value | humanize }} queries/s on {{ $labels.instance }}. Review and optimize
+            slow queries."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlslowqueries"
 
       - alert: MySQLReplicationLag
@@ -72,6 +78,7 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_slave_status_seconds_behind_master > 30
         annotations:
           summary: "MySQL replica is lagging behind master"
           description: "MySQL replica is {{ $value }}s behind master on {{ $labels.instance }}."
@@ -87,6 +94,7 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_slave_status_slave_sql_running == 0 or mysql_slave_status_slave_io_running == 0
         annotations:
           summary: "MySQL replication is not running"
           description: "MySQL replication SQL or IO thread is stopped on {{ $labels.instance }}. Data divergence may occur."
@@ -102,9 +110,11 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: rate(mysql_global_status_innodb_log_waits[5m]) > 10
         annotations:
           summary: "MySQL InnoDB log waits are elevated"
-          description: "MySQL InnoDB log wait rate is {{ $value | humanize }} waits/s on {{ $labels.instance }}. Consider increasing innodb_log_buffer_size."
+          description: "MySQL InnoDB log wait rate is {{ $value | humanize }} waits/s on {{ $labels.instance }}. Consider
+            increasing innodb_log_buffer_size."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlinnodblogwaits"
 
       - alert: MySQLHighDiskUsage
@@ -120,9 +130,14 @@ groups:
           signal: cause
           category: storage
           runbook: runbooks/databases/mysql.md
+          query: |
+            (node_filesystem_size_bytes{mountpoint="/var/lib/mysql"}
+              - node_filesystem_free_bytes{mountpoint="/var/lib/mysql"})
+            / node_filesystem_size_bytes{mountpoint="/var/lib/mysql"} > 0.80
         annotations:
           summary: "MySQL data directory disk usage is high"
-          description: "Disk usage for MySQL data directory (/var/lib/mysql) on {{ $labels.instance }} is {{ $value | humanizePercentage }} — plan capacity expansion."
+          description: "Disk usage for MySQL data directory (/var/lib/mysql) on {{ $labels.instance }} is {{ $value | humanizePercentage
+            }} — plan capacity expansion."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlhighdiskusage"
 
       - alert: MySQLBufferPoolHighUsage
@@ -135,9 +150,12 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_global_status_innodb_buffer_pool_bytes_data / mysql_global_variables_innodb_buffer_pool_size > 
+            0.90
         annotations:
           summary: "MySQL InnoDB buffer pool is nearly full"
-          description: "MySQL InnoDB buffer pool utilization is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Read performance may degrade."
+          description: "MySQL InnoDB buffer pool utilization is {{ $value | humanizePercentage }} on {{ $labels.instance }}.
+            Read performance may degrade."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlbufferpoolhighusage"
 
       - alert: MySQLDeadlocks
@@ -150,9 +168,11 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/mysql.md
+          query: rate(mysql_global_status_innodb_deadlocks[5m]) > 0
         annotations:
           summary: "MySQL InnoDB deadlocks detected"
-          description: "MySQL is experiencing InnoDB deadlocks on {{ $labels.instance }} at {{ $value | humanize }} deadlocks/s. Review application transaction ordering."
+          description: "MySQL is experiencing InnoDB deadlocks on {{ $labels.instance }} at {{ $value | humanize }} deadlocks/s.
+            Review application transaction ordering."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqldeadlocks"
 
       - alert: MySQLTableLockWaits
@@ -165,9 +185,11 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: rate(mysql_global_status_table_locks_waited[5m]) > 100
         annotations:
           summary: "MySQL table lock wait rate is high"
-          description: "MySQL table lock wait rate is {{ $value | humanize }} waits/s on {{ $labels.instance }}. Review long-running queries and locking patterns."
+          description: "MySQL table lock wait rate is {{ $value | humanize }} waits/s on {{ $labels.instance }}. Review long-running
+            queries and locking patterns."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqltablelockwaits"
 
       - alert: MySQLAbortedConnections
@@ -180,9 +202,11 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: rate(mysql_global_status_aborted_connects[5m]) > 5
         annotations:
           summary: "MySQL aborted connection rate is elevated"
-          description: "MySQL aborted connection rate is {{ $value | humanize }} connections/s on {{ $labels.instance }}. Check authentication failures and network issues."
+          description: "MySQL aborted connection rate is {{ $value | humanize }} connections/s on {{ $labels.instance }}.
+            Check authentication failures and network issues."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mysql.md#mysqlabortedconnections"
 
       - alert: MySQLLongRunningTransaction
@@ -195,6 +219,7 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
+          query: mysql_info_schema_innodb_trx_wait_time_seconds > 300
         annotations:
           summary: "MySQL long-running transaction detected"
           description: "MySQL has a transaction running for more than 5 minutes on {{ $labels.instance }}."

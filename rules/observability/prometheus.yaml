@@ -12,6 +12,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: up{job=~"prometheus|prometheus.*"} == 0
         annotations:
           summary: "Prometheus is down"
           description: "Prometheus instance {{ $labels.instance }} has been unreachable for more than 1 minute."
@@ -27,6 +28,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: up == 0
         annotations:
           summary: "Prometheus scrape target is down"
           description: "Prometheus target {{ $labels.job }}/{{ $labels.instance }} has been down for more than 10 minutes."
@@ -44,6 +46,9 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: |
+            rate(prometheus_target_scrapes_exceeded_body_size_limit_total[5m])
+            + rate(prometheus_target_scrapes_exceeded_sample_limit_total[5m]) > 0
         annotations:
           summary: "Prometheus scrape errors due to exceeded limits"
           description: "Prometheus is dropping scrapes because targets are exceeding body size or sample limits."
@@ -59,6 +64,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: prometheus_rule_group_last_duration_seconds > prometheus_rule_group_interval_seconds
         annotations:
           summary: "Prometheus rule group evaluation is slower than its interval"
           description: "Prometheus rule group {{ $labels.rule_group }} is taking longer than its evaluation interval."
@@ -74,9 +80,11 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: prometheus_tsdb_wal_corruptions_total > 0
         annotations:
           summary: "Prometheus WAL corruption detected"
-          description: "Prometheus WAL has {{ $value }} corruption events — data loss may occur. Restart Prometheus to attempt recovery."
+          description: "Prometheus WAL has {{ $value }} corruption events — data loss may occur. Restart Prometheus to attempt
+            recovery."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/prometheus.md#prometheuswalcorruption"
 
       - alert: PrometheusTSDBCompactionFailed
@@ -89,6 +97,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: rate(prometheus_tsdb_compactions_failed_total[5m]) > 0
         annotations:
           summary: "Prometheus TSDB compaction is failing"
           description: "Prometheus TSDB compaction is failing — disk I/O or storage issue."
@@ -104,6 +113,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: prometheus_tsdb_head_series > 2000000
         annotations:
           summary: "Prometheus has too many active time series"
           description: "Prometheus has {{ $value | humanize }} active time series — high cardinality may cause OOM."
@@ -119,6 +129,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: rate(prometheus_target_scrapes_missed_by_target_limit_total[5m]) > 0
         annotations:
           summary: "Prometheus is missing scrapes due to target limits"
           description: "Prometheus is missing scrapes due to target limits."
@@ -134,6 +145,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: rate(prometheus_remote_storage_samples_failed_total[5m]) > 0
         annotations:
           summary: "Prometheus remote write is failing"
           description: "Prometheus remote write is failing at {{ $value }} samples/s."
@@ -149,6 +161,7 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/prometheus.md
+          query: (time() - prometheus_remote_storage_queue_highest_sent_timestamp_seconds) > 120
         annotations:
           summary: "Prometheus remote write queue is lagging"
           description: "Prometheus remote write queue is {{ $value | humanizeDuration }} behind — check remote storage endpoint."

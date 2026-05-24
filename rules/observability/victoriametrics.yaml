@@ -12,9 +12,11 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: absent(up{job=~"victoriametrics|vmsingle|vmselect|vminsert|vmstorage|vm.*"} == 1)
         annotations:
           summary: "VictoriaMetrics is unreachable"
-          description: "No VictoriaMetrics instance has been reachable for 5 minutes — metrics ingestion and querying are down."
+          description: "No VictoriaMetrics instance has been reachable for 5 minutes — metrics ingestion and querying are
+            down."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/victoriametrics.md#victoriametricsdown"
 
       - alert: VictoriaMetricsTooManyRows
@@ -27,9 +29,11 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: rate(vm_rows_inserted_total[5m]) > 1000000
         annotations:
           summary: "VictoriaMetrics insert rate is very high"
-          description: "VictoriaMetrics is inserting {{ $value | humanize }} rows/s — review cardinality and remote-write sources."
+          description: "VictoriaMetrics is inserting {{ $value | humanize }} rows/s — review cardinality and remote-write
+            sources."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/victoriametrics.md#victoriametricstoomanyrows"
 
       - alert: VictoriaMetricsHighChurnRate
@@ -44,9 +48,13 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: |
+            sum(rate(vm_new_timeseries_created_total[5m]))
+            / sum(rate(vm_rows_inserted_total[5m])) > 0.10
         annotations:
           summary: "VictoriaMetrics has a high time series churn rate"
-          description: "VictoriaMetrics is creating new time series at {{ $value | humanizePercentage }} of insert rate — likely a label cardinality bomb."
+          description: "VictoriaMetrics is creating new time series at {{ $value | humanizePercentage }} of insert rate —
+            likely a label cardinality bomb."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/victoriametrics.md#victoriametricshighchurnrate"
 
       - alert: VictoriaMetricsRowsRejectedOnIngestion
@@ -59,6 +67,7 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: rate(vm_rows_ignored_total[5m]) > 0
         annotations:
           summary: "VictoriaMetrics is rejecting rows on ingestion"
           description: "VictoriaMetrics is rejecting {{ $value | humanize }} rows/s with reason {{ $labels.reason }}."
@@ -75,6 +84,8 @@ groups:
           signal: cause
           category: storage
           runbook: runbooks/observability/victoriametrics.md
+          query: |
+            (vm_data_size_bytes / vm_free_disk_space_bytes) > 0.85
         annotations:
           summary: "VictoriaMetrics storage is more than 85% full"
           description: "VictoriaMetrics on {{ $labels.instance }} storage utilization is {{ $value | humanizePercentage }}."
@@ -92,9 +103,13 @@ groups:
           signal: cause
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: |
+            avg_over_time(vm_concurrent_insert_current[1m])
+            / vm_concurrent_insert_capacity > 0.85
         annotations:
           summary: "VictoriaMetrics concurrent inserts are near the limit"
-          description: "VictoriaMetrics concurrent insert utilization on {{ $labels.instance }} is {{ $value | humanizePercentage }}."
+          description: "VictoriaMetrics concurrent insert utilization on {{ $labels.instance }} is {{ $value | humanizePercentage
+            }}."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/victoriametrics.md#victoriametricsconcurrentinsertslimitreached"
 
       - alert: VictoriaMetricsTooSlowQueryRate
@@ -110,6 +125,10 @@ groups:
           signal: symptom
           category: observability
           runbook: runbooks/observability/victoriametrics.md
+          query: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(vm_request_duration_seconds_bucket{path=~"/api/v1/query.*"}[5m]))
+            ) > 5
         annotations:
           summary: "VictoriaMetrics p99 query latency is above 5s"
           description: "VictoriaMetrics p99 query latency is {{ $value | humanizeDuration }}."
