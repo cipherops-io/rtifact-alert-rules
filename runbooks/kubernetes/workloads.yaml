@@ -28,23 +28,158 @@ common_alerts:
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Capture pod state and events"
-        description: "Collect restart count, last state reason, and warning events before the next restart cycle."
+        title: "Confirm the crash loop and classify the termination"
+        description: >-
+          Pull the live crash-loop metric pack from VictoriaMetrics so the RCA names a
+          concrete failure class instead of "pod is crash looping, check logs". The
+          exit code and last terminated reason are the primary classifiers — branch on
+          them BEFORE anything else:
+          exit_code=0  / reason=Completed         => process exited cleanly but the
+            controller expects a long-running service (wrong command/args/mode).
+          exit_code=1  / reason=Error             => generic app/config/runtime failure
+            (missing env/secret/configmap, bad config, failed dependency at startup).
+          exit_code=2                              => CLI usage / bad argument.
+          exit_code=126 / reason=ContainerCannotRun=> command found but not executable
+            (permission / exec-bit / shell mismatch).
+          exit_code=127                            => command not found / bad image
+            entrypoint / missing binary / bad PATH.
+          exit_code=137 / reason=OOMKilled         => SIGKILL, almost always OOM — jump
+            to step 2 and treat as a memory-sizing problem, NOT a generic crash loop.
+          exit_code=139                            => SIGSEGV / native crash.
+          exit_code=143 / reason=Error+SIGTERM     => graceful-stop signal, usually
+            rollout/preemption/shutdown, not an app bug.
+          Use restarts_15m / restart_rate to gauge severity, and container_ready=0 with
+          pod_ready=0 to confirm the workload is actually down (not a single flap).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Confirm CrashLoopBackOff, restart count/rate, last terminated reason (OOMKilled/Error/Completed/ContainerCannotRun), exit code, and readiness."
+            params:
+              queries:
+                - name: crashloop_active
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="CrashLoopBackOff"}[5m]))'
+                - name: last_exit_code
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: term_reason_oomkilled
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="OOMKilled"})'
+                - name: term_reason_error
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="Error"})'
+                - name: term_reason_completed
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="Completed"})'
+                - name: term_reason_cannot_run
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="ContainerCannotRun"})'
+                - name: restarts_15m
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[15m]))'
+                - name: restarts_6h
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))'
+                - name: restart_rate_per_min_5m
+                  unit: "restarts/min"
+                  query: 'max(rate(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))*60'
+                - name: container_ready
+                  query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: container_running
+                  query: 'max(kube_pod_container_status_running{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: pod_ready
+                  query: 'max(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="true"})'
+      - step: 2
+        title: "Rule out OOMKilled and resource starvation"
+        description: >-
+          CrashLoopBackOff and OOMKilled overlap heavily, so explicitly disprove memory
+          before blaming the app. Interpret: term_reason_oomkilled==1 OR last_exit_code==137
+          => this is an OOM, root cause = container exceeded its memory limit (right-size
+          memory, request==limit per policy) — do NOT keep hunting config/dependency.
+          mem_peak_pct >= 90 with positive mem_slope and no traffic => leak/unbounded
+          growth approaching the limit. cpu_throttle_pct high with a cpu_limit set =>
+          CFS throttling can stall startup and trip liveness probes (platform policy is
+          no CPU limit). If memory/CPU are comfortably below limits, eliminate resources
+          as the cause and proceed to app/config/image analysis.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Memory working-set vs limit %, 6h peak %, growth slope, request==limit, CPU limit policy + throttling, node memory pressure."
+            params:
+              queries:
+                - name: mem_util_pct
+                  unit: "%"
+                  query: '100*max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                - name: mem_peak_pct_6h
+                  unit: "%"
+                  query: '100*max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                - name: mem_slope_mib_per_min
+                  unit: "MiB/min"
+                  query: 'max(deriv(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[2h]))*60/1024/1024'
+                - name: mem_request_minus_limit_mib
+                  unit: "MiB"
+                  query: '(max(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})-max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"}))/1024/1024'
+                - name: cpu_limit_cores
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="cpu"})'
+                - name: cpu_throttle_pct
+                  unit: "%"
+                  query: '100*max(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))/max(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))'
+                - name: node_memory_pressure
+                  query: 'max(kube_node_status_condition{node="$node",condition="MemoryPressure",status="true"})'
+      - step: 3
+        title: "Check image/config waiting reasons and rollout drift"
+        description: >-
+          Separate "container never started" from "container started then crashed", and
+          check whether a rollout introduced the failure. Interpret:
+          waiting_image>0 (ImagePullBackOff/ErrImagePull) => bad tag, registry auth, or
+          missing image — not an app crash. waiting_config>0 (CreateContainerConfigError/
+          CreateContainerError) => missing/renamed ConfigMap/Secret/env/volume reference.
+          newest_rs_age_min small (roughly <30m) AND the crash window lines up with it,
+          or deploy_generation_lag>0 / deploy_unavailable>0 => a recent rollout shipped a
+          bad image/config — rollback is the fast path. If no rollout and no image/config
+          waiting reason, the failure is in-process (config drift, rotated secret, expired
+          cert, dependency outage) and the previous-container logs in step 5 are decisive.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Image-pull / config-error waiting reasons and deployment rollout drift (generation lag, unavailable replicas, newest ReplicaSet age)."
+            params:
+              queries:
+                - name: waiting_image
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason=~"ImagePullBackOff|ErrImagePull"}[15m]))'
+                - name: waiting_config
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason=~"CreateContainerConfigError|CreateContainerError"}[15m]))'
+                - name: deploy_generation_lag
+                  query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"})-max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
+                - name: deploy_unavailable
+                  query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                - name: newest_rs_age_min
+                  unit: "min"
+                  query: '(time()-max(kube_replicaset_created{namespace="$namespace",owner_name="$workload"}))/60'
+      - step: 4
+        title: "Capture pod state, events, and crash metadata"
+        description: "Confirm the metric pack against describe/events — BackOff, probe failures (Liveness/Readiness/Startup), Killing, FailedMount, and the last-state termination block (reason, exit code, finishedAt, restartCount)."
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
-            description: "Inspect describe output for BackOff, Failed, OOMKilled, and probe errors."
-      - step: 2
-        title: "Read Crash Context"
-        description: "Use previous logs to inspect the crashed process, not the fresh restarted container."
-        tool_calls:
+            description: "Pod status / warning events / describe — BackOff, probe failures, config-mount errors, last terminated reason and exit code."
           - tool_id: "tool.get_crash_context"
-            description: "Fetch crash context for the pod that got crashed."
-    remediation:   # only for suggestion
+            description: "Crash reason, container, exit code, and recent failures for the crashed pod."
+      - step: 5
+        title: "Read crash context from the previous (killed) container"
+        description: "Inspect the PREVIOUS container's logs (not the freshly restarted one) for the exact fatal line — config/env/secret errors, dependency timeout/DNS/auth/TLS failures, probe path errors, permission/filesystem errors, or language stack traces (Traceback/panic/NPE)."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Previous-container logs filtered for fatal/panic/config/secret/dependency/permission/probe signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
       - action: "rollback_deployment"
-        description: "Rollback if loops started immediately after a release."
+        description: "Primary fix when the crash loop began right after a rollout (small newest_rs_age_min, generation lag, or a bad image/config in the new revision)."
         tool_id: "forge.revert_deployment"
         requires_approval: true
-    escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded."
+      - action: "patch_resources"
+        description: "ONLY if step 2 proved OOM (reason=OOMKilled / exit 137 / mem_peak_pct high): right-size memory, raising request AND limit together (keep request==limit) to ~1.3x the observed 6h peak."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Only to restore availability when the cause is a transient external dependency (e.g. DB not ready at startup) and config is valid. NOT a fix for a deterministic config/code crash — it will just loop back into the same failure."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded. Route by exit code — 137: SRE (memory sizing); 1/2/139: app team (code/config); 126/127/ImagePull/config-error: platform (image, secret, configmap)."
+    follow_up:
+      - "Once the previous-container logs name the exact failure, file the concrete fix (config key, secret, image tag, command/args) rather than a generic 'enable tracing'."
+      - "If a rollout caused it, confirm the offending revision and verify the new revision's config/secret references before re-rolling."
 
   - name: "KubePodOOMKilled"
     patterns: ["KubePodOOMKilled", "OOMKilled", "out of memory"]
