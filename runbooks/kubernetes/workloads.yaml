@@ -46,34 +46,110 @@ common_alerts:
         requires_approval: true
     escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded."
 
-  - name: "KubePodOOMKilled"   # need to add Get Crash Context
+  - name: "KubePodOOMKilled"
     patterns: ["KubePodOOMKilled", "OOMKilled", "out of memory"]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Validate memory pressure"
-        description: "Correlate OOM reason with container limits and node pressure."
+        title: "Quantify the OOM kill and memory headroom"
+        description: >-
+          Pull the live OOM metric pack from VictoriaMetrics. Percentages, the 6h
+          peak and the growth slope are pre-computed in PromQL so the RCA is
+          grounded in real numbers, not a generic 'memory spike'. Interpret:
+          peak_pct >= 90 with request==limit => limit too low / undersized;
+          positive slope with no traffic => leak/unbounded growth;
+          node_memory_pressure or pod_evicted => node-level, not just the container.
+          If util/peak is LOW despite an OOM, do NOT recommend raising the limit —
+          suspect a transient spike or a sibling container and capture a profile.
         tool_calls:
-          - tool_id: "tool.fetch_metrics"   # also check with node-pressure and resource saturation.
-            description: "Check pod memory usage and compare with requests/limits."
+          - tool_id: "tool.query_metrics"
+            description: "Confirm exit 137 / OOMKilled, memory working-set vs limit %, 6h peak %, growth slope, request==limit and CPU-limit policy, node memory pressure."
+            params:
+              queries:
+                - name: oom_confirmed
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="OOMKilled"})'
+                - name: last_exit_code
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: restarts_6h
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))'
+                - name: mem_working_set_mib
+                  unit: "MiB"
+                  query: 'max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/1024/1024'
+                - name: mem_limit_mib
+                  unit: "MiB"
+                  query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024'
+                - name: mem_request_mib
+                  unit: "MiB"
+                  query: 'max(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024'
+                - name: mem_util_pct
+                  unit: "%"
+                  query: '100*max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                - name: mem_peak_6h_mib
+                  unit: "MiB"
+                  query: 'max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/1024/1024'
+                - name: mem_peak_pct
+                  unit: "%"
+                  query: '100*max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                - name: mem_slope_mib_per_min
+                  unit: "MiB/min"
+                  query: 'max(deriv(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[2h]))*60/1024/1024'
+                - name: cpu_limit_cores
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="cpu"})'
+                - name: node_memory_pressure
+                  query: 'max(kube_node_status_condition{node="$node",condition="MemoryPressure",status="true"})'
+                - name: pod_evicted
+                  query: 'max(kube_pod_status_reason{namespace="$namespace",pod=~"$workload-.*",reason="Evicted"})'
       - step: 2
-        title: "Confirm termination reason"
-        description: "Validate exit code and reason from last terminated container state."
+        title: "Confirm termination reason and OOM events"
+        description: "Cross-check the metric pack with KSM OOM-kill events and the pod describe/events bundle (Last State: Terminated, Reason: OOMKilled, Exit Code: 137)."
         tool_calls:
+          - tool_id: "tool.get_oom_events"
+            description: "OOM kill events and affected containers for the workload."
           - tool_id: "tool.capture_diagnostics"
-            description: "Look for exit code 137 and reason OOMKilled."
+            description: "Pod status / warning events / describe — confirm OOMKilled termination and restart count."
       - step: 3
-        title: "Read Crash Context"
-        description: "Use previous logs to inspect the crashed process, not the fresh restarted container."
+        title: "Assess resource saturation and QoS policy"
+        description: "Compare memory usage against requests/limits and QoS; verify the desired policy (memory request==limit, no CPU limit => Burstable, not Guaranteed)."
+        tool_calls:
+          - tool_id: "tool.get_resource_saturation"
+            description: "CPU/memory saturation vs requests/limits and pod QoS class."
+      - step: 4
+        title: "Read crash context from the killed container"
+        description: "Inspect the PREVIOUS container's logs (not the freshly restarted one) for leak, large-payload/file-processing, or unbounded-cache signatures."
         tool_calls:
           - tool_id: "tool.get_crash_context"
-            description: "Fetch crash context for the pod that got crashed."
-    remediation:   # only for suggestion
+            description: "Crash reason, container, exit code, and last log lines of the crashed pod."
+          - tool_id: "tool.read_logs"
+            description: "Previous-container logs filtered for memory/OOM/large-payload signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "Right-size memory: raise request AND limit together (keep request==limit per policy) to ~1.3x the observed 6h peak. Primary fix when peak/util is high against the limit."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "remove_cpu_limit"
+        description: "If a CPU limit is set, remove it (platform policy: no CPU limits, avoid CFS throttling); keep memory request==limit."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "rollback_deployment"
+        description: "Roll back if a deployment shortly preceded the OOM (memory regression in the new revision)."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
       - action: "scale_out_replicas"
-        description: "Temporarily spread load while memory limits are corrected."
+        description: "Only if traffic/concurrency is driving memory pressure — spreads load, does NOT fix a per-request leak."
         tool_id: "forge.scale_deployment"
         requires_approval: true
+      - action: "restart_deployment"
+        description: "Only to restore availability if the pod is crashlooping/stuck after the OOM. Not a root-cause fix."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
     escalation: "SRE for limit tuning; app team if leak or runaway workload behavior is suspected."
+    follow_up:
+      - "If the slope indicates a leak, capture a heap/profile dump from a live pod before the next kill."
+      - "Confirm the memory request==limit and no-CPU-limit policy is applied to this workload."
 
   - name: "KubePodCPUThrottlingHigh"
     patterns: ["KubePodCPUThrottlingHigh", "CPU throttling", "container CPU throttled", "CFS throttling"]
@@ -368,6 +444,15 @@ available_tools:
     endpoint: "/api/tools/fetch-metrics"
     description: "Fetch metrics for services, pods, nodes, and cluster entities."
     params: ["namespace", "service", "pod", "node", "window", "metric_filter"]
+  - tool_id: "tool.query_metrics"
+    endpoint: "/api/tools/query-metrics"
+    description: >-
+      Run named PromQL queries against VictoriaMetrics and return pre-computed
+      values. Generic across alert classes: each diagnostic step supplies its own
+      `queries` list (name + PromQL), with $namespace/$workload/$container/$node/
+      $pod/$cluster placeholders auto-substituted from the alert. Use it to ground
+      the RCA in real numbers (ratios, peaks, slopes) rather than generic text.
+    params: ["namespace", "pod", "container", "workload", "node", "queries"]
   - tool_id: "tool.list_services"
     endpoint: "/api/tools/list-services"
     description: "List discovered services and their health context."
