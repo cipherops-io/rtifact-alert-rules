@@ -291,33 +291,68 @@ common_alerts:
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Confirm throttling ratio"
-        description: "Validate that throttled CFS periods are sustained above the threshold and isolate the affected container."
+        title: "Quantify CPU throttling and limit headroom"
+        description: "Confirm the throttled CFS period ratio, current CPU usage, configured request/limit, and whether usage is near the limit."
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
-            description: "Compare container_cpu_cfs_throttled_periods_total and container_cpu_cfs_periods_total for the affected namespace/pod/container."
+          - tool_id: "tool.query_metrics"
+            description: "Run exact pod/container KSM and cAdvisor queries for throttling, usage, request, limit, and usage-vs-limit."
+            params:
+              queries:
+                - name: "cpu_throttle_pct"
+                  unit: "%"
+                  query: '100*sum(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/sum(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                - name: "cpu_usage_cores"
+                  unit: "cores"
+                  query: 'sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                - name: "cpu_limit_cores"
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                - name: "cpu_request_cores"
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                - name: "cpu_usage_vs_limit_pct"
+                  unit: "%"
+                  query: '100*sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
       - step: 2
-        title: "Compare CPU usage with limits"
-        description: "Check whether the workload is hitting a low CPU limit, running under burstable QoS, or contending with other pods on the node."
+        title: "Check node contention and workload impact"
+        description: "Determine whether throttling is isolated to the container, caused by node CPU contention, or correlated with request/Kafka processing load."
         tool_calls:
-          - tool_id: "tool.get_resource_saturation"
-            description: "Review CPU usage, CPU requests/limits, pod QoS, and node CPU saturation for the alert window."
+          - tool_id: "tool.query_metrics"
+            description: "Compare node CPU, request rate, latency, and Kafka processing metrics around the throttling window."
+            params:
+              queries:
+                - name: "node_cpu_pct"
+                  unit: "%"
+                  query: '(100 - avg(rate(node_cpu_seconds_total{mode="idle",instance="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",node="$node"}[5m])) * 100)'
+                - name: "request_rate_rps"
+                  unit: "req/s"
+                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",service.name="$service"}[5m]))'
+                - name: "p95_latency_ms"
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate({__name__=~"http.server.request.duration_bucket|http.server.duration_bucket",service.name="$service"}[5m]))) * 1000'
+                - name: "kafka_processing_rate"
+                  unit: "ops/s"
+                  query: 'sum(rate({__name__=~"messaging.process.duration_count|messaging.process.duration_count_total",service.name="$service"}[5m]))'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect logs, OTel probes, and config summary to correlate throttling with service impact."
       - step: 3
         title: "Inspect workload impact"
-        description: "Correlate throttling with latency, timeout spikes, failed requests, or slowed background processing."
+        description: "Correlate throttling with Kafka rebalances, consumer lag catch-up, GC, timeouts, slow processing, or batch activity."
         tool_calls:
           - tool_id: "tool.read_logs"
-            description: "Review application logs for timeouts, queue buildup, deadline exceeded errors, and slow processing during the throttling window."
+            description: "Review logs for rebalance, consumer lag, gc, timeout, slow, processing, or batch messages during the throttling window."
+            params:
+              tail_lines: 300
     remediation:
       - action: "patch_resources"
-        description: "Tune CPU limits/requests when throttling is caused by an undersized limit. Consider removing CPU limits for latency-sensitive workloads after review."
+        description: "If a CPU limit exists and throttling is high, remove or raise the CPU limit per policy; keep an appropriate CPU request."
         tool_id: "forge.patch_resources"
         requires_approval: true
       - action: "scale_out_replicas"
-        description: "Temporarily add replicas if throttling is load-driven and the service can scale horizontally."
+        description: "Scale replicas or tune HPA only when request/Kafka processing load is driving CPU demand beyond available capacity."
         tool_id: "forge.scale_deployment"
         requires_approval: true
-    escalation: "SRE and owning service team if throttling correlates with latency, timeout spikes, or failed customer traffic."
+    escalation: "SRE for CPU request/limit policy and node contention; owning service team if throttling correlates with Kafka lag, GC, latency, timeouts, or failed customer traffic."
 
   - name: "KubeContainerWaiting"
     patterns: ["KubeContainerWaiting", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
@@ -361,11 +396,70 @@ common_alerts:
     diagnostic_steps:
       - step: 1
         title: "Compare desired vs available replicas"
-        description: "Determine whether pods are pending, crashing, or evicted."
+        description: "Quantify the replica gap and rollout generation lag from KSM before touching pods."
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"  # need to add what is desired and required pod cnt in capture_diagnostics tool
+          - tool_id: "tool.query_metrics"
+            description: "Pull desired/available/unavailable/updated replicas and generation lag for the deployment."
+            params:
+              queries:
+                - name: "replicas_desired"
+                  unit: "pods"
+                  query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                - name: "replicas_available"
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_available{namespace="$namespace",deployment="$workload"})'
+                - name: "replicas_ready"
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_ready{namespace="$namespace",deployment="$workload"})'
+                - name: "replicas_unavailable"
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                - name: "replicas_updated"
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_updated{namespace="$namespace",deployment="$workload"})'
+                - name: "generation_lag"
+                  unit: ""
+                  query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"}) - max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
+      - step: 2
+        title: "Find the pod-level cause"
+        description: "The mismatch is a symptom — classify unavailable pods: Pending, CrashLoopBackOff, ImagePullBackOff, OOMKilled, or not-ready."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count pods of this workload in each failure state."
+            params:
+              queries:
+                - name: "pods_pending"
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Pending"})'
+                - name: "pods_crashloop"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason="CrashLoopBackOff"}))'
+                - name: "pods_image_pull_waiting"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}))'
+                - name: "pods_oom_recent"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (max_over_time(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="OOMKilled"}[1h])))'
+                - name: "pods_not_ready"
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
+          - tool_id: "tool.capture_diagnostics"
             description: "Inspect deployment conditions and associated pod status."
-    remediation: []
+      - step: 3
+        title: "Read logs from unavailable pods"
+        description: "Confirm the pod-level cause (probe failures, startup errors, dependency failures)."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review recent error logs for the workload."
+    remediation:  # suggest only
+      - action: "rollback_deployment"
+        description: "Roll back when the mismatch started with a new rollout (generation lag or updated<desired with new-revision pods failing)."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+      - action: "patch_resources"
+        description: "Right-size memory/CPU when unavailable pods are OOMKilled or unschedulable due to resource requests."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
     escalation: "SRE if sustained mismatch impacts availability for more than one release window."
 
   - name: "KubeDeploymentRolloutStuck"
@@ -391,29 +485,125 @@ common_alerts:
         requires_approval: true
     escalation: "Immediate app-team + SRE escalation for production rollout failures."
 
-  - name: "KubeStatefulSetReplicasMismatch"   # need to reproduce
-    patterns: ["KubeStatefulSetReplicasMismatch", "statefulset not ready"]
+  - name: "KubeStatefulSetReplicasMismatch"
+    patterns: ["KubeStatefulSetReplicasMismatch", "statefulset not ready", "statefulset replicas not ready"]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Check ordinal readiness"
-        description: "StatefulSets progress in order; inspect the first non-ready ordinal pod."
+        title: "Compare desired vs ready replicas"
+        description: "Quantify the replica gap from KSM. StatefulSets progress in ordinal order, so one stuck pod blocks the rest."
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Pull desired/ready/current/updated replica counts for the statefulset."
+            params:
+              queries:
+                - name: "replicas_desired"
+                  unit: "pods"
+                  query: 'max(kube_statefulset_replicas{namespace="$namespace",statefulset="$workload"})'
+                - name: "replicas_ready"
+                  unit: "pods"
+                  query: 'max(kube_statefulset_status_replicas_ready{namespace="$namespace",statefulset="$workload"})'
+                - name: "replicas_current"
+                  unit: "pods"
+                  query: 'max(kube_statefulset_status_replicas_current{namespace="$namespace",statefulset="$workload"})'
+                - name: "replicas_updated"
+                  unit: "pods"
+                  query: 'max(kube_statefulset_status_replicas_updated{namespace="$namespace",statefulset="$workload"})'
+                - name: "generation_lag"
+                  unit: ""
+                  query: 'max(kube_statefulset_metadata_generation{namespace="$namespace",statefulset="$workload"}) - max(kube_statefulset_status_observed_generation{namespace="$namespace",statefulset="$workload"})'
+      - step: 2
+        title: "Find the pod-level cause"
+        description: "Classify non-ready ordinal pods: Pending, CrashLoopBackOff, ImagePullBackOff, OOMKilled, or not-ready (probe/storage)."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count pods of this statefulset in each failure state (ordinal pod names: name-0, name-1, ...)."
+            params:
+              queries:
+                - name: "pods_pending"
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-[0-9]+",phase="Pending"})'
+                - name: "pods_crashloop"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason="CrashLoopBackOff"}))'
+                - name: "pods_image_pull_waiting"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}))'
+                - name: "pods_oom_recent"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (max_over_time(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason="OOMKilled"}[1h])))'
+                - name: "pods_not_ready"
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-[0-9]+",condition="false"})'
           - tool_id: "tool.capture_diagnostics"
             description: "Sort pods by name and inspect lowest failing ordinal."
+      - step: 3
+        title: "Read logs from the stuck ordinal"
+        description: "Confirm whether the blocker is app startup, storage/PVC binding, or probe failures."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review recent error logs for the statefulset pods."
     remediation: []
     escalation: "App team + storage owners if stateful workload health is blocked by storage or bootstrapping."
 
-  - name: "KubeDaemonSetNotScheduled"  # need to reproduce
-    patterns: ["KubeDaemonSetNotScheduled", "daemonset not scheduled", "taint mismatch"]
+  - name: "KubeDaemonSetNotScheduled"
+    patterns: ["KubeDaemonSetNotScheduled", "daemonset not scheduled", "daemonset not fully ready", "taint mismatch"]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Validate scheduling constraints"
-        description: "Review taints/tolerations, node selectors, and resource requests."
+        title: "Quantify the scheduling gap"
+        description: "Compare desired vs scheduled/ready DaemonSet pods and check for misscheduled pods."
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Pull DaemonSet desired/scheduled/ready/unavailable/misscheduled counts from KSM."
+            params:
+              queries:
+                - name: "ds_desired"
+                  unit: "pods"
+                  query: 'max(kube_daemonset_status_desired_number_scheduled{namespace="$namespace",daemonset="$workload"})'
+                - name: "ds_scheduled"
+                  unit: "pods"
+                  query: 'max(kube_daemonset_status_current_number_scheduled{namespace="$namespace",daemonset="$workload"})'
+                - name: "ds_ready"
+                  unit: "pods"
+                  query: 'max(kube_daemonset_status_number_ready{namespace="$namespace",daemonset="$workload"})'
+                - name: "ds_unavailable"
+                  unit: "pods"
+                  query: 'max(kube_daemonset_status_number_unavailable{namespace="$namespace",daemonset="$workload"})'
+                - name: "ds_misscheduled"
+                  unit: "pods"
+                  query: 'max(kube_daemonset_status_number_misscheduled{namespace="$namespace",daemonset="$workload"})'
+      - step: 2
+        title: "Check node-level blockers"
+        description: "DaemonSet gaps are usually node problems: NotReady nodes, cordons, resource pressure, or taints the DaemonSet does not tolerate."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count cluster nodes that are NotReady, cordoned, or under memory/disk pressure."
+            params:
+              queries:
+                - name: "nodes_total"
+                  unit: "nodes"
+                  query: 'count(kube_node_info)'
+                - name: "nodes_not_ready"
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="Ready",status="false"})'
+                - name: "nodes_unschedulable"
+                  unit: "nodes"
+                  query: 'sum(kube_node_spec_unschedulable)'
+                - name: "nodes_memory_pressure"
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="MemoryPressure",status="true"})'
+                - name: "nodes_disk_pressure"
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="DiskPressure",status="true"})'
           - tool_id: "tool.capture_diagnostics"
             description: "Inspect DaemonSet desired/current/ready and node scheduling events."
+      - step: 3
+        title: "Validate scheduling constraints"
+        description: "If no node is unhealthy, review taints/tolerations, node selectors, affinity, and per-node resource requests (requires kubectl describe ds / describe node — metrics cannot prove taint mismatches)."
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Review DaemonSet pod logs for scheduling/startup errors on the affected nodes."
     remediation: []
     escalation: "Platform team if daemon workload is required for node observability or security controls."
 
@@ -422,8 +612,34 @@ common_alerts:
     priority: P2
     diagnostic_steps:
       - step: 1
+        title: "Confirm the pull failure state"
+        description: "Verify the container is waiting on an image pull and whether it has ever started. The container never runs, so pod events — not app logs — carry the exact registry error."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Check waiting reasons (ImagePullBackOff/ErrImagePull/InvalidImageName) and pod phase for the exact pod."
+            params:
+              queries:
+                - name: "waiting_image_pull_backoff"
+                  unit: ""
+                  query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="ImagePullBackOff"})'
+                - name: "waiting_err_image_pull"
+                  unit: ""
+                  query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="ErrImagePull"})'
+                - name: "waiting_invalid_image"
+                  unit: ""
+                  query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="InvalidImageName"})'
+                - name: "pod_phase_pending"
+                  unit: ""
+                  query: 'max(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Pending"})'
+                - name: "container_ready"
+                  unit: ""
+                  query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod="$pod",container="$container"})'
+                - name: "restarts_6h"
+                  unit: ""
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod",container="$container"}[6h]))'
+      - step: 2
         title: "Determine pull failure mode"
-        description: "Differentiate auth failure, missing tag, registry outage, or DNS/network issue."
+        description: "Differentiate auth failure, missing tag, registry outage, or DNS/network issue. The pod events (Failed to pull image: manifest unknown / unauthorized / timeout) are the primary RCA artifact."
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
             description: "Review pull event messages from describe output."
