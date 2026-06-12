@@ -1,0 +1,182 @@
+tech_stack: service-observability
+version: "1.0"
+description: "Runbook for service-level latency/error anomaly alerts raised by proactive monitoring (no Kubernetes failure object). Grounds RCA in OBI/eBPF service-graph, span, and OTel HTTP metrics so the assessment names the slow edge, pod, dependency, or span instead of generic 'check logs' guidance."
+
+match_keywords:
+  - latency spike
+  - latency high
+  - api latency
+  - slow requests
+  - response time degradation
+  - error rate spike
+  - internal lock errors
+
+categories:
+  - API
+  - APPLICATION
+
+common_alerts:
+  - name: "ServiceLatencySpike"
+    patterns:
+      [
+        "latency spike",
+        "latency high",
+        "high request latency",
+        "elevated latency",
+        "api latency high",
+        "p99 latency",
+        "p95 latency",
+        "response time",
+        "latency degradation",
+        "slow requests",
+        "internal lock errors",
+        "event loop blocking",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the inbound latency symptom from eBPF service-graph data"
+        description: >-
+          OBI (eBPF) service-graph metrics measure real request latency on the wire,
+          per edge and per pod, without app instrumentation — confirm the symptom on
+          the SERVER side of the $service inbound edge before blaming anything.
+          Interpret: inbound_p99_ms much higher than inbound_p50_ms with flat
+          inbound_req_per_s (compare vs the 1h-ago rate) => NOT traffic-driven,
+          suspect a dependency or internal contention. inbound_req_per_s up 2x+ vs
+          1h ago => load-driven latency, scaling is on the table. If
+          slowest_pod_p99_ms (labels name the pod) is far above inbound_p99_ms, a
+          single bad pod is the outlier — target THAT pod (restart/profile it), not
+          the whole deployment. If inbound p99 is normal, the alert window has
+          passed or the anomaly was internal-only (locks/GC) — weight the log
+          evidence in step 4 higher.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Inbound (server-side) p50/p95/p99, request rate now vs 1h ago, and worst-pod p99 from OBI service-graph histograms."
+            params:
+              queries:
+                - name: inbound_p99_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                - name: inbound_p95_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                - name: inbound_p50_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.50, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                - name: inbound_req_per_s
+                  unit: "req/s"
+                  query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                - name: inbound_req_per_s_1h_ago
+                  unit: "req/s"
+                  query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m] offset 1h))'
+                - name: slowest_pod_p99_ms
+                  unit: "ms"
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m]))))*1000'
+                - name: inbound_failed_pct
+                  unit: "%"
+                  query: '100*sum(rate(traces_service_graph_request_failed_total{server="$service",client="incoming"}[5m]))/sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+      - step: 2
+        title: "Attribute the latency to a downstream dependency (outbound edges)"
+        description: >-
+          The most common cause of a latency spike with flat traffic is a slow or
+          failing downstream dependency. Each outbound edge of $service is measured
+          client-side by OBI; the labels on slowest_dependency_p99_ms NAME the edge
+          (server="..."). Interpret: slowest_dependency_p99_ms within ~80% of
+          inbound_p99_ms => that dependency IS the user-facing latency — name it as
+          the root cause (external SaaS/LLM endpoints count; they won't appear in
+          k8s metrics). worst_edge_failed_pct > 1% => internal retries are masking
+          dependency failures even when top-level HTTP error rate is 0 — mention the
+          retry amplification. busiest_dependency_req_per_s spiking vs steady inbound
+          traffic => fan-out/retry storm toward that dependency. If all outbound
+          edges are fast, the delay is INSIDE $service — go to step 3.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Slowest/busiest outbound edges, per-edge failure ratio, and total failed edge traffic from OBI service-graph client histograms."
+            params:
+              queries:
+                - name: slowest_dependency_p99_ms
+                  unit: "ms"
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, server) (rate(traces_service_graph_request_client_bucket{client="$service"}[5m]))))*1000'
+                - name: busiest_dependency_req_per_s
+                  unit: "req/s"
+                  query: 'topk(1, sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                - name: dependency_edge_count
+                  query: 'count(sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                - name: worst_edge_failed_pct
+                  unit: "%"
+                  query: 'topk(1, 100*sum by (server) (rate(traces_service_graph_request_failed_total{client="$service"}[5m]))/sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                - name: failed_edge_req_per_s
+                  unit: "req/s"
+                  query: 'sum(rate(traces_service_graph_request_failed_total{client="$service"}[5m]))'
+      - step: 3
+        title: "Pinpoint the internal bottleneck span and supporting OTel signals"
+        description: >-
+          Span metrics attribute time to a specific route/operation inside $service —
+          the labels on slowest_span_p99_ms name it (span.name="..."). Interpret:
+          one span p99 far above the rest => that operation is the bottleneck; pair
+          it with the step-2 edge (e.g. a /tts route that calls an LLM proxy). Spans
+          pinned at the histogram ceiling (e.g. exactly 10000ms) mean the real
+          latency EXCEEDS the top bucket — report ">= value", not "= value".
+          http_server_p99_ms / db_p99_ms / dns_p95_ms may be n/a when those OBI
+          families are stale for this workload — do NOT invent them; the
+          service-graph numbers from steps 1-2 are the primary evidence.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Slowest span p99 + its call rate, OTel HTTP server p99, DB operation p99, and DNS lookup p95."
+            params:
+              queries:
+                - name: slowest_span_p99_ms
+                  unit: "ms"
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, span.name) (rate(traces_span_metrics_duration_bucket{service.name="$service"}[5m]))))*1000'
+                - name: slowest_span_calls_per_s
+                  unit: "calls/s"
+                  query: 'topk(1, sum by (span.name) (rate(traces_span_metrics_calls_total{service.name="$service"}[5m])))'
+                - name: http_server_p99_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate({__name__="http.server.request.duration_bucket",service.name="$service"}[10m])))*1000'
+                - name: db_p99_ms
+                  unit: "ms"
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, db.system.name) (rate({__name__="db.client.operation.duration_bucket",service.name="$service"}[10m]))))*1000'
+                - name: dns_p95_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate({__name__="dns.lookup.duration_bucket",service.name="$service"}[10m])))*1000'
+      - step: 4
+        title: "Correlate with pod health, log volume, and error signatures"
+        description: >-
+          Cross-check the metric story against runtime state: pod restarts in the
+          window => crash/OOM contribution; a log-volume spike or NEW error
+          signatures (e.g. lock acquisition RuntimeErrors named in the alert) =>
+          internal contention; neither => pure dependency-side latency.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod restarts, log-volume baseline ratio, new error signatures, and OTel HTTP probes for the service."
+      - step: 5
+        title: "Read the exact error lines"
+        description: >-
+          Pull current logs filtered for the contention/timeout signatures
+          (lock acquisition failures, thread/connection-pool exhaustion, timeouts,
+          retries, slow query warnings). The goal is the exact line that ties the
+          metric story together — e.g. a lock timeout inside the span named in
+          step 3 while waiting on the dependency named in step 2.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Service logs filtered for lock/timeout/pool/retry signatures."
+            params:
+              tail_lines: 200
+    remediation: # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "restart_deployment"
+        description: "Only when internal lock contention or a wedged worker is confirmed (step 4/5 evidence) AND outbound dependencies are healthy — clears the stuck state but is NOT a fix for dependency-side latency."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "scale_out_replicas"
+        description: "Only when step 1 proves the latency is traffic-driven (inbound req/s up materially vs 1h ago) and CPU/memory headroom exists — spreading load does not fix a slow dependency."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+      - action: "rollback_deployment"
+        description: "Roll back if a deployment of $service shortly preceded the spike (correlated change present)."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: "Owning service team with the named span/dependency; platform SRE if the slow edge is shared infrastructure (LLM proxy, storage, DNS) impacting multiple callers."
+    follow_up:
+      - "If the slow edge is an external endpoint (SaaS/LLM), file the latency evidence with the provider or add client-side timeouts/circuit breaking instead of restarting the caller."
+      - "If a span is pinned at the histogram ceiling, raise the OBI top bucket or add explicit tracing on that route to see the true tail."
