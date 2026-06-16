@@ -355,40 +355,330 @@ common_alerts:
     escalation: "SRE for CPU request/limit policy and node contention; owning service team if throttling correlates with Kafka lag, GC, latency, timeouts, or failed customer traffic."
 
   - name: "KubeContainerWaiting"
-    patterns: ["KubeContainerWaiting", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
+    patterns: ["KubeContainerWaiting", "container waiting too long", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify waiting reason"    # check if waiting reason is provided by capture diagnostics         # review from vm
-        description: "Reason label determines path: pull issues, config errors, or runtime startup failures."
+        title: "Confirm the container is waiting and classify the reason"
+        description: >-
+          KubeContainerWaiting means a container is stuck in Waiting — it has not started.
+          The waiting reason IS the classifier; branch on it before anything else (queries
+          are scoped to the exact pod/container from the alert). Interpret:
+          waiting_image>0 (ImagePullBackOff/ErrImagePull/InvalidImageName) => image pull
+            problem — bad tag, registry auth, or missing image. Pod EVENTS carry the exact
+            registry error (step 3), not app logs. Follow KubePodImagePullBackOff.
+          waiting_config>0 (CreateContainerConfigError/CreateContainerError) => a referenced
+            Secret/ConfigMap/env/volume is missing or renamed — the container can't be
+            constructed. Step 3 events name the missing object.
+          waiting_crashloop>0 (CrashLoopBackOff) => the container started then crashed and is
+            backing off — this is a crash, not a never-started case; classify it in step 2
+            by last terminated reason + exit code and follow KubePodCrashLooping.
+          waiting_creating>0 (ContainerCreating) => still pulling image / mounting volumes /
+            wiring the network — a node/CSI/CNI startup delay; if young it may self-resolve,
+            if persistent the mount or CNI is stuck (step 3 FailedMount/sandbox events).
+          waiting_creating>0 as PodInitializing => the MAIN container is blocked by an INIT
+            container — jump to step 2 (init state) before blaming the app container.
+          container_ready==0 confirms it is not serving. Do NOT recommend a fix from this
+            step alone — it only classifies.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Inspect waiting reason and related events."
-    remediation: []   # only for suggestion
-    escalation: "Platform team if wait reason is image pull or secret/config reference failures."
-
-  - name: "KubePodNotReady"
-    patterns: ["KubePodNotReady", "readiness probe failed", "pod not ready"]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Check readiness failures"
-        description: "Validate probe endpoint response, startup timing, and dependency readiness."
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Collect readiness events and probe configuration from pod spec."
+          - tool_id: "tool.query_metrics"
+            description: "Exact-container waiting reasons (image / config / crashloop / creating-or-initializing), readiness, and restarts."
+            params:
+              queries:
+                - name: waiting_image
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}[15m]))'
+                - name: waiting_config
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"CreateContainerConfigError|CreateContainerError"}[15m]))'
+                - name: waiting_crashloop
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="CrashLoopBackOff"}[15m]))'
+                - name: waiting_creating
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"ContainerCreating|PodInitializing"}[15m]))'
+                - name: container_ready
+                  query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod="$pod",container="$container"})'
+                - name: restarts_15m
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod",container="$container"}[15m]))'
       - step: 2
-        title: "Inspect app logs"
-        description: "Find endpoint failures, dependency errors, or startup timeouts."
+        title: "Check init containers and crash classification"
+        description: >-
+          A waiting (PodInitializing) main container is most often blocked by an INIT
+          container, and a CrashLoopBackOff needs its termination classified. Interpret:
+          init_crashloop>0 OR init_restarts_15m>0 => an INIT container is failing and
+            blocking the main container (init_term_reason names why: Error/exit 1 =
+            config/dependency/CRD/migration failure; OOMKilled = init memory). Root cause is
+            the init step — read ITS logs in step 4; do NOT call this a main-app problem.
+          For a CrashLoopBackOff main container, branch on the last termination:
+          last_term_oom==1 OR last_exit==137 => OOMKilled — size memory (KubePodOOMKilled).
+          last_term_error==1 / last_exit==1 => generic app/config/dependency failure.
+          last_exit==127 => command not found / bad image entrypoint / missing binary.
+          last_exit==126 => command not executable (permission / exec-bit).
+          If waiting_creating with NO init failure and NO crashloop => genuinely still
+            creating (image pull in progress, volume mount, CNI) — the cause is node/CSI/CNI,
+            confirmed by the FailedMount / sandbox / pull events in step 3.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Init-container waiting/restarts/last-terminated, plus the main container's last terminated reason (OOM/Error) and exit code."
+            params:
+              queries:
+                - name: init_crashloop
+                  query: 'max(max_over_time(kube_pod_init_container_status_waiting_reason{namespace="$namespace",pod="$pod",reason="CrashLoopBackOff"}[15m]))'
+                - name: init_restarts_15m
+                  query: 'max(increase(kube_pod_init_container_status_restarts_total{namespace="$namespace",pod="$pod"}[15m]))'
+                - name: init_term_reason_error
+                  query: 'max(kube_pod_init_container_status_last_terminated_reason{namespace="$namespace",pod="$pod",reason="Error"})'
+                - name: init_term_reason_oom
+                  query: 'max(kube_pod_init_container_status_last_terminated_reason{namespace="$namespace",pod="$pod",reason="OOMKilled"})'
+                - name: last_term_error
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod",container="$container",reason="Error"})'
+                - name: last_term_oom
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod",container="$container",reason="OOMKilled"})'
+                - name: last_exit
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod="$pod",container="$container"})'
+      - step: 3
+        title: "Capture pod events and waiting metadata"
+        description: "The container never ran, so pod EVENTS — not app logs — carry the exact cause: 'Failed to pull image' (manifest unknown / unauthorized / timeout), 'CreateContainerConfigError' naming the missing Secret/ConfigMap, FailedMount / volume attach errors, FailedCreatePodSandBox (CNI), and BackOff / init-container failure messages."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod status / warning events / describe — image pull, config/secret, mount, sandbox/CNI, and init-container failure messages."
+          - tool_id: "tool.get_crash_context"
+            description: "Crash/termination reason, container (incl. init), and exit code for the waiting pod."
+      - step: 4
+        title: "Read the exact failing line"
+        description: >-
+          Read logs from the container the previous steps blamed. If step 2 pointed to an
+          INIT container, read THAT init container for the fatal line (config/CRD/migration/
+          dependency error). For a CrashLoopBackOff main container, read the PREVIOUS
+          container. For image/config waiting reasons the container produced no logs — rely
+          on the step 3 events. Name the exact missing object / failed command, not "waiting".
         tool_calls:
           - tool_id: "tool.read_logs"
-            description: "Review logs around probe failures and restarts."
-    remediation:  # suggest only
+            description: "Logs filtered for image/pull/registry, config/secret/configmap/env, and init/startup/dependency signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "rollback_deployment"
+        description: "Primary fix when a recent rollout shipped the bad image tag or config/secret reference that the container is now waiting on (image-pull or config-error reason that began with the new revision). Restores the last-working revision."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+      - action: "patch_resources"
+        description: "ONLY if step 2 showed the container/init was OOMKilled (last_term_oom / init_term_reason_oom / exit 137): right-size memory (raise request AND limit together, keep request==limit) to ~1.3x the observed peak."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
       - action: "restart_deployment"
-        description: "Apply rolling restart only for transient stuck states."
+        description: "Only to clear a TRANSIENT stuck state — a ContainerCreating wedged on a mount/sandbox that has since cleared, or an init step waiting on a now-recovered dependency. NOT a fix for a missing image/secret/configmap or a deterministic init/CRD failure — it will wait again."
         tool_id: "forge.restart_deployment"
         requires_approval: true
-    escalation: "App team if readiness endpoint is failing due to application behavior."
+    escalation: >-
+      Route by waiting reason — image pull: platform (registry creds / tag / connectivity);
+      config error: platform + service owner (missing Secret/ConfigMap/env); init/CRD/
+      migration failure: the owning team for that init step; ContainerCreating stuck on
+      mount/CNI: platform (CSI/CNI/node). Page if multiple replicas are waiting and
+      availability is degraded.
+    follow_up:
+      - "Once the waiting reason is classified, file the concrete fix (image tag, the missing Secret/ConfigMap key, the failing init command/CRD, or the stuck volume/CNI) — not a generic 'investigate'."
+      - "If a rollout introduced a bad image/config reference, validate the new revision's image and Secret/ConfigMap references before re-rolling."
+
+  - name: "KubePodNotReady"
+    patterns: ["KubePodNotReady", "pod not ready", "readiness probe failed", "not ready for >15m"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm not-ready and locate the failing container"
+        description: >-
+          KubePodNotReady is a SYMPTOM, not a root cause — the pod's Ready condition is
+          false. The job of this step is to split the pod into one of three macro-states
+          so the rest of the tree routes correctly, instead of emitting "pod not ready,
+          check logs". Interpret:
+          pod_ready_false==1 / pod_ready_true==0 => confirmed not ready (proceed).
+          container_running==0 AND container_ready==0 => the main container NEVER STARTED
+            — this is a waiting/startup problem (init, image, config, scheduling). Go to
+            step 2 and classify the waiting reason; the readiness-probe path does NOT apply
+            (there is no running process to probe yet).
+          container_running==1 AND container_ready==0 => container is UP but failing its
+            readiness probe — this is the probe / app-health / dependency path. Resource
+            and OBI checks in step 3 are decisive; logs in step 6 carry the probe error.
+          phase_pending==1 => pod is Pending (unscheduled or stuck initializing) — confirm
+            via step 2 (init state) and step 4 (replica availability); do not blame the app.
+          restarts_15m>0 with container flapping => a crash/probe loop, not a single flap.
+          NEVER recommend a fix from this step alone — it only classifies.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Confirm Ready=false and split into never-started vs running-but-unready vs Pending; main-container running/ready, pod phase, restarts."
+            params:
+              queries:
+                - name: pod_ready_false
+                  query: 'max(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
+                - name: pod_ready_true
+                  query: 'max(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="true"})'
+                - name: container_ready
+                  query: 'min(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: container_running
+                  query: 'max(kube_pod_container_status_running{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                - name: phase_running
+                  query: 'max(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Running"})'
+                - name: phase_pending
+                  query: 'max(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Pending"})'
+                - name: restarts_15m
+                  query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[15m]))'
+                - name: pod_age_min
+                  unit: "min"
+                  query: '(time()-max(kube_pod_created{namespace="$namespace",pod=~"$workload-.*"}))/60'
+      - step: 2
+        title: "Classify the waiting / terminated state — main AND init containers"
+        description: >-
+          When the container never started (step 1), the waiting reason names the exact
+          class. CRITICAL: check INIT containers too — a stuck/looping init container keeps
+          the main container in PodInitializing and the pod Pending/not-ready, and the main
+          container's own waiting reason will misleadingly read "PodInitializing" while the
+          true failure is the init step. Interpret, in priority order:
+          init_crashloop==1 OR init_restarts_15m>0 => an INIT container is failing
+            (init_term_reason names why: Error/exit 1 = config/dependency/CRD/migration
+            failure; OOMKilled = init memory). Root cause is the init step — read its logs
+            in step 6 (name the init container). Do NOT call this a main-app crash.
+          waiting_crashloop==1 => main container CrashLoopBackOff => follow KubePodCrashLooping.
+          term_oom==1 OR last_exit==137 => OOMKilled => follow KubePodOOMKilled (size memory).
+          waiting_image==1 => ImagePullBackOff/ErrImagePull => follow KubePodImagePullBackOff.
+          waiting_config==1 => CreateContainerConfigError => missing/renamed Secret/ConfigMap/env.
+          waiting_init==1 with NO init failure and NO crashloop => genuinely still pulling/
+            mounting/initializing (volume, network, node startup) — correlate with pod_age_min
+            and step 4; if young it may self-resolve, if old it is stuck.
+          All zero AND container_running==1 => not a waiting problem; this is readiness-probe/
+            app-health/dependency — go to step 3.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Main + init container waiting reasons (CrashLoopBackOff/ImagePull/Config/PodInitializing), init restarts and last-terminated reason, OOM and exit code."
+            params:
+              queries:
+                - name: waiting_crashloop
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason="CrashLoopBackOff"}[15m]))'
+                - name: waiting_image
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}[15m]))'
+                - name: waiting_config
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"CreateContainerConfigError|CreateContainerError"}[15m]))'
+                - name: waiting_init
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"PodInitializing|ContainerCreating"}[15m]))'
+                - name: init_crashloop
+                  query: 'max(max_over_time(kube_pod_init_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason="CrashLoopBackOff"}[15m]))'
+                - name: init_restarts_15m
+                  query: 'max(increase(kube_pod_init_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*"}[15m]))'
+                - name: init_term_reason_error
+                  query: 'max(kube_pod_init_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="Error"})'
+                - name: init_term_reason_oom
+                  query: 'max(kube_pod_init_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="OOMKilled"})'
+                - name: term_oom
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="OOMKilled"})'
+                - name: last_exit
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+      - step: 3
+        title: "If running-but-unready: rule out resources and pin the failing dependency"
+        description: >-
+          Only relevant when step 1 showed container_running==1 AND container_ready==0
+          (the container is up but its readiness probe keeps failing). Interpret:
+          mem_util_pct >= 90 => near the memory limit; GC pauses/allocation stalls can fail
+            the probe — treat as a sizing problem (KubePodOOMKilled path).
+          cpu_throttle_pct high with a CPU limit set => CFS throttling stalls the event loop
+            and trips readiness/liveness timeouts (platform policy: no CPU limit).
+          dep_client_p95_ms high OR svc_graph_failed > 0 => a DOWNSTREAM dependency is slow/
+            failing and the readiness probe gates on it — the topk label names WHICH edge/
+            server. Root cause is the dependency, not this pod.
+          If mem/cpu are comfortably below limits and there is no downstream failure, the
+            probe itself is misconfigured (wrong path/port/threshold) or the app is
+            internally unhealthy — step 6 logs carry the probe error line.
+          HONEST GAP: OBI/OTel only exists for instrumented HTTP/gRPC services. For
+            controllers, operators, jobs and other non-HTTP workloads these return n/a —
+            say "no service telemetry for this workload" rather than inventing a dependency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Memory vs limit %, CPU throttling, and (for instrumented services) downstream client p95 + failed service-graph edges with topk attribution."
+            params:
+              queries:
+                - name: mem_util_pct
+                  unit: "%"
+                  query: '100*max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                - name: cpu_throttle_pct
+                  unit: "%"
+                  query: '100*max(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))/max(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))'
+                - name: dep_client_p95_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le, server_address) (rate({__name__="http.client.request.duration_bucket",k8s_namespace_name="$namespace",k8s_owner_name="$workload"}[5m]))) * 1000'
+                - name: svc_graph_failed
+                  unit: "req/s"
+                  query: 'topk(1, sum by (client, server) (rate(traces_service_graph_request_failed_total{client="$workload"}[5m])))'
+      - step: 4
+        title: "Check rollout drift and replica availability"
+        description: >-
+          Decide whether a recent rollout introduced the not-ready pods, and how wide the
+          blast radius is. Interpret:
+          replicas_ready < replicas_desired => the not-ready pod(s) are eating into
+            availability; replicas_ready==0 means the workload is fully down.
+          deploy_gen_lag>0 OR deploy_unavailable>0 with newest_rs_age_min small (roughly
+            <30m) => a fresh rollout shipped a bad image/config/probe and is the fast path —
+            rollback. If newest_rs_age_min is large and no generation lag, the failure is
+            NOT rollout-driven (config drift, rotated secret, expired cert, dependency
+            outage, or a node/init problem) — rely on steps 2/3 and the logs.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Desired vs ready/unavailable replicas, deployment generation lag, and newest ReplicaSet age."
+            params:
+              queries:
+                - name: replicas_desired
+                  unit: "pods"
+                  query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                - name: replicas_ready
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_ready{namespace="$namespace",deployment="$workload"})'
+                - name: deploy_unavailable
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                - name: deploy_gen_lag
+                  query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"})-max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
+                - name: newest_rs_age_min
+                  unit: "min"
+                  query: '(time()-max(kube_replicaset_created{namespace="$namespace"} * on(replicaset,namespace) group_left(owner_name) kube_replicaset_owner{namespace="$namespace",owner_name="$workload"}))/60'
+      - step: 5
+        title: "Capture pod state, events, and probe metadata"
+        description: "Confirm the metric pack against describe/events — Unhealthy (Readiness/Liveness/Startup probe failed), BackOff, Killing, FailedMount, FailedScheduling, and the init-container/last-state termination block (reason, exit code, message)."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod status / warning events / describe — probe failures, init-container errors, scheduling/mount failures, last terminated reason and exit code."
+          - tool_id: "tool.get_crash_context"
+            description: "Crash/termination reason, container (incl. init), exit code, and recent failures for the not-ready pod."
+      - step: 6
+        title: "Read the exact failing line"
+        description: >-
+          Read logs from the container the previous steps blamed. If step 2 pointed to an
+          INIT container, read THAT init container's logs for the fatal line (config/CRD/
+          migration/dependency error). If a main container crashed, read the PREVIOUS
+          container. If the container is running-but-unready, read current logs for the
+          readiness/probe/dependency failure (connection refused, deadline exceeded, DNS,
+          TLS, 503/504, "not ready", "waiting for"). Name the exact cause, not "check logs".
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Logs filtered for readiness/health/probe, init/config/secret/CRD/migration, and dependency (connection refused/timeout/DNS/TLS/503) signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "rollback_deployment"
+        description: "Primary fix when step 4 shows a fresh rollout caused it (small newest_rs_age_min, generation lag, or a bad image/config/probe in the new revision). Restores the last-ready revision fastest."
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+      - action: "patch_resources"
+        description: "ONLY if a container/init was OOMKilled (step 2 term_oom/init_term_reason_oom) or step 3 showed mem_util_pct high: right-size memory (raise request AND limit together, keep request==limit) to ~1.3x the observed peak. If a CPU limit is throttling and stalling the probe, remove the CPU limit per policy."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Only to restore availability when the cause is a TRANSIENT external dependency (e.g. an init step waiting on a now-recovered DB/registry) and config is valid. NOT a fix for a deterministic init/config/probe failure — it will loop straight back into not-ready."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Route by the classified cause — init/config/image/CRD: platform (the failing init step,
+      secret, configmap, or registry); OOM/throttle: SRE (resource sizing/policy); readiness
+      probe or app-health: app team. Page SRE + owning team if replicas_ready==0 or customer
+      traffic is degraded.
+    follow_up:
+      - "Once the blocking container is named (init or main), file the concrete fix (the failing init command, CRD/migration, secret/config key, probe path/port, or image tag) — not a generic 'check logs'."
+      - "If a rollout caused it, confirm the offending revision and validate the new revision's image/config/probe references before re-rolling."
 
   - name: "KubeDeploymentReplicasMismatch"
     patterns: ["KubeDeploymentReplicasMismatch", "deployment replicas mismatch"]
@@ -463,38 +753,173 @@ common_alerts:
     escalation: "SRE if sustained mismatch impacts availability for more than one release window."
 
   - name: "KubeDeploymentRolloutStuck"
-    patterns: ["KubeDeploymentRolloutStuck", "ProgressDeadlineExceeded", "rollout stuck"]
+    patterns: ["KubeDeploymentRolloutStuck", "deployment rollout stuck", "ProgressDeadlineExceeded", "rollout stuck"]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Identify failing revision"
-        description: "Inspect rollout history and identify new ReplicaSet pods failing readiness/scheduling."
+        title: "Confirm the rollout is stuck and locate the failure stage"
+        description: >-
+          The rollout is not progressing (Progressing=false / ProgressDeadlineExceeded).
+          Pinpoint WHERE it is stuck before looking at pods. Interpret:
+          gen_lag>0 (metadata_generation > observed_generation) => the controller has NOT
+            yet observed the latest spec — a controller/apiserver problem, not the pods;
+            the new ReplicaSet may not even exist yet.
+          updated < desired => the rollout is not creating/updating enough new-revision
+            pods (often blocked by surge/unavailable limits while old pods can't drain, or
+            quota).
+          available < desired (especially available==0) => new pods are being created but
+            NOT becoming Available — the dominant case; go to step 2 to classify why.
+          unavailable>0 => exactly those not-yet-Available replicas; with available==0 the
+            workload is fully down.
+          cond_progressing_false==1 => the rollout tripped its progress deadline.
+          Do NOT recommend a fix from this step alone — it only locates the stage.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Generation lag, desired/updated/available/unavailable replicas, and Progressing/Available conditions for the deployment."
+            params:
+              queries:
+                - name: gen_lag
+                  query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"})-max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
+                - name: replicas_desired
+                  unit: "pods"
+                  query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                - name: replicas_updated
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_updated{namespace="$namespace",deployment="$workload"})'
+                - name: replicas_available
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_available{namespace="$namespace",deployment="$workload"})'
+                - name: replicas_unavailable
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                - name: cond_progressing_false
+                  query: 'max(kube_deployment_status_condition{namespace="$namespace",deployment="$workload",condition="Progressing",status="false"})'
+                - name: cond_available_false
+                  query: 'max(kube_deployment_status_condition{namespace="$namespace",deployment="$workload",condition="Available",status="false"})'
+                - name: newest_rs_age_min
+                  unit: "min"
+                  query: '(time()-max(kube_replicaset_created{namespace="$namespace"} * on(replicaset,namespace) group_left(owner_name) kube_replicaset_owner{namespace="$namespace",owner_name="$workload"}))/60'
+      - step: 2
+        title: "Classify why the new-revision pods are not becoming available"
+        description: >-
+          The stuck rollout is a symptom — the new pods are failing for a specific reason.
+          Count the new-revision pods in each failure state and classify the crash, in
+          priority order. Interpret:
+          pods_image_pull>0 => bad image tag/registry auth in the new revision — the fast,
+            certain rollback case (KubePodImagePullBackOff).
+          pods_config_err>0 => the new revision references a missing/renamed Secret/ConfigMap/
+            env — rollback or fix the reference (the config didn't ship with the rollout).
+          pods_crashloop>0 => the new image crashes on startup — classify by termination:
+            last_term_oom==1 / last_exit==137 => OOMKilled, the new revision needs more
+              memory (KubePodOOMKilled).
+            last_term_completed==1 / last_exit==0 => the process EXITS CLEANLY but the
+              Deployment expects a long-running service — wrong command/args/mode, or a
+              one-shot task deployed as a Deployment. NOT a resource problem.
+            last_term_error==1 / last_exit==1 => generic app/config/dependency startup
+              failure in the new code.
+            last_exit==127 => bad entrypoint / missing binary in the new image.
+          pods_pending>0 => the new pods can't be scheduled — insufficient CPU/memory/quota
+            or affinity/taint (KubePodPendingTooLong); the cluster can't place the new revision.
+          pods_not_ready>0 with none of the above => new pods run but fail their readiness
+            probe — probe misconfig or a dependency the new revision can't reach (step 4 logs).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count new-revision pods per failure state (image/config/crashloop/pending/not-ready) and classify the crash via last terminated reason + exit code."
+            params:
+              queries:
+                - name: pods_not_ready
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
+                - name: pods_crashloop
+                  unit: "pods"
+                  query: 'sum(max by (pod)(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason="CrashLoopBackOff"}))'
+                - name: pods_image_pull
+                  unit: "pods"
+                  query: 'sum(max by (pod)(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}))'
+                - name: pods_config_err
+                  unit: "pods"
+                  query: 'sum(max by (pod)(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"CreateContainerConfigError|CreateContainerError"}))'
+                - name: pods_pending
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Pending"})'
+                - name: restarts_15m
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*"}[15m]))'
+                - name: last_term_oom
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="OOMKilled"})'
+                - name: last_term_error
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="Error"})'
+                - name: last_term_completed
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",reason="Completed"})'
+                - name: last_exit
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*"})'
+      - step: 3
+        title: "Capture rollout conditions and new-pod events"
+        description: "Confirm the metric pack against the deployment conditions and the new ReplicaSet's pod events — ProgressDeadlineExceeded, FailedCreate (quota/limit-range), 'Failed to pull image', CreateContainerConfigError naming the missing object, probe Unhealthy, FailedScheduling, and the last-state termination block (reason, exit code)."
         tool_calls:
           - tool_id: "tool.capture_diagnostics"
-            description: "Review deployment conditions and new pod lifecycle events."
-      - step: 2
-        title: "Validate application startup"
-        description: "Check failing pods for config, migration, and dependency startup errors."
+            description: "Deployment conditions + new-revision pod events (pull/config/probe/scheduling/quota) and last terminated reason/exit code."
+          - tool_id: "tool.get_crash_context"
+            description: "Crash/termination reason, container, and exit code for the failing new-revision pods."
+      - step: 4
+        title: "Read the new revision's failing line"
+        description: >-
+          Read logs from the NEW-revision pods to name the exact failure. For a crashing
+          container read the PREVIOUS container for the fatal line (startup/config/migration/
+          dependency error, or a clean exit indicating the wrong command/mode). For image/
+          config waiting reasons the container produced no logs — rely on the step 3 events.
+          State the concrete cause (image tag, missing Secret/ConfigMap, wrong command,
+          failed migration, unreachable dependency), not "rollout stuck".
         tool_calls:
           - tool_id: "tool.read_logs"
-            description: "Read logs from pods in the new revision."
-    remediation: # only suggest
+            description: "New-revision pod logs (previous container) filtered for startup/config/secret/migration/dependency and clean-exit signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
       - action: "rollback_deployment"
-        description: "Rollback to last known good revision to restore service quickly."
+        description: "Primary fix — the new revision is the thing that broke (bad image, config/secret reference, crash, or OOM shipped in this rollout). Roll back to the last-ready revision to restore availability fast, then fix forward off-cycle. Lead action for a stuck rollout."
         tool_id: "forge.revert_deployment"
         requires_approval: true
-    escalation: "Immediate app-team + SRE escalation for production rollout failures."
+      - action: "patch_resources"
+        description: "ONLY if step 2 showed the new pods are OOMKilled (last_term_oom / exit 137) or Pending due to resource requests: right-size memory (request==limit ~1.3x peak) or lower an unschedulable request so the new revision can be placed."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Rarely useful — only to retrigger creation when gen_lag>0 cleared or pods are wedged in a transient ContainerCreating that has since resolved. NOT a fix for a bad image/config/crash in the new revision; it will stick again."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Immediate app-team + SRE for a production rollout failure. Route by classified cause —
+      image/config: platform + service owner (registry/tag, missing Secret/ConfigMap);
+      crash/wrong-command/migration: app team (the new code/command); OOM/Pending-on-resources:
+      SRE (sizing/capacity). Page if available==0 (workload fully down).
+    follow_up:
+      - "After rollback, reproduce the failure on the bad revision off-cycle and file the concrete fix (image tag, command/args, Secret/ConfigMap key, migration, or memory size) before re-rolling."
+      - "If exit was clean (Completed/0), confirm whether the workload is actually long-running or was mistakenly shipped as a Deployment instead of a Job/CronJob."
 
   - name: "KubeStatefulSetReplicasMismatch"
     patterns: ["KubeStatefulSetReplicasMismatch", "statefulset not ready", "statefulset replicas not ready"]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Compare desired vs ready replicas"
-        description: "Quantify the replica gap from KSM. StatefulSets progress in ordinal order, so one stuck pod blocks the rest."
+        title: "Confirm the replica gap and locate the rollout stage"
+        description: >-
+          Ready replicas are below desired. StatefulSets progress in STRICT ORDINAL ORDER —
+          one stuck pod (name-0, then name-1, …) blocks every higher ordinal — so the gap is
+          a symptom and the lowest failing ordinal is the real target. Interpret:
+          replicas_ready < replicas_desired => mismatch confirmed; replicas_ready==0 means
+            the stateful workload is fully down.
+          generation_lag>0 (metadata_generation > observed_generation) => the controller has
+            NOT observed the latest spec — controller/apiserver problem, not the pods.
+          replicas_updated < replicas_desired => an ordered update/rollout is blocked partway
+            (a lower ordinal won't go Ready, so the rest never update).
+          replicas_current < replicas_desired => the StatefulSet controller has not even
+            created all pods yet (often the lowest ordinal is unschedulable / PVC unbound).
+          Do NOT recommend a fix from this step — it only locates the stage; step 2 classifies
+          the failing ordinal and step 3 checks its storage.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Pull desired/ready/current/updated replica counts for the statefulset."
+            description: "Pull desired/ready/current/updated replica counts and generation lag for the statefulset."
             params:
               queries:
                 - name: "replicas_desired"
@@ -513,11 +938,24 @@ common_alerts:
                   unit: ""
                   query: 'max(kube_statefulset_metadata_generation{namespace="$namespace",statefulset="$workload"}) - max(kube_statefulset_status_observed_generation{namespace="$namespace",statefulset="$workload"})'
       - step: 2
-        title: "Find the pod-level cause"
-        description: "Classify non-ready ordinal pods: Pending, CrashLoopBackOff, ImagePullBackOff, OOMKilled, or not-ready (probe/storage)."
+        title: "Classify the failing ordinal pod(s)"
+        description: >-
+          Count the StatefulSet's ordinal pods (name-0, name-1, …) in each failure state and
+          branch in priority order — the LOWEST failing ordinal is the blocker. Interpret:
+          pods_image_pull>0 => bad image tag/registry auth (KubePodImagePullBackOff).
+          pods_config_err>0 => missing/renamed Secret/ConfigMap/env reference.
+          pods_crashloop>0 OR restarts_15m high => the app crashes on start; if pods_oom_recent>0
+            it is OOMKilled (size memory, KubePodOOMKilled), else classify via logs (step 4).
+          pods_pending>0 => the ordinal can't be scheduled — most often its PVC is unbound
+            (step 3) or there is no node/resource room (KubePodPendingTooLong).
+          pods_not_ready>0 with none of the above => the pod runs but fails its readiness probe
+            — probe misconfig, slow stateful bootstrap (replication/quorum/recovery), or a
+            dependency the pod can't reach. Step 4 logs are decisive.
+          If counts are zero and replicas are healthy now, the alert has RECOVERED — say so
+          with the live numbers rather than inventing a failure.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Count pods of this statefulset in each failure state (ordinal pod names: name-0, name-1, ...)."
+            description: "Count ordinal pods (name-0, name-1, …) in each failure state: pending, crashloop, image-pull, config-error, OOM, not-ready, restarts."
             params:
               queries:
                 - name: "pods_pending"
@@ -529,22 +967,83 @@ common_alerts:
                 - name: "pods_image_pull_waiting"
                   unit: "pods"
                   query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}))'
+                - name: "pods_config_err"
+                  unit: "pods"
+                  query: 'sum(max by (pod) (kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason=~"CreateContainerConfigError|CreateContainerError"}))'
                 - name: "pods_oom_recent"
                   unit: "pods"
                   query: 'sum(max by (pod) (max_over_time(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-[0-9]+",reason="OOMKilled"}[1h])))'
                 - name: "pods_not_ready"
                   unit: "pods"
                   query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-[0-9]+",condition="false"})'
-          - tool_id: "tool.capture_diagnostics"
-            description: "Sort pods by name and inspect lowest failing ordinal."
+                - name: "restarts_15m"
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-[0-9]+"}[15m]))'
       - step: 3
-        title: "Read logs from the stuck ordinal"
-        description: "Confirm whether the blocker is app startup, storage/PVC binding, or probe failures."
+        title: "Check the StatefulSet's storage (PVC binding / volume)"
+        description: >-
+          Storage is the StatefulSet-specific failure mode — each ordinal owns a PVC from the
+          volumeClaimTemplate, and an unbound/lost volume keeps its pod Pending or not-ready
+          and blocks the ordinal sequence. PVCs are named <template>-<statefulset>-<ordinal>.
+          Interpret:
+          pvc_pending>0 => a PVC is not binding — no matching PV / provisioner failing / wrong
+            StorageClass / quota; the pod cannot start until it binds (storage backend RCA).
+          pvc_lost>0 => a bound volume was LOST — storage backend / CSI failure; data-loss risk,
+            escalate to storage immediately.
+          pvc_bound == replicas_desired with pods still not ready => storage is fine; the
+            blocker is app/probe/crash (steps 2 and 4), not the volume.
+          HONEST GAP: PVC attach/mount failures (FailedMount, attach timeouts) live in pod
+            EVENTS, not these phase gauges — confirm in step 4's capture_diagnostics.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "PVC phase counts (Bound/Pending/Lost) for this statefulset's claims."
+            params:
+              queries:
+                - name: "pvc_bound"
+                  unit: "pvc"
+                  query: 'sum(kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim=~".*$workload.*",phase="Bound"})'
+                - name: "pvc_pending"
+                  unit: "pvc"
+                  query: 'sum(kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim=~".*$workload.*",phase="Pending"})'
+                - name: "pvc_lost"
+                  unit: "pvc"
+                  query: 'sum(kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim=~".*$workload.*",phase="Lost"})'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Inspect the lowest failing ordinal's events — FailedMount / volume attach / FailedScheduling / probe Unhealthy — and confirm PVC binding."
+          - tool_id: "tool.get_crash_context"
+            description: "Crash/termination reason, container, and exit code for the failing ordinal pod."
+      - step: 4
+        title: "Read the failing ordinal's logs"
+        description: >-
+          Read logs from the LOWEST failing ordinal (name-0 before name-1). Separate storage
+          signatures (volume/mount/attach/permission/read-only filesystem) from app-startup
+          signatures (config/secret/migration/dependency, or replication/quorum/recovery for
+          clustered stateful apps). For a crashed container read the PREVIOUS container. Name
+          the concrete blocker (unbound PVC, failed mount, missing secret, quorum wait), not
+          "statefulset not ready".
         tool_calls:
           - tool_id: "tool.read_logs"
-            description: "Review recent error logs for the statefulset pods."
-    remediation: []
-    escalation: "App team + storage owners if stateful workload health is blocked by storage or bootstrapping."
+            description: "Lowest-ordinal pod logs filtered for storage (volume/mount/attach/permission/read-only) and app-startup (config/secret/migration/dependency/quorum) signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "ONLY if step 2 showed the ordinal was OOMKilled (pods_oom_recent>0): right-size memory (raise request AND limit together, keep request==limit) to ~1.3x the observed peak. The most common safe fix for a stateful pod that won't stay ready."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Use with CARE on a StatefulSet — only to clear a TRANSIENT stuck state (a now-recovered dependency or a wedged mount that has since cleared). Deleting the blocked ordinal lets the controller recreate it in order. NOT a fix for an unbound PVC, lost volume, missing secret, or a deterministic crash — it will block on the same ordinal again."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Route by classified cause — PVC Pending/Lost or FailedMount: STORAGE/platform team
+      immediately (Lost volume = data-loss risk); image/config: platform + service owner;
+      OOM: SRE (sizing); crash/quorum/replication: the owning stateful-app team. Page if
+      replicas_ready==0 (workload fully down). StatefulSet rollbacks are risky (data/schema) —
+      coordinate with the data owner before reverting a revision.
+    follow_up:
+      - "Name the lowest failing ordinal and its concrete blocker (unbound PVC + StorageClass, failed mount, missing secret, OOM size, or quorum/bootstrap wait) — not a generic 'check storage'."
+      - "If a PVC will not bind, verify the StorageClass, provisioner health, and namespace storage quota before recreating the pod."
 
   - name: "KubeDaemonSetNotScheduled"
     patterns: ["KubeDaemonSetNotScheduled", "daemonset not scheduled", "daemonset not fully ready", "taint mismatch"]
@@ -655,13 +1154,110 @@ common_alerts:
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Inspect failed job pods"
-        description: "Review failed pod logs and job status counters."
+        title: "Confirm the Job failed and scope the run"
+        description: >-
+          Confirm from the Job's own counters before touching pods (the pods are often
+          already gone — see step 2). Queries are scoped to the Job via $job (KSM label
+          job_name). Interpret:
+          failed>0 AND succeeded==0 => the Job failed and never produced a successful
+            completion — confirmed failure.
+          active==0 AND succeeded==0 => the Job has ended without success (no pods still
+            running) — it will not self-recover; the failure is terminal until re-run.
+          failed >= spec_backoff_limit (or failed climbing) => BackoffLimitExceeded — the
+            Job retried to its limit and gave up; the per-attempt cause is in steps 2/4.
+          succeeded == spec_completions => the Job actually completed — likely a stale/
+            flapping alert; say so with the live counts rather than inventing a failure.
+          Do NOT recommend a fix from this step — it only confirms; step 2 classifies why.
         tool_calls:
-          - tool_id: "tool.read_logs"   # need to add new tool to get job fail reason
-            description: "Collect logs from failed job pods using job label selectors."
-    remediation: []
-    escalation: "App team for batch logic failures; SRE for repeated infrastructure-induced failures."
+          - tool_id: "tool.query_metrics"
+            description: "Job failed/succeeded/active counts, required completions/parallelism, and backoff limit."
+            params:
+              queries:
+                - name: failed
+                  query: 'max(kube_job_status_failed{namespace="$namespace",job_name="$job"})'
+                - name: succeeded
+                  query: 'max(kube_job_status_succeeded{namespace="$namespace",job_name="$job"})'
+                - name: active
+                  query: 'max(kube_job_status_active{namespace="$namespace",job_name="$job"})'
+                - name: spec_completions
+                  query: 'max(kube_job_spec_completions{namespace="$namespace",job_name="$job"})'
+                - name: spec_parallelism
+                  query: 'max(kube_job_spec_parallelism{namespace="$namespace",job_name="$job"})'
+                - name: spec_backoff_limit
+                  query: 'max(kube_job_spec_backoff_limit{namespace="$namespace",job_name="$job"})'
+                - name: cond_failed
+                  query: 'max(kube_job_status_condition{namespace="$namespace",job_name="$job",condition="Failed",status="true"})'
+      - step: 2
+        title: "Classify the failure via the Job's pod(s)"
+        description: >-
+          The Job's pods are named <job_name>-<hash>; classify their termination to name the
+          cause. Interpret:
+          last_term_oom>0 OR last_exit==137 => OOMKilled — the task exceeded its memory limit
+            (size memory in the Job template, KubePodOOMKilled).
+          waiting_image>0 => ImagePullBackOff/ErrImagePull — bad image tag / registry auth.
+          waiting_config>0 => CreateContainerConfigError — missing/renamed Secret/ConfigMap/env.
+          last_exit==1 => generic app error / failed dependency / bad data — logs (step 4) decisive.
+          last_exit==2 => CLI usage / bad argument. last_exit==127 => command not found /
+            bad entrypoint. last_exit==126 => not executable (permission/exec-bit).
+          HONEST GAP: Kubernetes garbage-collects Job pods after they finish (ttlSecondsAfter
+            Finished / failed-pod cleanup), so these pod-level metrics are FREQUENTLY n/a even
+            though the Job's failed counter (step 1) persists. If they are all n/a, say the
+            failed pods have been cleaned up and rely on the Job status (step 1) plus the LOGS
+            (step 4) — which Loki retains by pod/job label past pod deletion. Do NOT invent an
+            exit code that isn't there.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Job-pod last terminated reason (OOM/Error), exit code, image/config waiting reasons, and restarts — may be n/a if pods were garbage-collected."
+            params:
+              queries:
+                - name: last_term_oom
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$job-.*",reason="OOMKilled"})'
+                - name: last_term_error
+                  query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$job-.*",reason="Error"})'
+                - name: last_exit
+                  query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$job-.*"})'
+                - name: waiting_image
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$job-.*",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}[30m]))'
+                - name: waiting_config
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$job-.*",reason=~"CreateContainerConfigError|CreateContainerError"}[30m]))'
+                - name: restarts_30m
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$job-.*"}[30m]))'
+      - step: 3
+        title: "Capture Job conditions and pod events"
+        description: "Confirm the metric pack against the Job/pod events — the Job's Failed condition reason (BackoffLimitExceeded, DeadlineExceeded/ActiveDeadlineSeconds), and, if any pod still exists, 'Failed to pull image', CreateContainerConfigError naming the missing object, FailedScheduling, and the last-state termination block (reason, exit code)."
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Job status/conditions (BackoffLimitExceeded/DeadlineExceeded) and any surviving pod events (pull/config/scheduling) + last terminated reason/exit code."
+          - tool_id: "tool.get_crash_context"
+            description: "Crash/termination reason, container, and exit code for the Job's failed pod, if still present."
+      - step: 4
+        title: "Read the Job's failure logs"
+        description: >-
+          Logs are the primary artifact for a failed Job because the pods are usually gone —
+          Loki retains them by pod/job label past pod deletion. Read for the exact fatal line:
+          application error / unhandled exception / stack trace, bad input/data, a failed
+          dependency (connection refused / timeout / DNS / unauthorized / forbidden), or a
+          missing config/secret/env. Name the concrete failure, not "job failed".
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Job pod logs (by job/pod label) filtered for error/exception/fatal/traceback and config/secret/dependency signatures."
+            params:
+              previous: true
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "ONLY if step 2 proved OOMKilled (last_term_oom / exit 137): right-size memory in the JOB's pod template (raise request AND limit, keep request==limit) so the next run survives. Patches the template only — it does NOT re-run the failed Job."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+    escalation: >-
+      Route by classified cause — app error / bad command / bad data (exit 1/2/127): the
+      owning batch/app team; image or config/secret: platform; OOM: SRE (sizing);
+      DeadlineExceeded: app team (the task is too slow or wedged). NOTE: re-running a failed
+      Job is a manual/platform action (delete + recreate, or re-trigger the owning CronJob) —
+      forge does not auto-re-run Jobs; fix the root cause first, then re-run.
+    follow_up:
+      - "Name the concrete failure from the logs (the exception, missing config/secret, failed dependency, bad input, or OOM size) — not a generic 'job failed'."
+      - "If this Job is driven by a CronJob, confirm whether prior runs failed the same way (systemic) or this is a one-off (bad input / transient dependency) before re-running."
 
   - name: "KubeCronJobSuspended"  # need to reproduce
     patterns: ["KubeCronJobSuspended", "cronjob suspended", "spec.suspend"]
@@ -677,36 +1273,251 @@ common_alerts:
     escalation: "Service owner if missed schedules impact downstream SLAs."
 
   - name: "KubePodEvicted"
-    patterns: ["KubePodEvicted", "evicted", "node pressure"]
+    patterns: ["KubePodEvicted", "pod evicted", "evicted", "node pressure"]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify eviction cause"
-        description: "Map pod eviction to node pressure: memory, disk, or PID."
+        title: "Confirm the eviction and the pod's eviction priority"
+        description: >-
+          Eviction is a NODE-level action by the kubelet, not an app crash — the kubelet
+          reclaims resources by killing pods, lowest QoS first. IMPORTANT: an evicted pod is
+          usually deleted quickly, so these pod-scoped metrics are FREQUENTLY n/a by the time
+          you look — the alert event itself is the eviction evidence; treat the eviction as
+          confirmed and lean on the node-level signals in step 2. Interpret:
+          evicted_reason>0 OR pod_phase_failed>0 => the evicted pod object still exists in
+            Failed/Evicted state — confirmed directly.
+          qos_besteffort>0 => the pod had NO resource requests (BestEffort) — it is the FIRST
+            target under node pressure; the durable fix is to set requests (step remediation).
+          qos_burstable>0 => requests < limits — evicted after BestEffort, before Guaranteed.
+          mem_peak_30m_mib high relative to the node => the pod itself may have driven the
+            memory pressure that triggered eviction (noisy neighbor), vs being a victim.
+          If all n/a => the pod was already removed; do NOT invent values — say the eviction
+            is confirmed by the alert and proceed to node pressure.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Inspect pod events and node conditions."
+          - tool_id: "tool.query_metrics"
+            description: "Evicted reason / Failed phase, the pod's QoS class (BestEffort/Burstable/Guaranteed), and its 30m peak memory before eviction — all best-effort (n/a if the pod was already deleted)."
+            params:
+              queries:
+                - name: evicted_reason
+                  query: 'max(max_over_time(kube_pod_status_reason{namespace="$namespace",pod="$pod",reason="Evicted"}[6h]))'
+                - name: pod_phase_failed
+                  query: 'max(max_over_time(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Failed"}[6h]))'
+                - name: qos_besteffort
+                  query: 'max(kube_pod_status_qos_class{namespace="$namespace",pod="$pod",qos_class="BestEffort"})'
+                - name: qos_burstable
+                  query: 'max(kube_pod_status_qos_class{namespace="$namespace",pod="$pod",qos_class="Burstable"})'
+                - name: qos_guaranteed
+                  query: 'max(kube_pod_status_qos_class{namespace="$namespace",pod="$pod",qos_class="Guaranteed"})'
+                - name: mem_peak_30m_mib
+                  unit: "MiB"
+                  query: 'max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod="$pod",container!="POD"}[30m]))/1024/1024'
       - step: 2
-        title: "Assess node health"
-        description: "Confirm cluster-wide vs node-local resource pressure."
+        title: "Identify the node pressure that caused it (and the blast radius)"
+        description: >-
+          The root cause of an eviction is node pressure; the evicted pod's node is often
+          unknown once it is deleted, so check pressure CLUSTER-WIDE plus how many pods were
+          evicted (one node-local victim vs a node-wide reclaim). Interpret:
+          nodes_mem_pressure>0 (now or in 6h) => MemoryPressure drove the eviction — a node
+            ran low on memory; over-committed memory requests or a memory-hungry neighbor.
+          nodes_disk_pressure>0 => DiskPressure — node root/ephemeral disk or image cache
+            filled; pods writing to emptyDir/logs/tmp, or low node disk.
+          nodes_pid_pressure>0 => PIDPressure — process/thread exhaustion on the node.
+          evicted_cluster_6h or evicted_ns_6h >> 1 => a NODE-LEVEL reclaim hit many pods
+            (capacity/noisy-neighbor/node-degraded), not a single pod problem — escalate as
+            node capacity.
+          evicted == ~1 AND no node pressure now => a transient/past pressure spike that has
+            cleared, or pod-local ephemeral-storage overrun (the pod exceeded its
+            ephemeral-storage limit) — confirm via the pod events in step 3.
         tool_calls:
-          - tool_id: "tool.fetch_metrics"    # need to add node pressure tool call instead of fetch metrics
-            description: "Check node utilization and pressure conditions."
-    remediation: []
-    escalation: "SRE and infrastructure teams for sustained node pressure or repeated mass evictions."
+          - tool_id: "tool.query_metrics"
+            description: "Cluster node MemoryPressure/DiskPressure/PIDPressure (current and over the lookback) and the count of evicted pods in the namespace and cluster-wide."
+            params:
+              queries:
+                - name: nodes_mem_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="MemoryPressure",status="true"})'
+                - name: nodes_disk_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="DiskPressure",status="true"})'
+                - name: nodes_pid_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="PIDPressure",status="true"})'
+                - name: nodes_mem_pressure_6h
+                  unit: "nodes"
+                  query: 'sum(max_over_time(kube_node_status_condition{condition="MemoryPressure",status="true"}[6h]))'
+                - name: nodes_disk_pressure_6h
+                  unit: "nodes"
+                  query: 'sum(max_over_time(kube_node_status_condition{condition="DiskPressure",status="true"}[6h]))'
+                - name: evicted_ns_6h
+                  unit: "pods"
+                  query: 'sum(max_over_time(kube_pod_status_reason{namespace="$namespace",reason="Evicted"}[6h]))'
+                - name: evicted_cluster_6h
+                  unit: "pods"
+                  query: 'sum(max_over_time(kube_pod_status_reason{reason="Evicted"}[6h]))'
+      - step: 3
+        title: "Capture node pressure detail and pod eviction events"
+        description: "Confirm the metric pack against node conditions and the pod's eviction event — the kubelet message names the exact trigger (e.g. 'The node was low on resource: memory/ephemeral-storage', 'Pod ephemeral local storage usage exceeds the total limit of containers'), the node, and the QoS-based victim selection."
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Node memory/disk/PID/ephemeral pressure status and conditions for the node(s) hosting this workload."
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod eviction event / kubelet message (low-on-resource reason, ephemeral-storage overrun) and node conditions."
+      - step: 4
+        title: "Read pressure / storage logs"
+        description: >-
+          Often n/a (the evicted pod is gone), but when logs are retained read for the
+          eviction trigger: out-of-memory / node-pressure messages, or disk/ephemeral
+          signatures (no space left, filesystem full, large tmp/cache/log writes) that point
+          to the pod overrunning its ephemeral storage. State the concrete trigger (which
+          pressure, which resource), not "pod evicted".
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Logs filtered for eviction/memorypressure/diskpressure/ephemeral and disk-full (no space/filesystem/tmp/cache) signatures."
+            params:
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "Primary durable fix when step 1 showed the pod was BestEffort or under-requested: set memory (and ephemeral-storage) requests — and for memory keep request==limit — so the pod becomes Guaranteed/Burstable and is no longer the first eviction target. For a disk-pressure eviction, set an ephemeral-storage request/limit to bound the pod's local storage."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Only to reschedule the workload if its replacement pod did not come back after the eviction. NOT a fix for the underlying node pressure — if the node is still under pressure the new pod can be evicted again."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Route by pressure type — MemoryPressure / many pods evicted on a node: SRE +
+      infrastructure (node capacity, over-commit, node autoscaling); DiskPressure: platform
+      (node disk / image-cache / ephemeral-storage limits); PIDPressure: platform (pid limits /
+      runaway process). Page if evictions are recurring or mass (node degraded). Single
+      BestEffort pod evicted with no node pressure now => owning team to set resource requests.
+    follow_up:
+      - "Name the concrete trigger (which node pressure, or the pod's ephemeral-storage overrun) and the victim-selection reason (QoS), not a generic 'node pressure'."
+      - "If the pod was BestEffort/under-requested, set requests so it gets a higher QoS; if a node repeatedly evicts pods, treat it as a capacity/node-health problem (cordon/drain/replace)."
 
   - name: "KubePodPendingTooLong"
-    patterns: ["KubePodPendingTooLong", "pod pending", "FailedScheduling", "Unschedulable"]
+    patterns: ["KubePodPendingTooLong", "pod pending too long", "pod pending", "FailedScheduling", "Unschedulable"]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Inspect scheduler events"
-        description: "Validate if pending is due to capacity, affinity, taints, or PVC binding."
+        title: "Confirm Pending and split scheduled vs unscheduled"
+        description: >-
+          The pod has been Pending too long. The decisive fork is whether the scheduler has
+          PLACED it yet — this routes the entire investigation. Interpret:
+          phase_pending==1 with high age_min => PendingTooLong confirmed (a large age means
+            genuinely stuck, not just slow startup).
+          scheduled_false==1 (or unschedulable==1) => the SCHEDULER cannot place the pod —
+            no node satisfies its requirements. Go to step 2 (PVC/capacity) and step 3 (the
+            FailedScheduling event names the exact reason: insufficient cpu/memory, taint,
+            affinity, nodeSelector, quota). Container/image have NOT started — they are
+            irrelevant until placement succeeds.
+          scheduled_true==1 but still Pending => the pod IS placed; the delay is STARTUP, not
+            scheduling. Branch on the waiting reason:
+            waiting_creating (ContainerCreating) => volume attach / CSI / CNI / sandbox is
+              slow or stuck (step 2 PVC + step 3 events).
+            waiting_init (PodInitializing) => an INIT container is blocking — follow
+              KubeContainerWaiting / read the init logs; NOT a scheduling problem.
+            waiting_image (ImagePullBackOff/ErrImagePull) => image pull, not scheduling.
+          Do NOT recommend a fix from this step — it only routes.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"    # need to add new tool
-            description: "Review scheduling events and placement constraints."
-    remediation: []
-    escalation: "SRE if unschedulable condition persists and affects service availability."
+          - tool_id: "tool.query_metrics"
+            description: "Pod phase, age, scheduled/unschedulable status, and container waiting reason — to split scheduler-placement from startup delay."
+            params:
+              queries:
+                - name: phase_pending
+                  query: 'max(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Pending"})'
+                - name: age_min
+                  unit: "min"
+                  query: '(time()-max(kube_pod_created{namespace="$namespace",pod="$pod"}))/60'
+                - name: scheduled_false
+                  query: 'max(kube_pod_status_scheduled{namespace="$namespace",pod="$pod",condition="false"})'
+                - name: scheduled_true
+                  query: 'max(kube_pod_status_scheduled{namespace="$namespace",pod="$pod",condition="true"})'
+                - name: unschedulable
+                  query: 'max(kube_pod_status_unschedulable{namespace="$namespace",pod="$pod"})'
+                - name: waiting_creating
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",reason="ContainerCreating"}[15m]))'
+                - name: waiting_init
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",reason="PodInitializing"}[15m]))'
+                - name: waiting_image
+                  query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}[15m]))'
+      - step: 2
+        title: "Rule out PVC binding and node capacity"
+        description: >-
+          The two metric-visible placement blockers are an unbound volume and no eligible
+          node. Interpret:
+          pvc_pending>0 => a PersistentVolumeClaim is not Bound — the scheduler will not place
+            a pod whose volume can't be provisioned/bound (wrong StorageClass, provisioner
+            failing, quota); this is a storage RCA, fix the PVC first.
+          nodes_ready small / nodes_notready>0 / nodes_unschedulable(cordoned)>0 => fewer
+            schedulable nodes than usual — capacity/health reduced the placement options.
+          nodes_pressure>0 => nodes under Memory/Disk/PID pressure are not accepting new pods.
+          If PVC is bound and nodes are healthy, the blocker is NOT raw capacity — it is a soft
+            constraint (taint/toleration, nodeSelector/affinity, or a resource REQUEST larger
+            than any node's allocatable), which only the FailedScheduling event (step 3) spells out.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "PVC pending count (namespace + this pod's claims) and cluster node readiness / schedulability / pressure."
+            params:
+              queries:
+                - name: pvc_pending_pod
+                  unit: "pvc"
+                  query: 'sum(kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim=~".*$workload.*",phase="Pending"})'
+                - name: pvc_pending_ns
+                  unit: "pvc"
+                  query: 'sum(kube_persistentvolumeclaim_status_phase{namespace="$namespace",phase="Pending"})'
+                - name: nodes_ready
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="Ready",status="true"})'
+                - name: nodes_notready
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="Ready",status!="true"})'
+                - name: nodes_unschedulable
+                  unit: "nodes"
+                  query: 'sum(kube_node_spec_unschedulable)'
+                - name: nodes_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"})'
+      - step: 3
+        title: "Read the scheduling reason from events"
+        description: "Metrics show capacity but not WHY the scheduler rejected each node — the FailedScheduling event does ('0/N nodes are available: M Insufficient cpu, K node(s) had untolerated taint, J node(s) didn't match node selector/affinity, pod has unbound immediate PersistentVolumeClaims'). For a scheduled-but-creating pod, the events instead show FailedMount / FailedCreatePodSandBox (CSI/CNI). This is the decisive artifact for the unscheduled case."
+        tool_calls:
+          - tool_id: "tool.get_pending_pods"
+            description: "Pending pods with their FailedScheduling reasons (insufficient resources, taints, affinity, nodeSelector, unbound PVC)."
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod scheduling events and placement constraints; mount/sandbox events for a scheduled-but-creating pod."
+          - tool_id: "tool.get_node_pressure"
+            description: "Node memory/disk/PID pressure and allocatable headroom across the cluster."
+      - step: 4
+        title: "Read scheduling / volume logs"
+        description: >-
+          Usually sparse — an unscheduled pod has no running container, so rely on step 3
+          events. When logs exist (scheduled-but-creating), read for volume/binding/
+          provisioning/StorageClass and CNI/sandbox signatures. Name the concrete blocker
+          (insufficient cpu on all nodes, untolerated taint, unbound PVC + StorageClass,
+          failed mount), not "pod pending".
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Logs filtered for scheduling (unschedulable/insufficient/taint/affinity/quota) and PVC/volume/provisioning signatures."
+            params:
+              tail_lines: 150
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "ONLY when step 3 shows the pod is unschedulable because its resource REQUEST exceeds any node's allocatable (Insufficient cpu/memory): lower the request to fit a real node. Do NOT apply for taint/affinity/nodeSelector/PVC causes — those are not resource problems."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "Only to force re-creation/re-scheduling after the underlying blocker is fixed (e.g. capacity added, taint removed, PVC bound). NOT a fix on its own — a pod that can't be placed will just go Pending again."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Route by classified blocker — insufficient cpu/memory / no eligible nodes: SRE +
+      infrastructure (capacity / node autoscaling); taint/affinity/nodeSelector: the owning
+      team (pod placement spec) + platform (node labels/taints); unbound PVC: storage/platform
+      (StorageClass / provisioner / quota); ContainerCreating stuck on mount/CNI: platform
+      (CSI/CNI). Page if a production workload cannot schedule any replica.
+    follow_up:
+      - "Name the exact scheduling rejection from the FailedScheduling event (which resource, taint, affinity, or unbound PVC) — not a generic 'pending'."
+      - "If unschedulable due to resource requests, reconcile the request against real node allocatable; if due to taints/affinity, confirm whether the constraint or the node pool is wrong."
 
   - name: "KubePersistentVolumeError"    # need to reproduce
     patterns: ["KubePersistentVolumeError", "persistent volume failed", "volume lost", "phase pending"]
@@ -748,23 +1559,206 @@ common_alerts:
     escalation: "Immediate page to storage/platform and owning service team."
 
   - name: "KubeHpaMaxedOut"
-    patterns: ["KubeHpaMaxedOut", "hpa max replicas", "ScalingLimited"]
+    patterns: ["KubeHpaMaxedOut", "HPA maxed out", "hpa max replicas", "ScalingLimited"]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Validate scaling saturation"
-        description: "Confirm HPA desired replicas are pinned at max and identify driving metric."
+        title: "Confirm the HPA is maxed and classify the scaling state"
+        description: >-
+          KubeHpaMaxedOut means desired replicas reached maxReplicas — capacity PRESSURE,
+          not necessarily app failure. Split the state so the rest of the tree routes
+          correctly (queries are HPA-scoped via $hpa; the target deployment is resolved
+          automatically for the resource/health steps). Interpret:
+          maxed_flag==1 (desired_replicas >= max_replicas) => maxed confirmed.
+          current_replicas == max_replicas (replica_gap==0) => HPA is fully EXHAUSTED — all
+            allowed replicas exist and are counted. The driver is real load/resource demand
+            (step 2) or unhealthy replicas faking demand (step 3). The fix is more capacity
+            (raise maxReplicas / add nodes) or less load — NOT "scaling is stuck".
+          current_replicas < desired_replicas (replica_gap>0) => the HPA WANTS more but new
+            replicas are not coming up — scaling is BLOCKED. Jump to step 3 (pods not ready/
+            crashlooping/image pull) and step 4 (cluster has no room). This is the more
+            urgent path: capacity is not actually being added.
+          scaling_limited==1 => KSM confirms the autoscaler hit its ceiling.
+          Do NOT recommend a fix from this step alone — it only classifies.
         tool_calls:
-          - tool_id: "tool.get_hpa_state"  # need to optimize the tool response
-            description: "Collect min/max/current/desired values and metric targets."
+          - tool_id: "tool.query_metrics"
+            description: "HPA desired/current/max, maxed flag, ScalingLimited condition, and the desired-vs-current replica gap."
+            params:
+              queries:
+                - name: desired_replicas
+                  unit: "pods"
+                  query: 'max(kube_horizontalpodautoscaler_status_desired_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                - name: current_replicas
+                  unit: "pods"
+                  query: 'max(kube_horizontalpodautoscaler_status_current_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                - name: max_replicas
+                  unit: "pods"
+                  query: 'max(kube_horizontalpodautoscaler_spec_max_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                - name: min_replicas
+                  unit: "pods"
+                  query: 'max(kube_horizontalpodautoscaler_spec_min_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                - name: maxed_flag
+                  query: '(max(kube_horizontalpodautoscaler_status_desired_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"}) >= bool max(kube_horizontalpodautoscaler_spec_max_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"}))'
+                - name: scaling_limited
+                  query: 'max(kube_horizontalpodautoscaler_status_condition{namespace="$namespace",horizontalpodautoscaler="$hpa",condition="ScalingLimited",status="true"})'
+                - name: replica_gap
+                  unit: "pods"
+                  query: 'max(kube_horizontalpodautoscaler_status_desired_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})-max(kube_horizontalpodautoscaler_status_current_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
       - step: 2
-        title: "Correlate with pod pressure"
-        description: "Check whether pods remain CPU/memory constrained even at max replicas."
+        title: "Identify the scaling driver — CPU, memory, throttling, or traffic"
+        description: >-
+          An HPA scales on a metric vs its target (commonly CPU or memory utilization vs
+          REQUEST). Utilization is computed against requests, so a too-LOW request reads as
+          high utilization and pins the HPA at max even when absolute usage is modest.
+          These queries are auto-scoped to the HPA's target deployment. Interpret:
+          cpu_util_vs_req_pct at/above the HPA's CPU target (often ~80-85%) => CPU-driven
+            scale-out (real CPU demand or under-set CPU request).
+          mem_util_vs_req_pct at/above the memory target => MEMORY-driven scale-out. If it
+            is far above 100% the request is undersized relative to real usage — right-size
+            the memory request (this both relieves scaling pressure and fixes QoS).
+          cpu_throttle_pct high with a CPU limit set => CFS throttling inflates CPU demand
+            and forces scale-out — remove the CPU limit per policy (keep the request).
+          req_rate_rps / p95_latency_ms / errors_5xx_rps rising together => TRAFFIC-driven,
+            user-facing capacity incident — the workload genuinely needs more replicas.
+          NONE of these elevated while still maxed => suspect the HPA config itself: a bad/
+            stale custom-metric source, a target set too aggressively low, or min==max.
+          HONEST GAP: OBI request/latency/error series exist only for instrumented HTTP/gRPC
+            services. Workers, jobs and controllers return n/a here — say "no HTTP telemetry
+            for this workload; driver is resource-based" rather than inventing traffic.
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
-            description: "Compare pod utilization against requests and limits."
-    remediation: []
-    escalation: "SRE and service owner for HPA policy/limit tuning and capacity planning."
+          - tool_id: "tool.query_metrics"
+            description: "Target-deployment CPU/memory utilization vs request, CPU throttling, and (for HTTP services) request rate, p95 latency, and 5xx error rate."
+            params:
+              queries:
+                - name: cpu_util_vs_req_pct
+                  unit: "%"
+                  query: '100*sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))/sum(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="cpu"})'
+                - name: mem_util_vs_req_pct
+                  unit: "%"
+                  query: '100*sum(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container!="POD"})/sum(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="memory"})'
+                - name: cpu_throttle_pct
+                  unit: "%"
+                  query: '100*sum(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))/sum(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))'
+                - name: req_rate_rps
+                  unit: "req/s"
+                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",k8s_namespace_name="$namespace",k8s_owner_name="$workload"}[5m]))'
+                - name: p95_latency_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate({__name__=~"http.server.request.duration_bucket|http.server.duration_bucket",k8s_namespace_name="$namespace",k8s_owner_name="$workload"}[5m]))) * 1000'
+                - name: errors_5xx_rps
+                  unit: "req/s"
+                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",k8s_namespace_name="$namespace",k8s_owner_name="$workload",http_response_status_code=~"5.."}[5m]))'
+      - step: 3
+        title: "Check whether the scaled replicas are actually healthy"
+        description: >-
+          A maxed HPA with replica_gap>0 (step 1) often means new replicas are NOT becoming
+          ready, so the autoscaler keeps requesting more while none come up — the maxout is a
+          SYMPTOM of replica churn, not real demand. Queries cover the HPA's target
+          deployment. Interpret:
+          deploy_unavailable>0 OR pods_not_ready>0 => replicas exist but aren't Ready —
+            fix the readiness/startup problem FIRST; scaling/maxReplicas changes won't help.
+          pods_crashloop>0 OR restarts_15m high => crashlooping replicas churn capacity and
+            inflate desired replicas — follow KubePodCrashLooping for the failing container.
+          pods_image_pull>0 => new replicas can't pull their image — follow KubePodImagePullBackOff.
+          All healthy (unavailable==0, not_ready==0, no crashloop) => the maxout is REAL
+            demand; the cause is the driver from step 2, and capacity is the lever.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Target-deployment desired/available/unavailable replicas plus not-ready / crashloop / image-pull / restart counts across its pods."
+            params:
+              queries:
+                - name: dep_desired
+                  unit: "pods"
+                  query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                - name: dep_available
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_available{namespace="$namespace",deployment="$workload"})'
+                - name: dep_unavailable
+                  unit: "pods"
+                  query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                - name: pods_not_ready
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
+                - name: pods_crashloop
+                  unit: "pods"
+                  query: 'sum(max by (pod)(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason="CrashLoopBackOff"}))'
+                - name: pods_image_pull
+                  unit: "pods"
+                  query: 'sum(max by (pod)(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$workload-.*",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}))'
+                - name: restarts_15m
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*"}[15m]))'
+      - step: 4
+        title: "Rule out cluster capacity as the scaling blocker"
+        description: >-
+          When replica_gap>0 (step 1) and replicas are otherwise healthy (step 3), the
+          blocker is usually the CLUSTER having no room to place new pods. Interpret:
+          pods_pending>0 for the target deployment => new replicas are Unschedulable — the
+            cluster is out of CPU/memory/quota for this pod shape; add nodes or free
+            capacity (this is the real fix, not an app change).
+          nodes_not_ready>0 OR nodes_unschedulable>0 => fewer schedulable nodes than usual.
+          nodes_memory_pressure>0 / nodes_disk_pressure>0 => node-level pressure preventing
+            placement. If nothing is pending and nodes are healthy, capacity is NOT the
+            blocker — the maxout is demand/driver-based (step 2).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Pending pods for the target deployment and cluster node readiness / schedulability / pressure."
+            params:
+              queries:
+                - name: pods_pending
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Pending"})'
+                - name: nodes_not_ready
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="Ready",status="false"})'
+                - name: nodes_unschedulable
+                  unit: "nodes"
+                  query: 'sum(kube_node_spec_unschedulable)'
+                - name: nodes_memory_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="MemoryPressure",status="true"})'
+                - name: nodes_disk_pressure
+                  unit: "nodes"
+                  query: 'sum(kube_node_status_condition{condition="DiskPressure",status="true"})'
+      - step: 5
+        title: "Capture HPA conditions and recent events"
+        description: "Confirm the metric pack against the live HPA object — min/max/current/desired, the active metric and its current value vs target, ScalingActive/AbleToScale/ScalingLimited conditions, and FailedGetResourceMetric / FailedComputeMetricsReplicas events that indicate a broken metric source."
+        tool_calls:
+          - tool_id: "tool.get_hpa_state"
+            description: "HPA min/max/current/desired replicas, metric targets and current values, and scaling conditions/events."
+      - step: 6
+        title: "Read overload / scaling-symptom logs"
+        description: >-
+          Correlate the maxout with what the workload is doing. Read the target deployment's
+          logs for overload signatures (timeout, too many requests, rate limit, queue full,
+          backpressure, slow), startup/readiness delays (when replica_gap>0), or a stuck/
+          erroring custom-metric source. Name the concrete pressure, not "high load".
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Logs filtered for overload (timeout/rate limit/queue full/backpressure), readiness/startup delay, and metric-source errors during the maxed window."
+            params:
+              tail_lines: 200
+    remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      - action: "patch_resources"
+        description: "Primary resource fix. If step 2 showed cpu_throttle_pct high with a CPU limit, REMOVE the CPU limit (platform policy; keep the request). If mem_util_vs_req_pct is far above the target because the memory REQUEST is undersized, right-size the request to real usage — both relieve utilization-driven scale-out. Do NOT apply if the maxout is pure traffic demand with correctly-sized resources."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "scale_out_replicas"
+        description: "When step 2 confirms real CPU/memory/traffic demand AND step 3 shows replicas are healthy AND step 4 shows the cluster has room: raise the replica floor to add capacity. NOTE: the durable fix is raising the HPA maxReplicas (a spec change outside forge actions) — bumping replicas under an active HPA is a stopgap."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+      - action: "restart_deployment"
+        description: "ONLY when step 3 shows replicas are unhealthy (crashlooping/not-ready) and that churn is inflating desired replicas — restoring healthy replicas removes the false demand. Not a fix for genuine capacity pressure."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Route by classified driver — traffic/CPU/memory demand with healthy replicas: SRE +
+      service owner to raise maxReplicas or add cluster capacity (page if p95/5xx are
+      rising); replicas unhealthy or unschedulable: platform (readiness/image/scheduling);
+      no demand but maxed: service owner to fix the HPA metric source / target / min==max.
+    follow_up:
+      - "If demand is real and sustained, raise maxReplicas (and verify cluster capacity / node autoscaling can back it) rather than leaving the workload pinned at the ceiling."
+      - "If utilization-driven, confirm requests are right-sized so the HPA scales on real pressure, not on under-set requests."
+      - "If no metric was elevated, validate the HPA's metric source and target — a stale/failing custom metric or an over-aggressive target maxes the HPA without real load."
 
 general_diagnostic:
   steps:
