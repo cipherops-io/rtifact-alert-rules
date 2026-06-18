@@ -1605,29 +1605,47 @@ common_alerts:
                   unit: "pods"
                   query: 'max(kube_horizontalpodautoscaler_status_desired_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})-max(kube_horizontalpodautoscaler_status_current_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
       - step: 2
-        title: "Identify the scaling driver — CPU, memory, throttling, or traffic"
+        title: "Identify the scaling driver — resource saturation, which pods, and downstream load"
         description: >-
-          An HPA scales on a metric vs its target (commonly CPU or memory utilization vs
-          REQUEST). Utilization is computed against requests, so a too-LOW request reads as
-          high utilization and pins the HPA at max even when absolute usage is modest.
-          These queries are auto-scoped to the HPA's target deployment. Interpret:
-          cpu_util_vs_req_pct at/above the HPA's CPU target (often ~80-85%) => CPU-driven
-            scale-out (real CPU demand or under-set CPU request).
-          mem_util_vs_req_pct at/above the memory target => MEMORY-driven scale-out. If it
-            is far above 100% the request is undersized relative to real usage — right-size
-            the memory request (this both relieves scaling pressure and fixes QoS).
-          cpu_throttle_pct high with a CPU limit set => CFS throttling inflates CPU demand
-            and forces scale-out — remove the CPU limit per policy (keep the request).
-          req_rate_rps / p95_latency_ms / errors_5xx_rps rising together => TRAFFIC-driven,
-            user-facing capacity incident — the workload genuinely needs more replicas.
-          NONE of these elevated while still maxed => suspect the HPA config itself: a bad/
-            stale custom-metric source, a target set too aggressively low, or min==max.
-          HONEST GAP: OBI request/latency/error series exist only for instrumented HTTP/gRPC
-            services. Workers, jobs and controllers return n/a here — say "no HTTP telemetry
-            for this workload; driver is resource-based" rather than inventing traffic.
+          An HPA scales on a metric vs its TARGET, and CPU/memory utilization is computed as
+          usage ÷ resource REQUEST. So always read these as "% of the request", NOT absolute
+          cores/MiB. CRITICAL for the narrative: state it in plain terms, e.g.
+          "cpu_util_vs_req_pct=154 means the pods are using ~1.5x the CPU they reserve
+          (request-relative — this is what the HPA scales on); in absolute terms that may be a
+          small fraction of a core, which is why a CPU dashboard panel can read much lower —
+          they are different denominators, not a contradiction." Interpret:
+          cpu_util_vs_req_pct / mem_util_vs_req_pct at/above the HPA target (often ~80-85%) =>
+            CPU/memory-driven scale-out. Far above 100% with healthy pods => the request is
+            undersized vs real usage (right-size the request) and/or genuine demand.
+          PER-POD spread (cpu_peak_pod_pct / mem_peak_pod_pct name the HOTTEST pod;
+            pods_above_cpu_target = how many of the replicas are over target): if ALL replicas
+            are over target it is uniform demand (the workload genuinely needs capacity); if
+            ONE pod is far hotter than the rest it is a skew/hot-shard/uneven-load problem
+            (rebalancing or a stuck partition, not just more replicas). Always name the hottest pod.
+          cpu_throttle_pct high with a CPU limit set => CFS throttling inflates CPU demand —
+            remove the CPU limit per policy (keep the request).
+          DOWNSTREAM / traffic: req_rate_rps / p95_latency_ms / errors_5xx_rps cover inbound
+            HTTP for instrumented servers. For a WORKER/consumer (no http.server series) the
+            demand instead shows as OUTBOUND calls — downstream_total_rps and the top edge
+            (downstream_top_call labels name WHICH dependency it is driving, e.g. a DB / queue /
+            internal API). Interpret: high downstream_total_rps with downstream_failed_rps≈0 =>
+            the workload is genuinely busy calling healthy dependencies (real demand — raise
+            capacity). downstream_failed_rps>0 => a failing dependency is causing retries that
+            inflate load — fix the dependency FIRST, do not just raise maxReplicas.
+          NONE elevated while still maxed => suspect the HPA config (stale/bad custom metric,
+            target too low, or min==max). HONEST GAP: OBI/service-graph need OTel spans; if the
+            real service.name is unknown or uninstrumented these are n/a — say so, do not invent.
+          REQUIRED in the RCA narrative (do NOT collapse into a generic "high utilization" line):
+            (1) name the HOTTEST pod from cpu_peak_pod_pct's pod label with its %, e.g.
+            "pod <name> is hottest at 182% of CPU request"; (2) state pods_above_cpu_target out
+            of the replica count to show uniform demand vs a single hot pod; (3) for a worker,
+            name the top downstream dependency from downstream_top_call's server label with its
+            call rate and whether downstream_failed_rps is ~0, e.g. "drives <server> at 23 req/s
+            with 0 failures — healthy dependency, real demand" (failures>0 => retry storm, fix
+            the dependency first).
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Target-deployment CPU/memory utilization vs request, CPU throttling, and (for HTTP services) request rate, p95 latency, and 5xx error rate."
+            description: "CPU/mem utilization vs request (aggregate + per-pod hottest + spread), CPU throttling, inbound HTTP (for servers), and outbound downstream call/failure rate with the top dependency named (for workers)."
             params:
               queries:
                 - name: cpu_util_vs_req_pct
@@ -1636,18 +1654,36 @@ common_alerts:
                 - name: mem_util_vs_req_pct
                   unit: "%"
                   query: '100*sum(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container!="POD"})/sum(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="memory"})'
+                - name: cpu_peak_pod_pct
+                  unit: "%"
+                  query: 'topk(1, 100*sum by (pod)(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m])) / on(pod) sum by (pod)(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="cpu"}))'
+                - name: mem_peak_pod_pct
+                  unit: "%"
+                  query: 'topk(1, 100*sum by (pod)(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container!="POD"}) / on(pod) sum by (pod)(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="memory"}))'
+                - name: pods_above_cpu_target
+                  unit: "pods"
+                  query: 'count(100*sum by (pod)(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m])) / on(pod) sum by (pod)(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="cpu"}) >= 80)'
                 - name: cpu_throttle_pct
                   unit: "%"
                   query: '100*sum(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))/sum(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))'
                 - name: req_rate_rps
                   unit: "req/s"
-                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",k8s_namespace_name="$namespace",k8s_owner_name="$workload"}[5m]))'
+                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",service.name="$service"}[5m]))'
                 - name: p95_latency_ms
                   unit: "ms"
-                  query: 'histogram_quantile(0.95, sum by (le) (rate({__name__=~"http.server.request.duration_bucket|http.server.duration_bucket",k8s_namespace_name="$namespace",k8s_owner_name="$workload"}[5m]))) * 1000'
+                  query: 'histogram_quantile(0.95, sum by (le) (rate({__name__=~"http.server.request.duration_bucket|http.server.duration_bucket",service.name="$service"}[5m]))) * 1000'
                 - name: errors_5xx_rps
                   unit: "req/s"
-                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",k8s_namespace_name="$namespace",k8s_owner_name="$workload",http_response_status_code=~"5.."}[5m]))'
+                  query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",service.name="$service",http_response_status_code=~"5.."}[5m]))'
+                - name: downstream_total_rps
+                  unit: "req/s"
+                  query: 'sum(rate(traces_service_graph_request_total{client="$service"}[5m]))'
+                - name: downstream_top_call
+                  unit: "req/s"
+                  query: 'topk(1, sum by (server)(rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                - name: downstream_failed_rps
+                  unit: "req/s"
+                  query: 'topk(1, sum by (server)(rate(traces_service_graph_request_failed_total{client="$service"}[5m])))'
       - step: 3
         title: "Check whether the scaled replicas are actually healthy"
         description: >-
