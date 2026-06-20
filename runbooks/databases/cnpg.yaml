@@ -1,0 +1,705 @@
+tech_stack: cnpg
+version: "1.0"
+description: >-
+  Runbook for CloudNativePG (CNPG) PostgreSQL cluster alerts. Grounds RCA in the
+  cnpg_* metrics exported by the CNPG instance-manager (scraped per pod), so each
+  assessment names WHICH pod, WHICH backend state, and WHAT blast radius instead of
+  generic "check pg_stat_activity / look at logs" guidance. Metric-only by design for
+  now: cnpg_* metrics expose impact and category (active query vs idle-in-transaction,
+  blocking, replication/vacuum impact) but not the exact SQL/pid — that requires one
+  pg_stat_activity query against the pod, which is deferred until a safe SQL diagnostic
+  tool exists. NOTE: cnpg_* metrics carry NO cnpg_cluster label in this fleet; the
+  cluster is identified by the pod-name prefix (pods are <cluster>-<ordinal>, e.g.
+  cnpg-ai-7), so cluster-wide queries use pod=~"$service-[0-9]+" and a single
+  namespace may host several CNPG clusters.
+
+match_keywords:
+  - cnpg
+  - cloudnativepg
+  - cnpg cluster
+  - postgres cluster
+  - long running transaction
+  - replication lag
+  - wal archive
+  - replication slot
+
+categories:
+  - DATA
+  - DATABASE
+
+common_alerts:
+  - name: "CNPGClusterLongRunningTransactionWarning"
+    patterns:
+      [
+        "CNPGClusterLongRunningTransactionWarning",
+        "CNPGClusterLongRunningTransactionCritical",
+        "CNPGClusterLongRunningTransaction",
+        "long running transaction",
+        "long-running transaction",
+        "critically long-running transaction",
+        "cnpg long transaction",
+        "transaction running for",
+        "max tx duration",
+        "open transaction",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the long transaction is still open and the metrics are trustworthy"
+        description: >-
+          cnpg_* metrics are collected by the CNPG instance-manager and cached, so they
+          are not sub-second fresh — establish confidence BEFORE drawing conclusions.
+          tx_age_seconds is the max non-idle transaction age on the alerting pod ($pod).
+          This entry serves BOTH severities — Warning fires at >300s, Critical at >1800s
+          (30m); read the alert title for which, and weight the impact higher for Critical.
+          Interpret: tx_age_seconds below the firing threshold or no data => the long
+          transaction already cleared (or the pod changed); state that it self-resolved, cite the current
+          value, and stop short of inventing a culprit. tx_age_seconds > 300 => still
+          firing, continue. collector_up != 1 OR collector_last_error > 0 OR
+          metric_staleness_seconds high (tens of seconds+) => metrics are stale/unreliable;
+          lower RCA confidence and say so explicitly rather than reporting cached numbers
+          as live. collector healthy + tx_age_seconds > 300 => proceed to classify.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current max non-idle transaction age on the alerting pod plus CNPG collector health/freshness."
+            params:
+              queries:
+                - name: tx_age_seconds
+                  unit: "s"
+                  query: 'max(cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state!="idle"})'
+                - name: collector_up
+                  query: 'min(cnpg_collector_up{namespace="$namespace",pod="$pod"})'
+                - name: collector_last_error
+                  query: 'max(cnpg_collector_last_collection_error{namespace="$namespace",pod="$pod"})'
+                - name: metric_staleness_seconds
+                  unit: "s"
+                  query: 'max(time() - cnpg_last_update_timestamp{namespace="$namespace",pod="$pod"})'
+      - step: 2
+        title: "Classify WHICH backend state owns the long transaction (this is the root-cause fork)"
+        description: >-
+          The backend `state` is the single most important RCA signal — it separates a
+          slow query from an application session leak. longest_tx_state surfaces the
+          state label of the worst non-idle backend on $pod; the two explicit gauges give
+          its age. Interpret: state="active" (tx_age_active_s is the large one) => a
+          long-running SQL query is executing — root cause is a slow/runaway query or
+          missing index; corroborate with temp/IO and WAL in step 4. state="idle in
+          transaction" (tx_age_idle_in_txn_s is the large one) => the application opened
+          a transaction (often BEGIN) and stopped doing work — a connection/session leak
+          or a missing COMMIT/ROLLBACK in app code; this holds locks and pins the xmin
+          horizon (blocks autovacuum) even though no query is running — usually the more
+          damaging case. If both are elevated => broader session/pool problem, treat as
+          cluster/app-wide. ("idle in transaction (aborted)" — failed txn never rolled
+          back — may not be a distinct series in this fleet; if longest_tx_state shows it,
+          treat like idle-in-transaction with an app error upstream.)
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Winning backend state by transaction age, and the explicit active vs idle-in-transaction ages on the alerting pod."
+            params:
+              queries:
+                - name: longest_tx_state
+                  unit: "s"
+                  query: 'topk(1, max by (state) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state!="idle"}))'
+                - name: tx_age_active_s
+                  unit: "s"
+                  query: 'max(cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state="active"})'
+                - name: tx_age_idle_in_txn_s
+                  unit: "s"
+                  query: 'max(cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state="idle in transaction"})'
+      - step: 3
+        title: "Scope it — one pod or cluster-wide — and check whether other backends are blocked"
+        description: >-
+          Determine blast radius and contention. worst_pod_tx_age_s surfaces the pod with
+          the highest transaction age across the whole CNPG cluster (pods sharing the
+          $service prefix, e.g. cnpg-ai-*); affected_pod_count is how many cluster
+          pods are over the 300s threshold. Interpret: affected_pod_count = 1 and it is
+          $pod => isolated to one backend/session on this pod — local issue. affected_pod_count
+          > 1 => an application behaviour or workload pattern is producing long transactions
+          cluster-wide (e.g. every replica serving the same slow report). waiting_backends
+          > 0 => other backends are blocked behind this transaction's locks — escalate the
+          impact to lock contention (the long txn is now causing a pileup, not just sitting
+          there); a manual pg_blocking_pids/SQL check is the next drill-down once SQL is
+          available. waiting_backends = 0 => the long transaction exists but is not yet
+          blocking others. idle_in_txn_backends elevated alongside a normal active count
+          confirms a session-leak pattern from step 2.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst pod across the cluster, count of pods over threshold, waiting backends, and active vs idle-in-transaction backend counts on the alerting pod."
+            params:
+              queries:
+                - name: worst_pod_tx_age_s
+                  unit: "s"
+                  query: 'topk(1, max by (pod) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod=~"$service-[0-9]+",state!="idle"}))'
+                - name: affected_pod_count
+                  query: 'count(max by (pod) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod=~"$service-[0-9]+",state!="idle"}) > 300) or vector(0)'
+                - name: waiting_backends
+                  query: 'sum(cnpg_backends_waiting_total{namespace="$namespace",pod="$pod"})'
+                - name: active_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="active"})'
+                - name: idle_in_txn_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="idle in transaction"}) or vector(0)'
+      - step: 4
+        title: "Measure the blast radius — throughput, deadlocks, IO/temp pressure, replication and vacuum impact"
+        description: >-
+          Quantify the damage the long transaction is doing. Interpret: rollback_rate_per_s
+          elevated vs commit_rate_per_s => application errors / failed transactions / retries
+          (pairs with idle-in-transaction-aborted). commit_rate_per_s dropping toward zero
+          while a transaction is blocking => useful work is stalled (HIGH impact). deadlocks_30m
+          > 0 => confirmed lock contention. temp_bytes_per_s high => a heavy sort/hash query
+          spilling to disk (supports the active-query branch — likely a big analytical/missing-index
+          query). blk_read_time_ms_per_s high => the query is IO-bound or storage is pressured.
+          replication_lag_s high OR backend_xmin_age large => the open transaction is pinning the
+          xmin horizon: it delays replica replay and, critically, BLOCKS autovacuum cluster-wide
+          (bloat + transaction-ID wraparound risk) — this is the strongest reason to clear an
+          idle-in-transaction backend urgently. Classify overall: LOW = isolated, no waits, no lag,
+          normal xacts; MEDIUM = waits OR rollback/temp/IO increase; HIGH = blocking + commit drop,
+          replication lag, deadlocks, or high xmin age.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Commit/rollback rates, deadlocks, temp+IO pressure on the alerting pod, and cluster replication lag + replication backend xmin age (vacuum-blocking signal)."
+            params:
+              queries:
+                - name: commit_rate_per_s
+                  unit: "tx/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_xact_commit{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: rollback_rate_per_s
+                  unit: "tx/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_xact_rollback{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: deadlocks_30m
+                  query: 'sum(increase(cnpg_pg_stat_database_deadlocks{namespace="$namespace",pod="$pod"}[30m]))'
+                - name: temp_bytes_per_s
+                  unit: "B/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_temp_bytes{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: blk_read_time_ms_per_s
+                  unit: "ms/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_blk_read_time{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: replication_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: backend_xmin_age
+                  query: 'max(cnpg_pg_stat_replication_backend_xmin_age{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 5
+        title: "Check WAL write pressure and read the exact backend/error lines"
+        description: >-
+          Final corroboration. Interpret: wal_bytes_per_s / wal_buffers_full_per_s high =>
+          the long transaction (or surrounding load) is write-heavy — a bulk/ETL operation
+          rather than a stuck read; this supports the active-query branch and points at a
+          specific job. Low WAL with an idle-in-transaction state => the session is holding
+          locks while doing nothing (classic leak). Then read the postgres container logs
+          for the smoking gun: statement/lock-timeout warnings, "canceling statement due to
+          ...", deadlock reports, or app disconnect/abort lines that tie the metric story to
+          a specific query or client. The exact pid/SQL itself needs one pg_stat_activity
+          query against the pod (deferred until a safe SQL diagnostic tool exists) — say so
+          honestly rather than guessing the query text.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "WAL byte/record write rate and WAL buffer-full rate on the alerting pod."
+            params:
+              queries:
+                - name: wal_bytes_per_s
+                  unit: "B/s"
+                  query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: wal_buffers_full_per_s
+                  query: 'sum(rate(cnpg_collector_wal_buffers_full{namespace="$namespace",pod="$pod"}[5m]))'
+          - tool_id: "tool.read_logs"
+            description: "Postgres container logs filtered for lock/statement-timeout/deadlock/cancel/abort signatures around the transaction window."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — forge.* are never auto-executed; CNPG backends must be cleared via psql, not k8s
+      - action: "cancel_long_running_query"
+        description: "ONLY when step 2 shows state=active AND step 3/4 prove impact (waiting backends, commit-rate drop, or deadlocks). Cancel the offending query (non-destructive, keeps the connection): connect to $pod and run SELECT pg_cancel_backend(<pid>) for the pid from pg_stat_activity ordered by xact_start. Identify the pid via SQL — metrics cannot name it."
+        tool_id: ""
+        requires_approval: true
+      - action: "terminate_idle_in_transaction_backend"
+        description: "ONLY when step 2 shows state=idle in transaction AND backend_xmin_age/replication_lag is high (autovacuum blocked) or backends are waiting. After confirming the owning application/client, terminate the stale session on $pod: SELECT pg_terminate_backend(<pid>). Fix the app afterwards (missing COMMIT/ROLLBACK or a leaked pooled connection) so it does not recur."
+        tool_id: ""
+        requires_approval: true
+      - action: "remediate_application_session_handling"
+        description: "Root-cause fix for the idle-in-transaction case: set/lower idle_in_transaction_session_timeout and statement_timeout on the CNPG cluster (spec.postgresql.parameters), and fix the client so it commits/rolls back promptly or uses a pooler. Prevents recurrence rather than clearing one session."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning application/database team (the long transaction is almost always application-driven). Escalate to the on-call DBA / platform team when waiting backends + commit-rate drop, deadlocks, replication lag, or high xmin age show cluster-wide impact (autovacuum blocked / replica RPO at risk)."
+    follow_up:
+      - "Once a safe SQL diagnostic tool is wired, run pg_stat_activity (pid, state, xact_start age, wait_event, query) ordered by xact_start, and pg_blocking_pids() if waiting_backends > 0, to name the exact query/pid/blocker — metrics alone cannot."
+      - "If long transactions recur, add idle_in_transaction_session_timeout + statement_timeout guards and review the application's transaction scoping / connection-pool lifetime."
+
+  - name: "CNPGClusterDown"
+    patterns:
+      [
+        "CNPGClusterDown",
+        "cnpg cluster down",
+        "cloudnativepg cluster down",
+        "collector is down",
+        "collector cannot collect",
+        "exporter down",
+        "cnpg_collector_up",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the collector is actually down and whether it is one pod or the whole cluster"
+        description: >-
+          CNPGClusterDown fires on cnpg_collector_up == 0 — the CNPG instance-manager
+          exporter cannot scrape PostgreSQL on a pod. This is a SYMPTOM alert: the cluster
+          itself may be healthy while only instrumentation is broken, OR PostgreSQL is
+          genuinely down. collector_up_pod is the alerting pod's collector; collectors_down
+          counts how many pods in the cluster ($service-*) have collector_up==0.
+          Interpret: collectors_down = 1 (just $pod) => isolated exporter/pod issue — the
+          rest of the cluster is still reporting. collectors_down > 1 or = all instances =>
+          cluster-wide (operator down, scrape/network path broken, or whole cluster down) —
+          much higher impact. metric_staleness_seconds large => metrics are frozen (the
+          collector stopped updating), so treat every other cnpg_* value below as
+          LAST-KNOWN, not live, and lower confidence accordingly. collector_last_error > 0
+          => the collector is running but failing its collection (connection refused /
+          auth / timeout to local PG) rather than being absent.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Alerting pod's collector state, count of down collectors across the cluster, metric freshness, and last collection error."
+            params:
+              queries:
+                - name: collector_up_pod
+                  query: 'min(cnpg_collector_up{namespace="$namespace",pod="$pod"})'
+                - name: collectors_down_in_cluster
+                  query: 'count(cnpg_collector_up{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) or vector(0)'
+                - name: metric_staleness_seconds
+                  unit: "s"
+                  query: 'max(time() - cnpg_last_update_timestamp{namespace="$namespace",pod="$pod"})'
+                - name: collector_last_error
+                  query: 'max(cnpg_collector_last_collection_error{namespace="$namespace",pod="$pod"})'
+      - step: 2
+        title: "Decide whether PostgreSQL itself bounced, and the pod's role (primary vs replica)"
+        description: >-
+          Separate "exporter broke" from "Postgres went away". seconds_since_pg_start is the
+          age of the current postmaster on $pod. Interpret: seconds_since_pg_start small
+          (seconds–minutes, near the alert onset) => PostgreSQL recently RESTARTED (crash,
+          OOM, failover, or pod reschedule) and the collector-down is a side effect of that
+          bounce — chase the restart cause in step 3. seconds_since_pg_start large/steady =>
+          Postgres has been up; the collector is the thing that's down (instrumentation-only).
+          in_recovery = 0 => $pod is the PRIMARY (writes land here; collector-down on the
+          primary is the worst case and may hide a write-path outage). in_recovery = 1 =>
+          $pod is a replica. wal_receiver_up on a replica = 0 alongside collector-down hints
+          the whole pod/instance is unhealthy, not just the exporter. CAVEAT: if step 1 showed
+          metrics are stale these PG values are last-known — say so.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Time since PostgreSQL start (restart detector), recovery role (primary vs replica), and WAL receiver state for the alerting pod."
+            params:
+              queries:
+                - name: seconds_since_pg_start
+                  unit: "s"
+                  query: 'time() - max(cnpg_pg_postmaster_start_time{namespace="$namespace",pod="$pod"})'
+                - name: in_recovery
+                  query: 'max(cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"})'
+                - name: wal_receiver_up
+                  query: 'max(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod="$pod"})'
+      - step: 3
+        title: "Read pod state and logs for the real cause (crash / OOM / probe / connection refused)"
+        description: >-
+          cnpg_* metrics cannot see below PostgreSQL — confirm the pod/process story from
+          runtime state and logs. Look for: container restarts / OOMKills (pod bounced =>
+          explains a recent postmaster start), readiness/liveness probe failures, "connection
+          refused"/"could not connect" from the exporter to local PG (collector-only failure),
+          or PostgreSQL FATAL/PANIC lines (real DB outage). The honest conclusion when CNPG
+          metrics alone are inconclusive: state that the cluster-down signal needs pod/infra
+          confirmation and point at the specific evidence found here.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod restarts / OOM / probe failures for the CNPG pod."
+          - tool_id: "tool.read_logs"
+            description: "Postgres container logs filtered for FATAL/PANIC/connection-refused/probe/exit signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — no destructive forge action; restarting a CNPG pod can trigger a failover
+      - action: "investigate_pod_and_operator"
+        description: "Primary path: inspect the pod (kubectl describe / events) and the cnpg operator. If the collector-only is down but PG is serving, the pod often self-heals or needs a targeted instance-manager restart by the operator — not a manual deployment restart."
+        tool_id: ""
+        requires_approval: true
+      - action: "address_postgres_restart_cause"
+        description: "If step 2 shows PostgreSQL recently restarted, treat collector-down as a symptom and fix the underlying cause (OOM => raise memory; crash => check logs/PVC; repeated => possible failover loop). Avoid restarting the primary, which forces a failover."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/DBA on-call immediately if collectors_down covers the whole cluster or the PRIMARY (in_recovery=0) is affected — potential write-path outage. Otherwise the owning team for a single unhealthy replica/exporter."
+    follow_up:
+      - "If only the collector is down while PG serves traffic, this is an instrumentation gap — verify the cnpg metrics scrape target and the instance-manager sidecar health."
+      - "If PostgreSQL bounced, correlate the postmaster start time with pod events / failover history to confirm crash vs scheduled switchover."
+
+  - name: "CNPGClusterReplicationLag"
+    patterns:
+      [
+        "CNPGClusterReplicationLagWarning",
+        "CNPGClusterReplicationLagCritical",
+        "CNPGClusterReplicationLag",
+        "replication lag",
+        "replica is lagging",
+        "replica lag",
+        "behind primary",
+        "standby lag",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the lag, name the laggiest replica, and split receive vs replay"
+        description: >-
+          Serves BOTH severities — Warning fires at >30s, Critical at >120s (failover RPO at
+          risk); read the alert title for which and weight impact accordingly. max_replication_lag_s
+          is the worst replica lag in the cluster; laggiest_replica_s surfaces WHICH pod. The
+          three Postgres lag components localise the bottleneck. Interpret: replay_lag_s far
+          larger than write_lag_s/flush_lag_s => the replica RECEIVES WAL fine but is slow to
+          REPLAY it — replay is single-threaded, so this is CPU/IO pressure on the replica or a
+          long query holding a conflicting lock (recovery conflict). write_lag_s/flush_lag_s
+          high => the replica is slow to RECEIVE/persist WAL — network between primary and
+          replica, or slow replica disk. All three near zero while replication_lag is high =>
+          the lag metric is byte-based / the replica just reconnected; re-check after the window.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst replica lag, the laggiest replica's name, and replay/write/flush lag components across the cluster."
+            params:
+              queries:
+                - name: max_replication_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: laggiest_replica_s
+                  unit: "s"
+                  query: 'topk(1, max by (pod) (cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"}))'
+                - name: replay_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_stat_replication_replay_lag_seconds{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: write_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_stat_replication_write_lag_seconds{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: flush_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_stat_replication_flush_lag_seconds{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 2
+        title: "Check whether the replica is still connected and streaming"
+        description: >-
+          A lag spike is often a disconnect, not slowness. replicas_with_receiver_up is the COUNT
+          of replicas whose WAL receiver is up (the primary itself has no receiver, so it does not
+          count); streaming_replicas is the primary's own count of actively streaming standbys.
+          Both should equal the expected replica count (cluster instances - 1). Interpret:
+          replicas_with_receiver_up OR streaming_replicas below expected => a replica dropped out
+          of streaming (its WAL receiver is down — crashed, network-partitioned, or fell back to
+          WAL-file/archive recovery); that replica lags without bound until it reconnects — likely
+          root cause. Both at expected => every replica is connected but slow (go back to the
+          step-1 replay-vs-receive split).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "WAL receiver up (min across cluster) and the primary's streaming-replica count."
+            params:
+              queries:
+                - name: replicas_with_receiver_up
+                  query: 'sum(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: streaming_replicas
+                  query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 3
+        title: "Check whether the primary is simply outpacing the replica, and slot WAL retention"
+        description: >-
+          If the replica is connected and replaying as fast as it can, the cause may be the
+          PRIMARY generating WAL faster than the replica consumes. Interpret: wal_generation_bytes_per_s
+          high (a bulk load / reindex / batch write) coinciding with the lag => write-burst-driven
+          lag; it should drain once the burst ends — name the write workload. max_slot_retained_bytes
+          large => the replica's replication slot is holding a big and/or growing backlog of WAL on
+          the primary (the replica is behind and the primary is retaining WAL for it — also a
+          pg_wal disk-fill risk on the primary). archive_failures_30m > 0 => WAL archiving trouble
+          can compound disk pressure; cross-link to CNPGClusterWALArchiveFailing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Cluster WAL generation rate, max WAL bytes retained behind a replication slot, and recent WAL archive failures."
+            params:
+              queries:
+                - name: wal_generation_bytes_per_s
+                  unit: "B/s"
+                  query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+                - name: max_slot_retained_bytes
+                  unit: "B"
+                  query: 'max(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: archive_failures_30m
+                  query: 'sum(increase(cnpg_pg_stat_archiver_failed_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+    remediation: # suggestion-only — investigate the replica; never restart the primary (forces failover)
+      - action: "recover_disconnected_replica"
+        description: "If step 2 shows wal_receiver_up=0 or streaming_replicas below expected, focus on the laggiest replica from step 1: check its pod health / node IO / network to the primary. An operator-driven restart of THAT replica pod (approval-gated) can re-establish streaming — never restart the primary."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_primary_write_pressure"
+        description: "If step 3 shows a WAL-generation burst, identify and pace the write workload (bulk load / migration). Lag should recover when the burst ends; consider throttling the job rather than touching the cluster."
+        tool_id: ""
+        requires_approval: true
+    escalation: "DBA / platform on-call when Critical (>120s) — failover RPO is at risk; a forced failover now would lose the un-replayed delta. Owning team for a single slow replica under Warning."
+    follow_up:
+      - "If lag is replay-bound, check for long read queries on the replica causing recovery conflicts (max_standby_streaming_delay) and review replica CPU/IO sizing."
+      - "If a replica repeatedly drops streaming, inspect network policy / primary connection limits / replica disk health."
+
+  - name: "CNPGClusterWALArchiveFailing"
+    patterns:
+      [
+        "CNPGClusterWALArchiveFailing",
+        "wal archive failing",
+        "wal archiving is failing",
+        "archive failing",
+        "archiver failed",
+        "point-in-time recovery at risk",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm WAL archiving is failing and whether it is continuous or intermittent"
+        description: >-
+          The alert fires on rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0 — WAL segments are
+          failing to archive, putting point-in-time recovery at risk. Interpret: archive_failures_30m
+          rising AND archive_successes_30m flat/zero => CONTINUOUS failure — archiving is fully
+          broken (most often expired object-store credentials, a wrong/again-unreachable bucket, or
+          quota exceeded). Both rising => INTERMITTENT failures (transient network / throttling /
+          occasional large segment). secs_since_last_archival large and growing => no segment has
+          archived successfully recently (the practical "how long broken" number). secs_since_last_failure
+          small => it is failing right now, not a stale historical blip.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Archive failure vs success counts over 30m, and seconds since last successful archival / last failure (cluster-wide)."
+            params:
+              queries:
+                - name: archive_failures_30m
+                  query: 'sum(increase(cnpg_pg_stat_archiver_failed_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+                - name: archive_successes_30m
+                  query: 'sum(increase(cnpg_pg_stat_archiver_archived_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+                - name: secs_since_last_archival
+                  unit: "s"
+                  query: 'min(cnpg_pg_stat_archiver_seconds_since_last_archival{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: secs_since_last_failure
+                  unit: "s"
+                  query: 'min(cnpg_pg_stat_archiver_seconds_since_last_failure{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 2
+        title: "Measure the operational urgency — WAL backlog and generation rate"
+        description: >-
+          Failing archival is dangerous because un-archived WAL accumulates on the primary's
+          pg_wal and cannot be removed — eventually filling the data volume and stalling writes.
+          wal_files_pending_archive is the count of segments marked READY but not yet archived
+          (the backlog). Interpret: wal_files_pending_archive high and/or climbing => backlog is
+          building — disk-fill risk is real and time-bound; escalate. wal_generation_bytes_per_s
+          high while archiving fails => the backlog will grow fast — urgent. Low generation + small
+          backlog => failing but not yet an imminent disk threat (still fix it; PITR is degraded).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count of WAL segments pending archive (status=ready) and the cluster WAL generation rate."
+            params:
+              queries:
+                - name: wal_files_pending_archive
+                  query: 'max(cnpg_collector_pg_wal_archive_status{namespace="$namespace",pod=~"$service-[0-9]+",value="ready"})'
+                - name: wal_generation_bytes_per_s
+                  unit: "B/s"
+                  query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+      - step: 3
+        title: "Assess recoverability — backup freshness (guarded for not-configured)"
+        description: >-
+          Tie the archive failure to the actual recovery posture. The backup-timestamp queries are
+          guarded with `> 0`, so they return n/a when no backup has ever been taken. Interpret:
+          both n/a => continuous-archiving/backups are NOT configured for this cluster, so "archive
+          failing" may reflect an unconfigured/partial setup rather than a regression — say that
+          plainly. secs_since_last_available_backup large (with a real value) AND archiving failing
+          => the PITR window is frozen at the last base backup and getting staler — recoverability
+          risk. secs_since_last_failed_backup small => the backup subsystem itself recently errored
+          (same root cause as archiving — usually object-store creds/quota).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Seconds since last available backup and last failed backup (n/a when backups are not configured)."
+            params:
+              queries:
+                - name: secs_since_last_available_backup
+                  unit: "s"
+                  query: 'time() - max(cnpg_collector_last_available_backup_timestamp{namespace="$namespace",pod=~"$service-[0-9]+"} > 0)'
+                - name: secs_since_last_failed_backup
+                  unit: "s"
+                  query: 'time() - max(cnpg_collector_last_failed_backup_timestamp{namespace="$namespace",pod=~"$service-[0-9]+"} > 0)'
+          - tool_id: "tool.read_logs"
+            description: "Postgres/instance-manager logs filtered for archive/barman/wal-g/object-store errors (denied, 403, expired, NoSuchBucket, quota, timeout)."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — this is a storage/credentials config fix, not a k8s restart
+      - action: "fix_object_store_archiving"
+        description: "Primary fix: the destination is almost always the problem — check the barmanObjectStore / backup credentials (expired keys), bucket name/region/endpoint, network egress, and quota. Restore the credential/secret and archiving resumes; no pod restart is appropriate."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_wal_disk_pressure"
+        description: "If step 2 shows a growing backlog near disk capacity, treat as time-critical: expand the WAL/data volume if the StorageClass allows, in parallel with fixing archiving — do NOT drop WAL manually while it is still un-archived (breaks PITR)."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/DBA on-call when WAL backlog is climbing toward disk capacity (imminent write outage) or when a real PITR window is going stale. Lower urgency if backups are simply not configured (state the gap)."
+    follow_up:
+      - "After archiving recovers, confirm pending WAL (status=ready) drains to ~0 and a fresh base backup completes to re-establish the PITR window."
+      - "If backups are unconfigured, raise whether continuous archiving/backup should be enabled for this cluster per its data-criticality."
+
+  - name: "CNPGClusterDeadReplicationSlot"
+    patterns:
+      [
+        "CNPGClusterDeadReplicationSlot",
+        "dead replication slot",
+        "inactive replication slot",
+        "replication slot",
+        "slot retaining wal",
+        "pg_wal grow",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Find inactive slots and — crucially — how much WAL each is retaining"
+        description: >-
+          The alert keys on cnpg_pg_replication_slots_active == 0. IMPORTANT nuance for multi-node
+          CNPG: standbys keep HA replication slots that are NORMALLY inactive, so an inactive slot
+          BY ITSELF is not necessarily a problem — the danger is an inactive slot that is RETAINING
+          WAL (its consumer is gone but Postgres still preserves WAL for it, growing pg_wal without
+          bound). worst_slot_retained_bytes surfaces the slot_name holding the most WAL. Interpret:
+          inactive_slot_count > 0 AND max_slot_retained_bytes high/growing => a genuine dead slot is
+          pinning WAL — the real, P1 problem (disk-fill risk). inactive_slot_count > 0 AND
+          max_slot_retained_bytes ~0 => benign inactive HA slots; do not over-escalate. Name the
+          offending slot from worst_slot_retained_bytes.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count of inactive slots, the single worst slot by retained WAL (surfaces slot_name), and max retained bytes across the cluster."
+            params:
+              queries:
+                - name: inactive_slot_count
+                  query: 'count(cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) or vector(0)'
+                - name: worst_slot_retained_bytes
+                  unit: "B"
+                  query: 'topk(1, max by (slot_name) (cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"}))'
+                - name: max_slot_retained_bytes
+                  unit: "B"
+                  query: 'max(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 2
+        title: "Explain WHY the slot is dead — is a replica gone — and how fast WAL is piling up"
+        description: >-
+          A dead slot usually means its consumer disappeared. Interpret: streaming_replicas below
+          expected (instances - 1) or replicas_with_receiver_up below expected => a replica
+          disconnected/was removed and left its slot orphaned — that orphan is the dead slot
+          retaining WAL. wal_generation_bytes_per_s
+          high while retention grows => WAL is accumulating fast behind the slot, so the disk-fill
+          clock is short — escalate urgency. replication_lag_s also high => the same missing/slow
+          replica is behind on the slot it does hold. If all replicas are present and streaming, an
+          inactive-but-retaining slot is likely a leftover from a past topology change.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Primary's streaming-replica count, WAL receiver state, WAL generation rate, and current replication lag."
+            params:
+              queries:
+                - name: streaming_replicas
+                  query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: replicas_with_receiver_up
+                  query: 'sum(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: wal_generation_bytes_per_s
+                  unit: "B/s"
+                  query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+                - name: replication_lag_s
+                  unit: "s"
+                  query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
+    remediation: # suggestion-only — dropping a slot is a manual psql action; never drop a slot still in use
+      - action: "drop_orphaned_replication_slot"
+        description: "ONLY when step 1 names an inactive slot with large/growing retained WAL AND step 2 confirms its consumer replica is permanently gone: drop the orphan on the primary via psql — SELECT pg_drop_replication_slot('<slot_name>') — to release the retained WAL. Never drop a slot whose replica is merely temporarily disconnected and expected back."
+        tool_id: ""
+        requires_approval: true
+      - action: "recover_or_remove_replica"
+        description: "If a replica disconnected (step 2), either recover it (so it reactivates its slot and drains the backlog) or, if intentionally removed, let CNPG reconcile / clean up its HA slot. Recovering the consumer is the non-destructive way to clear retention."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/DBA on-call — retained WAL behind a dead slot fills pg_wal and will eventually stop writes cluster-wide (P1). Escalate faster when WAL generation is high and retention is climbing."
+    follow_up:
+      - "After clearing, confirm retained-WAL bytes for the slot drop to ~0 and pg_wal volume usage recovers."
+      - "Audit for leftover slots after any planned replica scale-down / topology change so orphans are removed promptly."
+
+  - name: "CNPGClusterHighConnections"
+    patterns:
+      [
+        "CNPGClusterHighConnections",
+        "high connections",
+        "connection count",
+        "approaching the limit",
+        "max_connections",
+        "connection utilization",
+        "too many connections",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm connection utilisation and headroom on the alerting pod"
+        description: >-
+          The alert fires when backends / max_connections > 0.80 on $pod. conn_usage_pct is the live
+          utilisation; max_connections is the configured ceiling. Interpret: conn_usage_pct >= 80
+          confirms the pressure; the closer to 100 the nearer the cluster is to rejecting new
+          connections ("FATAL: sorry, too many clients already"), which is a user-facing outage.
+          waiting_backends > 0 => sessions are already blocked/queuing — pressure is biting now, not
+          just trending. Establish whether this is a single pod (often the primary, which carries the
+          write connections) before generalising.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Connection utilisation %, total backends, configured max_connections, and waiting backends on the alerting pod."
+            params:
+              queries:
+                - name: conn_usage_pct
+                  unit: "%"
+                  query: '100 * sum by (pod) (cnpg_backends_total{namespace="$namespace",pod="$pod"}) / on(pod) max by (pod) (cnpg_pg_settings_setting{namespace="$namespace",pod="$pod",name="max_connections"})'
+                - name: total_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod"})'
+                - name: max_connections
+                  query: 'max(cnpg_pg_settings_setting{namespace="$namespace",pod="$pod",name="max_connections"})'
+                - name: waiting_backends
+                  query: 'sum(cnpg_backends_waiting_total{namespace="$namespace",pod="$pod"})'
+      - step: 2
+        title: "Classify the connections — idle pool, real workload, or a session/transaction leak"
+        description: >-
+          The fix depends entirely on what the connections are DOING. Interpret: idle_backends is the
+          large majority => the application/connection-pool is holding far more open connections than
+          it uses — fix pool sizing or front PostgreSQL with PgBouncer; raising max_connections just
+          defers the problem and costs memory. active_backends is the large majority => genuine
+          concurrent workload — consider read replicas / query optimisation / scaling, not just a
+          higher limit. idle_in_txn_backends elevated => a session/transaction LEAK (BEGIN without
+          COMMIT, or leaked pooled connections) — the same failure mode as the long-transaction
+          alert; longest_tx_state corroborates which state dominates. This classification is the RCA.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Backend counts by state (active / idle / idle-in-transaction) and the dominant non-idle transaction state on the alerting pod."
+            params:
+              queries:
+                - name: active_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="active"}) or vector(0)'
+                - name: idle_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="idle"}) or vector(0)'
+                - name: idle_in_txn_backends
+                  query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="idle in transaction"}) or vector(0)'
+                - name: longest_tx_state
+                  unit: "s"
+                  query: 'topk(1, max by (state) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state!="idle"}))'
+      - step: 3
+        title: "Gauge throughput impact — is the connection pressure degrading the database?"
+        description: >-
+          Decide whether this is a capacity warning or an active degradation. Interpret: rollback_rate_per_s
+          elevated vs commit_rate_per_s => application errors/retries are churning connections (open →
+          fail → reopen) — connection growth is a symptom of an upstream error, not just load.
+          commit_rate_per_s healthy with mostly-idle connections => LOW DB-work impact but a real
+          connection-exhaustion risk (the next traffic bump rejects clients). commit_rate_per_s dropping
+          while waiting_backends > 0 => throughput is already degraded by the connection pressure (HIGH
+          impact). Combine with step 2 to state cause + impact precisely.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Commit and rollback rates on the alerting pod (connection-churn / degradation signal)."
+            params:
+              queries:
+                - name: commit_rate_per_s
+                  unit: "tx/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_xact_commit{namespace="$namespace",pod="$pod"}[5m]))'
+                - name: rollback_rate_per_s
+                  unit: "tx/s"
+                  query: 'sum(rate(cnpg_pg_stat_database_xact_rollback{namespace="$namespace",pod="$pod"}[5m]))'
+    remediation: # suggestion-only — config / app-side fixes, gated
+      - action: "add_or_rightsize_connection_pooler"
+        description: "Primary fix when step 2 shows mostly-idle connections: front PostgreSQL with a PgBouncer Pooler CR (or right-size the app's existing pool) so a few server connections are multiplexed. Far cheaper and safer than raising max_connections."
+        tool_id: ""
+        requires_approval: true
+      - action: "raise_max_connections"
+        description: "Only when step 2 shows genuine active workload AND the pod has memory headroom (each connection costs work_mem-scaled RAM): raise spec.postgresql.parameters.max_connections. Requires a rolling restart and more memory — verify headroom first."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_application_session_leak"
+        description: "When step 2 shows many idle-in-transaction backends: fix the client to commit/rollback promptly and set idle_in_transaction_session_timeout — same remediation family as the long-running-transaction alert."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning application team (connection usage is almost always app/pool driven). Escalate to DBA/platform when conn_usage_pct is near 100 with waiting backends or a dropping commit rate — imminent 'too many clients' rejection."
+    follow_up:
+      - "If connections are mostly idle, standardise on a pooler and cap per-service pool sizes so the sum cannot exceed max_connections."
+      - "If idle-in-transaction dominates, treat alongside CNPGClusterLongRunningTransaction — the same leak drives both alerts."
