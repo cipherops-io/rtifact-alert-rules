@@ -43,21 +43,21 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `CNPGClusterDown` | critical | P1 | 1m | symptom | `cnpg_collector_up == 0` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterDegraded` | critical | P1 | 5m | symptom | `cnpg_cluster_ready_instances < cnpg_cluster_instances` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterHAWarning` | warning | P2 | 5m | cause | `cnpg_cluster_instances == 1` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterLongRunningTransactionWarning` | warning | P2 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterLongRunningTransactionCritical` | critical | P1 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterReplicationLagWarning` | warning | P2 | 2m | cause | `cnpg_pg_replication_lag > 30` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterReplicationLagCritical` | critical | P1 | 2m | cause | `cnpg_pg_replication_lag > 120` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterBackupOverdue` | warning | P2 | 5m | cause | `time() - cnpg_cluster_last_successful_backup_timestamp > 86400` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterHighWALDiskUsage` | warning | P2 | 5m | cause | `cnpg_cluster_pg_wal_volume_size_bytes / cnpg_cluster_pg_wal_volume_total_size_b…` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterWALArchiveFailing` | warning | P2 | 5m | cause | `rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterDeadReplicationSlot` | critical | P1 | 10m | cause | `cnpg_pg_replication_slots_active == 0` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterHighConnections` | warning | P2 | 5m | cause | `cnpg_backends_total / cnpg_pg_settings_max_connections > 0.80` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterPrimaryNotReady` | critical | P0 | 2m | symptom | `cnpg_cluster_primary_uptime_seconds == 0` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterFailoverOccurred` | info | P3 | 0m | cause | `increase(cnpg_cluster_switchover_count[10m]) > 0` | [cnpg.md](runbooks/databases/cnpg.md) |
-| `CNPGClusterDataVolumeNearFull` | warning | P2 | 10m | cause | `cnpg_cluster_pg_data_volume_used_bytes / cnpg_cluster_pg_data_volume_total_size…` | [cnpg.md](runbooks/databases/cnpg.md) |
+| `CNPGClusterDown` | critical | P1 | 1m | symptom | `cnpg_collector_up == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterDegraded` | critical | P1 | 5m | symptom | `cnpg_cluster_ready_instances < cnpg_cluster_instances` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterHAWarning` | warning | P2 | 5m | cause | `cnpg_cluster_instances == 1` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterLongRunningTransactionWarning` | warning | P2 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterLongRunningTransactionCritical` | critical | P1 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterReplicationLagWarning` | warning | P2 | 2m | cause | `cnpg_pg_replication_lag > 30` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterReplicationLagCritical` | critical | P1 | 2m | cause | `cnpg_pg_replication_lag > 120` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterBackupOverdue` | warning | P2 | 5m | cause | `time() - cnpg_cluster_last_successful_backup_timestamp > 86400` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterHighWALDiskUsage` | warning | P2 | 5m | cause | `cnpg_cluster_pg_wal_volume_size_bytes / cnpg_cluster_pg_wal_volume_total_size_b…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterWALArchiveFailing` | warning | P2 | 5m | cause | `rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterDeadReplicationSlot` | critical | P1 | 10m | cause | `cnpg_pg_replication_slots_active == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterHighConnections` | warning | P2 | 5m | cause | `cnpg_backends_total / cnpg_pg_settings_max_connections > 0.80` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterPrimaryNotReady` | critical | P0 | 2m | symptom | `cnpg_cluster_primary_uptime_seconds == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterFailoverOccurred` | info | P3 | 0m | cause | `increase(cnpg_cluster_switchover_count[10m]) > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterDataVolumeNearFull` | warning | P2 | 10m | cause | `cnpg_cluster_pg_data_volume_used_bytes / cnpg_cluster_pg_data_volume_total_size…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 
 ### `rules/databases/elasticsearch.yaml`
 

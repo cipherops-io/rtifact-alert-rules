@@ -29,13 +29,13 @@ tests:
               tech_stack: cnpg
               signal: symptom
               category: data
-              runbook: runbooks/databases/cnpg.md
+              runbook: runbooks/databases/cnpg.yaml
               cnpg_cluster: prod-pg
               pod: prod-pg-1
             exp_annotations:
               summary: "CloudNativePG cluster collector is down"
               description: "CloudNativePG cluster prod-pg collector is down — pod prod-pg-1."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdown"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterdown"
 
   # ============================================================
   # CNPGClusterDown: negative — collector reports 1 (healthy)
@@ -68,12 +68,12 @@ tests:
               tech_stack: cnpg
               signal: symptom
               category: data
-              runbook: runbooks/databases/cnpg.md
+              runbook: runbooks/databases/cnpg.yaml
               cnpg_cluster: prod-pg
             exp_annotations:
               summary: "CloudNativePG cluster has fewer ready instances than desired"
               description: "CNPG cluster prod-pg has 2 ready instances, less than desired."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterdegraded"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterdegraded"
 
   # ============================================================
   # CNPGClusterDegraded: negative — equal ready and desired
@@ -107,12 +107,12 @@ tests:
               tech_stack: cnpg
               signal: cause
               category: data
-              runbook: runbooks/databases/cnpg.md
+              runbook: runbooks/databases/cnpg.yaml
               cnpg_cluster: prod-pg
             exp_annotations:
               summary: "CloudNativePG replica is lagging behind primary"
               description: "CNPG cluster prod-pg replica is 2m 30s behind primary."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagwarning"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationlagwarning"
       - eval_time: 3m
         alertname: CNPGClusterReplicationLagCritical
         exp_alerts:
@@ -122,12 +122,12 @@ tests:
               tech_stack: cnpg
               signal: cause
               category: data
-              runbook: runbooks/databases/cnpg.md
+              runbook: runbooks/databases/cnpg.yaml
               cnpg_cluster: prod-pg
             exp_annotations:
               summary: "CloudNativePG replica replication lag is critical"
               description: "CNPG cluster prod-pg replica is 2m 30s behind primary — exceeds 2-minute critical threshold. Failover RPO is at risk."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterreplicationlagcritical"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationlagcritical"
 
   # ============================================================
   # CNPGClusterPrimaryNotReady: positive — primary uptime is 0
@@ -146,9 +146,9 @@ tests:
               tech_stack: cnpg
               signal: symptom
               category: data
-              runbook: runbooks/databases/cnpg.md
+              runbook: runbooks/databases/cnpg.yaml
               cnpg_cluster: prod-pg
             exp_annotations:
               summary: "CloudNativePG primary pod is not ready"
               description: "CNPG cluster prod-pg primary pod is not ready — writes are failing."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.md#cnpgclusterprimarynotready"
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterprimarynotready"
