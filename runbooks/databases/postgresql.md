@@ -1,6 +1,6 @@
 # Runbook: PostgreSQL
 
-For CNPG-managed PostgreSQL, see also [`cnpg.md`](cnpg.md).
+For CNPG-managed PostgreSQL, see also [`cnpg.yaml`](cnpg.yaml).
 
 ## PostgreSQLDown
 
