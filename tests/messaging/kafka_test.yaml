@@ -335,14 +335,15 @@ tests:
               runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergrouptotallaghigh"
 
   # ============================================================
-  # KafkaConsumerGroupLagIncreasingFast: +15000 over 15m
+  # KafkaConsumerGroupLagIncreasingFast: +15000 over 15m (for: 15m)
+  # Condition true from 11m; fires at 11m + 15m = 26m
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'kafka_consumergroup_lag_sum{consumergroup="ingest"}'
-        values: '0+1000x16'
+        values: '0+1000x27'
     alert_rule_test:
-      - eval_time: 16m
+      - eval_time: 26m
         alertname: KafkaConsumerGroupLagIncreasingFast
         exp_alerts:
           - exp_labels:

@@ -296,10 +296,10 @@
 | `KafkaOfflinePartitions` | critical | P1 | 1m | symptom | `kafka_offline_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaUnderReplicatedPartitions` | warning | P2 | 5m | cause | `kafka_under_replicated_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaTopicUnderReplicatedPartition` | warning | P3 | 10m | cause | `kafka_topic_partition_under_replicated_partition > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaInsufficientInSyncReplicas` | warning | P2 | 5m | cause | `kafka_topic_partition_in_sync_replica < 2 and kafka_topic_partition_replicas >= 2` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaTopicInSyncReplicasBelowThree` | warning | P3 | 10m | cause | `kafka_topic_partition_in_sync_replica < 3 and kafka_topic_partition_replicas >= 3` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaInsufficientInSyncReplicas` | warning | P2 | 5m | cause | `kafka_topic_partition_in_sync_replica < 2 and kafka_topic_partition_replicas >=…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicInSyncReplicasBelowThree` | warning | P3 | 10m | cause | `kafka_topic_partition_in_sync_replica < 3 and kafka_topic_partition_replicas >=…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaPartitionLeaderMissing` | critical | P1 | 1m | symptom | `kafka_topic_partition_leader == -1` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaPreferredLeaderImbalance` | warning | P3 | 15m | cause | `100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(...) > 10` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaPreferredLeaderImbalance` | warning | P3 | 15m | cause | `100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(kafka_to…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaConsumerGroupLagHigh` | warning | P2 | 5m | cause | `kafka_consumergroup_lag > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaConsumerGroupLagCritical` | critical | P1 | 5m | symptom | `kafka_consumergroup_lag > 100000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 | `KafkaConsumerGroupTotalLagHigh` | warning | P2 | 10m | cause | `kafka_consumergroup_lag_sum > 50000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
@@ -461,4 +461,4 @@
 
 ---
 
-_293 alerts across 29 files in 8 categories._
+_296 alerts across 29 files in 8 categories._
