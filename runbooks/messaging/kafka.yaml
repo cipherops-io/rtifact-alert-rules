@@ -171,13 +171,17 @@ common_alerts:
           topics have at least one leaderless partition. Interpret: affected_topic_count = 1
           (or leaderless concentrated on one topic) => an isolated topic/partition leadership
           loss — contained blast radius. leaderless spread across many topics => a cluster-wide
-          controller/broker problem, not a per-topic issue (escalate). Name the worst topic
-          explicitly from worst_topics_leaderless so the RCA points at a concrete object.
+          controller/broker problem, not a per-topic issue (escalate). When the alert carries a
+          topic, topic_leaderless is how many of THAT topic's partitions are leaderless — start
+          there to confirm the named topic is affected; otherwise use worst_topics_leaderless to
+          name the worst topic so the RCA points at a concrete object.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Count of leaderless partitions, the worst topic by leaderless partitions (names the topic), and how many topics are affected."
+            description: "Leaderless partitions on the alert's topic, total leaderless count, the worst topic by leaderless partitions, and how many topics are affected."
             params:
               queries:
+                - name: topic_leaderless
+                  query: 'sum by (topic) (kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
                 - name: leaderless_total
                   query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
                 - name: worst_topics_leaderless
@@ -240,27 +244,32 @@ common_alerts:
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Confirm under-replication and name the worst topics"
+        title: "Confirm under-replication on the alert's topic, then gauge cluster spread"
         description: >-
           Fires when partitions have fewer in-sync replicas than their replica set
           (kafka_under_replicated_partitions > 0, or the per-topic
-          kafka_topic_partition_under_replicated_partition). Reduced fault tolerance: if
-          another broker fails, these partitions can go offline. urp_total is the cluster
-          count; worst_topics_urp names the topic with the most under-replicated partitions;
-          urp_topic_count is how many topics are affected. Interpret: urp_topic_count = 1 (or
-          concentrated) => a topic-specific replication issue (one slow/failed replica for that
-          topic). urp spread across many topics => a broker-level or cluster-wide replication
-          problem — almost always a broker that is down, restarting, or can't keep up. Name the
-          worst topic from worst_topics_urp.
+          kafka_topic_partition_under_replicated_partition). Reduced fault tolerance: if another
+          broker fails, these partitions can go offline. START with the ALERT'S OWN topic ($topic):
+          topic_urp_partitions is how many of its partitions are under-replicated and
+          topic_missing_replicas_max the worst (configured replicas − ISR) gap on it. Interpret:
+          topic_urp_partitions > 0 confirms the named topic is genuinely under-replicated — name it
+          and the partition count. topic_urp_partitions = 0 / n.a. while the alert fired => it likely
+          already recovered, or the alert is cluster-level with no single topic; fall back to the
+          cluster view. Then scope the blast radius: urp_total is the cluster count and urp_topic_count
+          how many topics are affected — urp_topic_count = 1 (just this topic) => a topic-specific
+          replication issue (one slow/failed replica). Spread across many topics => a broker-level /
+          cluster-wide problem, almost always a broker down, restarting, or unable to keep up.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Cluster under-replicated count, worst topics by under-replicated partitions, and number of affected topics."
+            description: "The alert topic's under-replicated partition count and worst missing-replica gap, plus the cluster-wide under-replicated total and number of affected topics."
             params:
               queries:
+                - name: topic_urp_partitions
+                  query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                - name: topic_missing_replicas_max
+                  query: 'max by (topic) (clamp_min(kafka_topic_partition_replicas{topic="$topic"} - on(topic,partition) kafka_topic_partition_in_sync_replica{topic="$topic"}, 0)) or vector(0)'
                 - name: urp_total
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
-                - name: worst_topics_urp
-                  query: 'topk(3, sum by (topic) (kafka_topic_partition_under_replicated_partition))'
                 - name: urp_topic_count
                   query: 'count(sum by (topic) (kafka_topic_partition_under_replicated_partition) > 0) or vector(0)'
       - step: 2
@@ -323,56 +332,69 @@ common_alerts:
           These alerts fire when a partition has too few in-sync replicas for safe durability
           (KafkaInsufficientInSyncReplicas typically ISR < 2; KafkaTopicInSyncReplicasBelowThree
           ISR < 3). CRITICAL distinction, because many topics are deliberately created with a low
-          replication factor: isr_below_replicas counts partitions where in-sync replicas <
-          CONFIGURED replicas (a REAL regression — a replica fell out of sync), whereas
-          isr_below_3_total / isr_below_2_total count absolute ISR thresholds regardless of how
-          many replicas the topic has. Interpret: isr_below_replicas ~ 0 while isr_below_3/2 is
-          large => the topics simply have replication factor < 3 (or < 2) BY DESIGN — ISR equals
-          the configured replicas, so this is a configuration/durability-posture finding, NOT a
-          live failure; say so and name the topics rather than implying an incident.
-          isr_below_replicas > 0 => a genuine in-sync-replica loss on those partitions (a replica
-          dropped out) — proceed to step 2 for the cause. worst_topics_isr_below_3 names the
-          topics operating below three in-sync replicas.
+          replication factor. START with the ALERT'S OWN topic when it carries one ($topic):
+          target_topic_min_replicas is the configured replication factor for that topic and
+          target_topic_min_isr its current minimum in-sync count; target_topic_isr_below_replicas
+          counts that topic's partitions where ISR < configured replicas. Interpret (topic-scoped):
+          target_topic_isr_below_replicas = 0 AND target_topic_min_isr == target_topic_min_replicas
+          (e.g. both 1 or both 2) => the topic is RF=<that value> BY DESIGN — ISR is already at its
+          configured maximum, so "below three" merely reflects a low replication factor, NOT a live
+          ISR loss; report it as a durability-posture / configuration finding for THIS topic (name it
+          and its RF), explicitly NOT an incident, and weight impact low. target_topic_isr_below_replicas
+          > 0 (target_topic_min_isr < target_topic_min_replicas) => a GENUINE in-sync-replica loss on
+          this topic (a replica fell out of sync) — proceed to step 2 for the cause. If the alert is
+          cluster-level with no topic (target_topic_* come back n/a / empty), use the cluster-wide
+          signals instead: isr_below_replicas counts partitions where ISR < CONFIGURED replicas (the
+          real regression) whereas cluster_isr_below_3_total is the absolute count (includes RF<3
+          topics that are fine by design). Do NOT call it an ISR loss when target_topic_isr_below_replicas
+          (or cluster isr_below_replicas) ~ 0 — that is RF-by-design. ALWAYS report the RCA against
+          the alert's own topic ($topic) — do not substitute a different topic name from the cluster
+          counts.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Partitions with ISR below configured replicas (real loss) vs absolute ISR<3/ISR<2 counts (config), and the worst topics below three."
+            description: "The alert topic's own min ISR, configured replicas, and partitions below configured replicas; plus cluster-wide real-vs-absolute ISR counts for blast-radius context (no per-topic names)."
             params:
               queries:
+                - name: target_topic_min_isr
+                  query: 'min by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"})'
+                - name: target_topic_min_replicas
+                  query: 'min by (topic) (kafka_topic_partition_replicas{topic="$topic"})'
+                - name: target_topic_isr_below_replicas
+                  query: 'count by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"} < on(topic,partition) kafka_topic_partition_replicas{topic="$topic"}) or vector(0)'
                 - name: isr_below_replicas
                   query: 'count(kafka_topic_partition_in_sync_replica < on(topic,partition) kafka_topic_partition_replicas) or vector(0)'
-                - name: isr_below_3_total
+                - name: cluster_isr_below_3_total
                   query: 'count(kafka_topic_partition_in_sync_replica < 3) or vector(0)'
-                - name: isr_below_2_total
-                  query: 'count(kafka_topic_partition_in_sync_replica < 2) or vector(0)'
-                - name: worst_topics_isr_below_3
-                  query: 'topk(3, sum by (topic) (kafka_topic_partition_in_sync_replica < bool 3))'
       - step: 2
         title: "If it is a real loss, find the broker/replica cause and the durability risk"
         description: >-
-          Only meaningful when step 1 showed isr_below_replicas > 0. missing_replicas_max is the
-          worst (replicas − ISR) gap; broker_changes_30m flags a broker that left; offline_partitions
-          shows whether durability loss has escalated to unavailability. min_isr_observed is the
-          smallest in-sync replica count anywhere. Interpret: broker_changes_30m > 0 => broker loss
-          dropped ISR below the safe threshold (writes with acks=all + min.insync.replicas will start
-          FAILING on those partitions — a producer-facing durability stop). broker steady AND
-          missing_replicas_max > 0 => a replica is lagging/failing (slow IO/network) and fell out of
-          ISR. min_isr_observed = 1 with required >= 2 => acks=all producers can no longer commit
-          safely. offline_partitions > 0 => ISR dropped to zero on some partition — unavailability,
-          escalate. Honest gap: the exact min.insync.replicas setting is not an exporter metric — read
-          it from the topic/cluster config; compare ISR against it rather than assuming.
+          Only meaningful when step 1 showed a real loss on the alert's topic
+          (target_topic_isr_below_replicas > 0). Stay scoped to that topic ($topic):
+          topic_missing_replicas_max is the worst (replicas − ISR) gap on the topic's partitions,
+          topic_leaderless is how many of its partitions also lost their leader (durability loss
+          escalating to unavailability). broker_changes_30m flags a broker that left (a cluster-wide
+          cause). Interpret: broker_changes_30m > 0 => a broker loss dropped this topic's ISR below
+          the safe threshold (writes with acks=all + min.insync.replicas will start FAILING on these
+          partitions — a producer-facing durability stop). broker steady AND topic_missing_replicas_max
+          > 0 => a replica for this topic is lagging/failing (slow IO/network) and fell out of ISR —
+          check that broker's health. target_topic_min_isr = 1 with a required >= 2 => acks=all
+          producers can no longer commit safely on this topic. topic_leaderless > 0 => ISR dropped to
+          zero on some partition of this topic — unavailability, escalate. Honest gap: the exact
+          min.insync.replicas setting is not an exporter metric — read it from the topic/cluster config
+          and compare ISR against it rather than assuming.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Worst missing-replica gap, broker-count changes, minimum ISR observed, and any offline partitions."
+            description: "The alert topic's worst missing-replica gap, its minimum ISR, its leaderless partitions, and cluster broker-count changes."
             params:
               queries:
-                - name: missing_replicas_max
-                  query: 'max(clamp_min(kafka_topic_partition_replicas - on(topic,partition) kafka_topic_partition_in_sync_replica, 0)) or vector(0)'
+                - name: topic_missing_replicas_max
+                  query: 'max by (topic) (clamp_min(kafka_topic_partition_replicas{topic="$topic"} - on(topic,partition) kafka_topic_partition_in_sync_replica{topic="$topic"}, 0)) or vector(0)'
+                - name: target_topic_min_isr
+                  query: 'min by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"})'
+                - name: topic_leaderless
+                  query: 'sum by (topic) (kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
-                - name: min_isr_observed
-                  query: 'min(kafka_topic_partition_in_sync_replica) or vector(0)'
-                - name: offline_partitions
-                  query: 'sum(kafka_offline_partitions) or vector(0)'
     remediation: # suggestion-only
       - action: "recover_broker_to_rebuild_isr"
         description: "When step 2 shows a real ISR loss from a broker leaving or a lagging replica: restore that broker's health so the replica re-enters ISR. With acks=all + min.insync.replicas, this is what unblocks producer writes — recovering the replica is the correct, non-destructive fix."
@@ -415,7 +437,7 @@ common_alerts:
             params:
               queries:
                 - name: target_partition_leader
-                  query: 'min(kafka_topic_partition_leader{topic="$topic",partition="$partition"})'
+                  query: 'min by (topic, partition) (kafka_topic_partition_leader{topic="$topic",partition="$partition"})'
                 - name: leaderless_total
                   query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
                 - name: worst_topics_leaderless
@@ -440,11 +462,11 @@ common_alerts:
             params:
               queries:
                 - name: target_isr
-                  query: 'min(kafka_topic_partition_in_sync_replica{topic="$topic",partition="$partition"})'
+                  query: 'min by (topic, partition) (kafka_topic_partition_in_sync_replica{topic="$topic",partition="$partition"})'
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
                 - name: target_leader_flaps_30m
-                  query: 'max(changes(kafka_topic_partition_leader{topic="$topic",partition="$partition"}[30m])) or vector(0)'
+                  query: 'max by (topic, partition) (changes(kafka_topic_partition_leader{topic="$topic",partition="$partition"}[30m])) or vector(0)'
     remediation: # suggestion-only
       - action: "restore_broker_for_leader_election"
         description: "Primary fix: restore the broker that left (broker_changes_30m > 0) or the broker holding the partition's only in-sync replica, so a valid leader can be elected. Recovering the in-sync replica avoids data loss."
@@ -557,13 +579,13 @@ common_alerts:
             params:
               queries:
                 - name: group_lag_total
-                  query: 'sum(kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum(kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                  query: 'sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum by (consumergroup) (kafka_consumergroup_lag{consumergroup="$consumergroup"})'
                 - name: lag_by_topic
                   query: 'topk(3, sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
                 - name: worst_partition_lag
                   query: 'topk(3, kafka_consumergroup_lag{consumergroup="$consumergroup"})'
                 - name: group_members
-                  query: 'max(kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
+                  query: 'max by (consumergroup) (kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
       - step: 2
         title: "Producer-outpacing vs consumer-stalled: compare append rate to offset-progress rate"
         description: >-
@@ -584,12 +606,12 @@ common_alerts:
               queries:
                 - name: producer_rate_by_topic
                   unit: "msg/s"
-                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
                 - name: consumer_progress_rate
                   unit: "msg/s"
-                  query: 'sum(clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300'
+                  query: 'sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300'
                 - name: lag_growth_15m
-                  query: 'sum(delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[15m]))'
+                  query: 'sum by (consumergroup) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[15m]))'
       - step: 3
         title: "Is the consumer slow, or is Kafka itself degraded? OBI processing + cluster health"
         description: >-
@@ -667,7 +689,7 @@ common_alerts:
                 - name: lagging_group_count
                   query: 'count(kafka_consumergroup_lag_sum > 0) or vector(0)'
                 - name: lag_by_group_topic
-                  query: 'topk(5, sum by (consumergroup, topic) (kafka_consumergroup_lag))'
+                  query: 'topk(5, sum by (consumergroup, topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
       - step: 2
         title: "Find the common cause — dead consumer fleet, Kafka health, or a producer surge"
         description: >-
@@ -693,7 +715,7 @@ common_alerts:
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
                 - name: top_producer_topics
                   unit: "msg/s"
-                  query: 'topk(5, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                  query: 'topk(5, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
                 - name: app_processing_throughput
                   unit: "msg/s"
                   query: 'topk(5, sum by (service.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
@@ -736,7 +758,7 @@ common_alerts:
             params:
               queries:
                 - name: lag_growth_by_group
-                  query: 'topk(3, sum by (consumergroup, topic) (delta(kafka_consumergroup_lag[10m])))'
+                  query: 'topk(3, sum by (consumergroup, topic) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[10m])))'
                 - name: lag_growth_by_partition
                   query: 'topk(3, delta(kafka_consumergroup_lag[10m]))'
                 - name: group_members
@@ -759,10 +781,10 @@ common_alerts:
               queries:
                 - name: producer_rate_by_topic
                   unit: "msg/s"
-                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
                 - name: consumer_progress_rate
                   unit: "msg/s"
-                  query: 'topk(3, sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset[5m]), 0)) / 300)'
+                  query: 'topk(3, sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300)'
                 - name: app_processing_p95_ms
                   unit: "ms"
                   query: 'topk(3, histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.process.duration_bucket",messaging.system="kafka"}[5m]))) * 1000)'
@@ -807,14 +829,14 @@ common_alerts:
             params:
               queries:
                 - name: group_members
-                  query: 'max(kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
+                  query: 'max by (consumergroup) (kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
                 - name: group_lag_total
-                  query: 'sum(kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum(kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                  query: 'sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum by (consumergroup) (kafka_consumergroup_lag{consumergroup="$consumergroup"})'
                 - name: lag_growth_30m
-                  query: 'sum(delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[30m]))'
+                  query: 'sum by (consumergroup) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[30m]))'
                 - name: producer_rate_to_topics
                   unit: "msg/s"
-                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
       - step: 2
         title: "Confirm the consumer app is truly down (OBI) and classify why it left"
         description: >-
@@ -885,9 +907,9 @@ common_alerts:
             params:
               queries:
                 - name: current_offset_delta_10m
-                  query: 'sum(delta(kafka_topic_partition_current_offset{topic="$topic"}[10m]))'
+                  query: 'sum by (topic) (delta(kafka_topic_partition_current_offset{topic="$topic"}[10m]))'
                 - name: oldest_offset_delta_10m
-                  query: 'sum(delta(kafka_topic_partition_oldest_offset{topic="$topic"}[10m]))'
+                  query: 'sum by (topic) (delta(kafka_topic_partition_oldest_offset{topic="$topic"}[10m]))'
                 - name: topics_with_decrease
                   query: 'count(sum by (topic) (delta(kafka_topic_partition_current_offset[10m])) < 0) or vector(0)'
       - step: 2
@@ -908,11 +930,11 @@ common_alerts:
             params:
               queries:
                 - name: leader_changes_30m
-                  query: 'max(changes(kafka_topic_partition_leader{topic="$topic"}[30m])) or vector(0)'
+                  query: 'max by (topic) (changes(kafka_topic_partition_leader{topic="$topic"}[30m])) or vector(0)'
                 - name: under_replicated
-                  query: 'sum(kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                  query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
                 - name: isr_min
-                  query: 'min(kafka_topic_partition_in_sync_replica{topic="$topic"}) or vector(0)'
+                  query: 'min by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"}) or vector(0)'
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
     remediation: # suggestion-only — mostly investigative; offset rollback can mean data divergence
@@ -959,10 +981,10 @@ common_alerts:
             params:
               queries:
                 - name: append_30m
-                  query: 'sum(clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[30m]), 0))'
+                  query: 'sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[30m]), 0))'
                 - name: append_rate
                   unit: "msg/s"
-                  query: 'sum(clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[5m]), 0)) / 300'
+                  query: 'sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[5m]), 0)) / 300'
                 - name: producer_throughput
                   query: 'topk(3, sum by (service.name) (rate({__name__="messaging.client.operation.duration_count",messaging.system="kafka",messaging.destination.name="$topic"}[5m])))'
       - step: 2
@@ -985,9 +1007,9 @@ common_alerts:
             params:
               queries:
                 - name: topic_leaderless
-                  query: 'sum(kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
+                  query: 'sum by (topic) (kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
                 - name: topic_under_replicated
-                  query: 'sum(kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                  query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
                 - name: producer_client_p95_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.client.operation.duration_bucket",messaging.system="kafka",messaging.destination.name="$topic"}[5m]))) * 1000'
