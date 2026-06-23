@@ -11,7 +11,7 @@
       "title": "Runbook: kafka",
       "tooltip": "Runbook in rtifact-alert-rules",
       "type": "link",
-      "url": "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.md"
+      "url": "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml"
     }
   ],
   "liveNow": false,

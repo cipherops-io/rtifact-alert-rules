@@ -291,20 +291,23 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KafkaBrokerDown` | critical | P1 | 1m | symptom | `up{job=~"kafka.*"} == 0` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaUnderReplicatedPartitions` | warning | P2 | 2m | cause | `kafka_server_replicamanager_underreplicatedpartitions > 0` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaOfflinePartitions` | critical | P0 | 1m | symptom | `kafka_controller_kafkacontroller_offlinepartitionscount > 0` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaConsumerGroupLagHigh` | warning | P2 | 5m | cause | `kafka_consumergroup_lag > 10000` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaConsumerGroupLagCritical` | critical | P1 | 5m | symptom | `kafka_consumergroup_lag > 100000` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaConsumerGroupLagGrowing` | warning | P2 | 10m | cause | `deriv(kafka_consumergroup_lag[10m]) > 0` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaLeaderElectionRateHigh` | warning | P2 | 5m | cause | `rate(kafka_controller_kafkacontroller_leaderelectionrate[5m]) > 5` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaISRShrinkRateHigh` | warning | P2 | 5m | cause | `rate(kafka_server_replicamanager_isrshrinks_total[5m]) > 1` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaDiskUsageHigh` | warning | P2 | 5m | cause | `(node_filesystem_size_bytes{mountpoint="/var/lib/kafka"} - node_filesystem_free…` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaNetworkProcessorIdleLow` | warning | P2 | 5m | cause | `kafka_network_socketserver_networkprocessoravgidlepercent < 0.20` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaRequestHandlerIdleLow` | warning | P2 | 5m | symptom | `kafka_server_requesthandlerpool_requesthandleravgidlepercent < 0.10` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaProducerRequestErrorRateHigh` | warning | P2 | 5m | symptom | `rate(kafka_server_brokertopicmetrics_failedproducerequests_total[5m]) / rate(ka…` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaLogFlushLatencyHigh` | warning | P2 | 5m | cause | `kafka_log_logflushstats_logflushtimems > 1000` | [kafka.md](runbooks/messaging/kafka.md) |
-| `KafkaActiveControllerCountAbnormal` | critical | P0 | 2m | symptom | `kafka_controller_kafkacontroller_activecontrollercount != 1` | [kafka.md](runbooks/messaging/kafka.md) |
+| `KafkaExporterDown` | warning | P2 | 2m | symptom | `up{job=~".*kafka.*exporter.*"} == 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaExporterMissing` | warning | P2 | 5m | symptom | `absent(kafka_exporter_build_info)` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaOfflinePartitions` | critical | P1 | 1m | symptom | `kafka_offline_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaUnderReplicatedPartitions` | warning | P2 | 5m | cause | `kafka_under_replicated_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicUnderReplicatedPartition` | warning | P3 | 10m | cause | `kafka_topic_partition_under_replicated_partition > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaInsufficientInSyncReplicas` | warning | P2 | 5m | cause | `kafka_topic_partition_in_sync_replica < 2 and kafka_topic_partition_replicas >= 2` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicInSyncReplicasBelowThree` | warning | P3 | 10m | cause | `kafka_topic_partition_in_sync_replica < 3 and kafka_topic_partition_replicas >= 3` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaPartitionLeaderMissing` | critical | P1 | 1m | symptom | `kafka_topic_partition_leader == -1` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaPreferredLeaderImbalance` | warning | P3 | 15m | cause | `100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(...) > 10` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagHigh` | warning | P2 | 5m | cause | `kafka_consumergroup_lag > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagCritical` | critical | P1 | 5m | symptom | `kafka_consumergroup_lag > 100000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupTotalLagHigh` | warning | P2 | 10m | cause | `kafka_consumergroup_lag_sum > 50000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagIncreasingFast` | warning | P2 | 15m | cause | `delta(kafka_consumergroup_lag_sum[15m]) > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupNoMembersWithLag` | warning | P2 | 10m | symptom | `(kafka_consumergroup_members == 0) and (kafka_consumergroup_lag_sum > 0)` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicOffsetDecreased` | warning | P2 | 5m | symptom | `delta(kafka_topic_partition_current_offset[10m]) < 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicNoMessages` | warning | P3 | 30m | cause | `sum by (topic) (increase(kafka_topic_partition_current_offset[30m])) == 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaBrokerCountChanged` | warning | P3 | 1m | cause | `changes(kafka_brokers[10m]) > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 
 ### `rules/messaging/rabbitmq.yaml`
 

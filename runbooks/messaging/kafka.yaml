@@ -1,0 +1,1087 @@
+tech_stack: kafka
+version: "1.0"
+description: >-
+  Runbook for Apache Kafka alerts, grounded in the metrics exported by the
+  prometheus-kafka-exporter (danielqsj/kafka_exporter). Each assessment names WHICH
+  broker count, WHICH topic/partition lost a leader or fell under-replicated, WHICH
+  consumer group is lagging and whether it still has members — instead of generic
+  "check the brokers / look at logs" guidance. The exporter scrapes the cluster from
+  the Kafka admin/consumer APIs, so it exposes the SYMPTOM (offline/under-replicated
+  partitions, leader state, consumer lag, broker count) but NOT broker JVM/GC, disk,
+  ACL/auth errors, or broker logs — those gaps are called out honestly in the steps.
+  Where the eBPF/OBI messaging metrics exist (messaging.system="kafka"), the consumer
+  and topic-traffic alerts enrich the metric story with app-side producer/consumer
+  throughput and processing latency so the RCA can name WHICH service is slow or
+  stopped. SCOPING: a single exporter scrapes the whole Kafka cluster (there is no
+  per-broker/per-cluster label), and the VM is already tenant-isolated, so cluster-wide
+  kafka_* queries are intentionally unscoped; topic / consumer-group / partition
+  filters use $topic / $consumergroup / $partition, which forge fills from the firing
+  series' labels (impacted_entities). topk(...) attribution names the worst
+  topic/partition/group when the alert itself is cluster-level.
+
+match_keywords:
+  - kafka
+  - confluent
+  - kafka exporter
+  - kafka broker
+  - kafka topic
+  - kafka partition
+  - consumer group
+  - consumer lag
+  - offline partitions
+  - under-replicated partitions
+  - in-sync replicas
+  - preferred leader
+
+categories:
+  - MESSAGING
+  - STREAMING
+
+common_alerts:
+  # ============================================================ AVAILABILITY
+  - name: "KafkaExporterDown"
+    patterns:
+      [
+        "KafkaExporterDown",
+        "KafkaExporterMissing",
+        "scrape target down",
+        "metrics target unhealthy",
+        "build info absent",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm whether the exporter is down, missing, or recovered — and how long"
+        description: >-
+          KafkaExporterDown fires when the exporter scrape target is up but unhealthy;
+          KafkaExporterMissing when the target/metrics disappear entirely. Both mean Kafka
+          visibility is degraded. exporter_up is the scrape health of the kafka-exporter
+          job; build_info_present is 1 when the exporter is emitting its build_info (i.e.
+          metrics are flowing); brokers_visible is the broker count the exporter can read
+          from Kafka. Interpret: exporter_up = 0 => the target is DOWN/unreachable (pod
+          crashed, OOMed, or network path broken). exporter_up = 1 AND build_info_present = 0
+          => the scrape target is up but Kafka exporter metrics are not being emitted
+          (metrics path changed, exporter mis-started). build_info_present = 1 AND
+          brokers_visible = 0/absent => the exporter is reachable but cannot collect Kafka
+          metadata (lost its admin connection to the brokers — auth, ACL, or broker outage).
+          build_info_absent_10m = 1 => metrics have been gone for the whole lookback (a real
+          outage, not a one-scrape blip). build_info_present = 1 AND brokers_visible > 0 =>
+          the exporter has RECOVERED; say the alert likely self-resolved and cite the value.
+          CRITICAL: while the exporter is down/missing, treat every other kafka_* value in
+          the other runbooks as LAST-KNOWN, not live — RCA confidence for Kafka state is low.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Exporter scrape health, whether build_info/metadata is flowing, broker visibility, and whether metrics have been absent for the full window."
+            params:
+              queries:
+                - name: exporter_up
+                  query: 'max(up{job=~".*kafka.*exporter.*"}) or vector(0)'
+                - name: build_info_present
+                  query: 'count(kafka_exporter_build_info) or vector(0)'
+                - name: brokers_visible
+                  query: 'max(kafka_brokers) or vector(0)'
+                - name: build_info_absent_10m
+                  query: 'absent_over_time(kafka_exporter_build_info[10m]) or vector(0)'
+      - step: 2
+        title: "Check whether metadata collection works at all, then read the exporter pod logs"
+        description: >-
+          Distinguish "exporter process is fine but blind" from "exporter is gone".
+          topic_series_visible / group_series_visible count how many topic-partition and
+          consumer-group series the exporter is currently publishing. Interpret: both 0 while
+          build_info is present => the exporter is up but its Kafka admin/consumer client is
+          failing to list topics/groups (auth/ACL change, broker unavailable, or a metadata
+          timeout) — the most useful finding, because it points at the Kafka-side connection,
+          not the exporter pod. Both > 0 => collection is healthy and the alert is about
+          scrape reachability only. Then read the exporter container logs for the real cause:
+          connection refused / dial tcp / SASL or TLS handshake errors / "kafka: client has
+          run out of available brokers" (Kafka-side), or OOM/panic/exit (exporter-side). The
+          exporter cannot see broker JVM/disk — if logs only show scrape/connection errors,
+          say the broker-side cause needs the Kafka pods' own logs and stop short of guessing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Whether the exporter is still publishing topic and consumer-group series (collection health vs total absence)."
+            params:
+              queries:
+                - name: topic_series_visible
+                  query: 'count(kafka_topic_partition_leader) or vector(0)'
+                - name: group_series_visible
+                  query: 'count(kafka_consumergroup_lag) or vector(0)'
+          - tool_id: "tool.read_logs"
+            description: "Kafka exporter pod logs filtered for connection/SASL/TLS/broker/OOM/exit signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — restore observability; never assume Kafka itself is down from an exporter alert
+      - action: "restore_kafka_exporter"
+        description: "Primary fix: inspect the kafka-exporter pod (kubectl describe / events / restarts) and its ServiceMonitor/scrape target. Restart or reschedule the exporter pod if it crashed/OOMed; fix the scrape config if the metrics path or target was removed. This restores visibility only — it does not change Kafka."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_exporter_to_broker_connection"
+        description: "If step 2 shows metadata collection failing (topic/group series = 0 while build_info present), the exporter cannot reach the brokers: check the bootstrap address, SASL/TLS credentials, and Kafka ACLs the exporter uses, and confirm the brokers are actually serving. Fix the connection/credentials rather than the exporter pod."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Observability/platform owner of the kafka-exporter. Escalate to the Kafka cluster team only if step 2 shows the exporter is healthy but cannot reach the brokers (possible real broker-side outage hiding behind a visibility gap)."
+    follow_up:
+      - "After recovery, confirm build_info and broker/topic/group series return, then re-evaluate any Kafka alerts that fired while the exporter was blind (they may have been stale)."
+      - "If the exporter OOMs/crashes repeatedly, right-size its resources or reduce its topic/group scrape scope."
+
+  # ============================================================ CLUSTER HEALTH
+  - name: "KafkaOfflinePartitions"
+    patterns:
+      [
+        "KafkaOfflinePartitions",
+        "offline partitions",
+        "partitions unavailable",
+        "partition has no leader",
+        "no active leader",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm offline partitions and whether a broker just left the cluster"
+        description: >-
+          KafkaOfflinePartitions fires on kafka_offline_partitions > 0 — one or more
+          partitions have NO active leader and cannot serve produce/consume. This is one of
+          the highest-severity Kafka states. offline_partitions is the cluster count;
+          brokers is the current broker count; broker_changes_30m counts how many times the
+          broker count moved in the last 30m. Interpret: offline_partitions > 0 AND
+          broker_changes_30m > 0 (broker count dropped) => a broker loss took the only/last
+          in-sync replica offline — the leading cause; chase the broker in step 3.
+          offline_partitions > 0 AND broker count steady => not a simple broker loss — a
+          controller/metadata or leader-election failure is the more likely cause (no replica
+          could be elected even though brokers are present). Establish the count first: a
+          single offline partition is a contained outage; many across topics is a cluster-wide
+          availability incident.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Offline partition count, current broker count, and broker-count changes over 30m."
+            params:
+              queries:
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+                - name: brokers
+                  query: 'max(kafka_brokers) or vector(0)'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+      - step: 2
+        title: "Name WHICH topics/partitions are leaderless and how concentrated it is"
+        description: >-
+          Attribute the outage. leaderless_total counts partitions whose leader is -1 (no
+          leader); worst_topics_leaderless surfaces the topic with the most leaderless
+          partitions (its label names the topic); affected_topic_count is how many distinct
+          topics have at least one leaderless partition. Interpret: affected_topic_count = 1
+          (or leaderless concentrated on one topic) => an isolated topic/partition leadership
+          loss — contained blast radius. leaderless spread across many topics => a cluster-wide
+          controller/broker problem, not a per-topic issue (escalate). Name the worst topic
+          explicitly from worst_topics_leaderless so the RCA points at a concrete object.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Count of leaderless partitions, the worst topic by leaderless partitions (names the topic), and how many topics are affected."
+            params:
+              queries:
+                - name: leaderless_total
+                  query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
+                - name: worst_topics_leaderless
+                  query: 'topk(3, sum by (topic) (kafka_topic_partition_leader == bool -1))'
+                - name: affected_topic_count
+                  query: 'count(sum by (topic) (kafka_topic_partition_leader == bool -1) > 0) or vector(0)'
+      - step: 3
+        title: "Tie it to replication health and measure the app-side impact"
+        description: >-
+          Confirm WHY no leader could be elected and what it is breaking. under_replicated and
+          isr_below_replicas (partitions where in-sync replicas < configured replicas) show
+          whether the partitions were already degraded before going offline — an offline
+          partition usually means the LAST in-sync replica was lost, so these are typically
+          elevated too. Interpret: under_replicated/isr_below_replicas high alongside offline
+          => replication degraded to the point of unavailability (broker loss or replicas that
+          fell out of ISR and then the leader died). app_consumer_throughput / app_client_p95_ms
+          are the OBI app-side view: throughput dropping toward zero or client p95 spiking for
+          the affected topics confirms producers/consumers are now failing on those partitions.
+          Honest gap: the exporter cannot say WHY the broker/controller failed (JVM, disk,
+          network) — name the leaderless topics and the broker-count change, and point at the
+          Kafka broker pods' logs/events for the underlying cause.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Cluster under-replication, partitions with ISR below configured replicas, and OBI app-side consumer throughput / client p95 for affected topics."
+            params:
+              queries:
+                - name: under_replicated
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                - name: isr_below_replicas
+                  query: 'count(kafka_topic_partition_in_sync_replica < on(topic,partition) kafka_topic_partition_replicas) or vector(0)'
+                - name: app_consumer_throughput
+                  query: 'topk(3, sum by (service.name, messaging.destination.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
+                - name: app_client_p95_ms
+                  unit: "ms"
+                  query: 'topk(3, histogram_quantile(0.95, sum by (le, service.name, messaging.destination.name) (rate({__name__="messaging.client.operation.duration_bucket",messaging.system="kafka"}[5m]))) * 1000)'
+    remediation: # suggestion-only — availability incident; unclean leader election risks data loss
+      - action: "restore_offline_brokers"
+        description: "Primary fix when step 1 shows a broker left: bring the down/unreachable broker(s) back (investigate the Kafka broker pods — crash/OOM/disk-full/network) so a valid in-sync replica can be elected leader. Recovering the broker is the non-destructive path and avoids data loss."
+        tool_id: ""
+        requires_approval: true
+      - action: "consider_unclean_leader_election"
+        description: "LAST RESORT, only if the brokers holding the in-sync replicas are permanently lost and the partitions must come back accepting data loss: enable unclean.leader.election for the affected topics to elect an out-of-sync replica. This can lose un-replicated records — require explicit sign-off; prefer restoring the broker."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster on-call IMMEDIATELY — offline partitions are a produce/consume outage for the affected topics. Escalate cluster-wide if leaderless partitions span many topics (controller/quorum issue)."
+    follow_up:
+      - "After recovery, confirm offline_partitions and leaderless_total return to 0 and ISR is rebuilt before clearing the incident."
+      - "Correlate the broker-count change with broker pod events to determine root cause (node failure, disk full, rolling update gone wrong)."
+
+  - name: "KafkaUnderReplicatedPartitions"
+    patterns:
+      [
+        "KafkaUnderReplicatedPartitions",
+        "KafkaTopicUnderReplicatedPartition",
+        "under-replicated partitions",
+        "under replicated partition",
+        "replicas not in sync",
+        "replication degraded",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm under-replication and name the worst topics"
+        description: >-
+          Fires when partitions have fewer in-sync replicas than their replica set
+          (kafka_under_replicated_partitions > 0, or the per-topic
+          kafka_topic_partition_under_replicated_partition). Reduced fault tolerance: if
+          another broker fails, these partitions can go offline. urp_total is the cluster
+          count; worst_topics_urp names the topic with the most under-replicated partitions;
+          urp_topic_count is how many topics are affected. Interpret: urp_topic_count = 1 (or
+          concentrated) => a topic-specific replication issue (one slow/failed replica for that
+          topic). urp spread across many topics => a broker-level or cluster-wide replication
+          problem — almost always a broker that is down, restarting, or can't keep up. Name the
+          worst topic from worst_topics_urp.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Cluster under-replicated count, worst topics by under-replicated partitions, and number of affected topics."
+            params:
+              queries:
+                - name: urp_total
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                - name: worst_topics_urp
+                  query: 'topk(3, sum by (topic) (kafka_topic_partition_under_replicated_partition))'
+                - name: urp_topic_count
+                  query: 'count(sum by (topic) (kafka_topic_partition_under_replicated_partition) > 0) or vector(0)'
+      - step: 2
+        title: "Find the cause: lost broker vs lagging replica, and whether it is worsening"
+        description: >-
+          missing_replicas_max is the largest (configured replicas − in-sync replicas) across
+          partitions — how many replicas are missing from the worst partition. broker_changes_30m
+          flags a broker that left/rejoined. offline_partitions tells you whether degradation has
+          already escalated to unavailability. Interpret: broker_changes_30m > 0 (count dropped)
+          => a broker loss dropped replicas out of ISR — the dominant cause; the URP should
+          recover as the broker rejoins and catches up. broker count steady AND missing_replicas_max
+          > 0 => a replica is lagging/failing without a broker leaving (slow replica IO, network
+          between brokers, or a replica stuck) — check that broker's health. offline_partitions > 0
+          => replication degradation has already caused unavailability — treat as the offline-partitions
+          incident (cross-link). Compare missing_replicas_max now vs trend: rising => actively
+          worsening (a broker still down); falling => the cluster is rebuilding ISR (recovery in
+          progress), lower urgency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Max missing replicas on any partition, broker-count changes, and whether any partition has already gone offline."
+            params:
+              queries:
+                - name: missing_replicas_max
+                  query: 'max(clamp_min(kafka_topic_partition_replicas - on(topic,partition) kafka_topic_partition_in_sync_replica, 0)) or vector(0)'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+    remediation: # suggestion-only — replication recovers when the broker/replica is healthy
+      - action: "recover_lagging_or_lost_broker"
+        description: "Primary fix: identify the broker holding the out-of-sync replicas (the one that left if broker_changes_30m > 0, or the slow one if count is steady) and restore its health — investigate the Kafka broker pod for restart/OOM/disk/network. ISR rebuilds automatically once the replica catches up; no topic change is needed for a transient broker blip."
+        tool_id: ""
+        requires_approval: true
+      - action: "review_topic_replication_factor"
+        description: "If URP is chronic on a specific topic and missing_replicas_max reflects a replica that no longer exists (e.g. broker permanently removed without reassignment), run a partition reassignment to move replicas onto live brokers. Distinct from a transient catch-up — only when a replica has no home."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster team. Escalate urgently if offline_partitions > 0 (already unavailable) or URP is spreading across topics while a broker stays down (next failure causes an outage)."
+    follow_up:
+      - "Confirm urp_total returns to 0 after the broker/replica recovers."
+      - "If a broker was permanently removed, verify partition reassignment completed so every partition has a full in-sync replica set again."
+
+  - name: "KafkaInsufficientInSyncReplicas"
+    patterns:
+      [
+        "KafkaInsufficientInSyncReplicas",
+        "KafkaTopicInSyncReplicasBelowThree",
+        "insufficient in-sync replicas",
+        "in-sync replicas below",
+        "isr below",
+        "isr count",
+        "min.insync.replicas",
+        "below three replicas",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Separate genuine ISR loss from an intentionally low replication factor"
+        description: >-
+          These alerts fire when a partition has too few in-sync replicas for safe durability
+          (KafkaInsufficientInSyncReplicas typically ISR < 2; KafkaTopicInSyncReplicasBelowThree
+          ISR < 3). CRITICAL distinction, because many topics are deliberately created with a low
+          replication factor: isr_below_replicas counts partitions where in-sync replicas <
+          CONFIGURED replicas (a REAL regression — a replica fell out of sync), whereas
+          isr_below_3_total / isr_below_2_total count absolute ISR thresholds regardless of how
+          many replicas the topic has. Interpret: isr_below_replicas ~ 0 while isr_below_3/2 is
+          large => the topics simply have replication factor < 3 (or < 2) BY DESIGN — ISR equals
+          the configured replicas, so this is a configuration/durability-posture finding, NOT a
+          live failure; say so and name the topics rather than implying an incident.
+          isr_below_replicas > 0 => a genuine in-sync-replica loss on those partitions (a replica
+          dropped out) — proceed to step 2 for the cause. worst_topics_isr_below_3 names the
+          topics operating below three in-sync replicas.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Partitions with ISR below configured replicas (real loss) vs absolute ISR<3/ISR<2 counts (config), and the worst topics below three."
+            params:
+              queries:
+                - name: isr_below_replicas
+                  query: 'count(kafka_topic_partition_in_sync_replica < on(topic,partition) kafka_topic_partition_replicas) or vector(0)'
+                - name: isr_below_3_total
+                  query: 'count(kafka_topic_partition_in_sync_replica < 3) or vector(0)'
+                - name: isr_below_2_total
+                  query: 'count(kafka_topic_partition_in_sync_replica < 2) or vector(0)'
+                - name: worst_topics_isr_below_3
+                  query: 'topk(3, sum by (topic) (kafka_topic_partition_in_sync_replica < bool 3))'
+      - step: 2
+        title: "If it is a real loss, find the broker/replica cause and the durability risk"
+        description: >-
+          Only meaningful when step 1 showed isr_below_replicas > 0. missing_replicas_max is the
+          worst (replicas − ISR) gap; broker_changes_30m flags a broker that left; offline_partitions
+          shows whether durability loss has escalated to unavailability. min_isr_observed is the
+          smallest in-sync replica count anywhere. Interpret: broker_changes_30m > 0 => broker loss
+          dropped ISR below the safe threshold (writes with acks=all + min.insync.replicas will start
+          FAILING on those partitions — a producer-facing durability stop). broker steady AND
+          missing_replicas_max > 0 => a replica is lagging/failing (slow IO/network) and fell out of
+          ISR. min_isr_observed = 1 with required >= 2 => acks=all producers can no longer commit
+          safely. offline_partitions > 0 => ISR dropped to zero on some partition — unavailability,
+          escalate. Honest gap: the exact min.insync.replicas setting is not an exporter metric — read
+          it from the topic/cluster config; compare ISR against it rather than assuming.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst missing-replica gap, broker-count changes, minimum ISR observed, and any offline partitions."
+            params:
+              queries:
+                - name: missing_replicas_max
+                  query: 'max(clamp_min(kafka_topic_partition_replicas - on(topic,partition) kafka_topic_partition_in_sync_replica, 0)) or vector(0)'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                - name: min_isr_observed
+                  query: 'min(kafka_topic_partition_in_sync_replica) or vector(0)'
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+    remediation: # suggestion-only
+      - action: "recover_broker_to_rebuild_isr"
+        description: "When step 2 shows a real ISR loss from a broker leaving or a lagging replica: restore that broker's health so the replica re-enters ISR. With acks=all + min.insync.replicas, this is what unblocks producer writes — recovering the replica is the correct, non-destructive fix."
+        tool_id: ""
+        requires_approval: true
+      - action: "raise_topic_replication_factor"
+        description: "When step 1 shows ISR equals a configured replication factor below the durability target (RF too low by design) AND the topic is meant to be durable: increase the replication factor via a partition reassignment onto additional brokers. This is a planned config change, not an incident fix; skip for topics intentionally RF=1 (dev/scratch)."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster team if step 2 confirms a real ISR loss (durability/write risk). If step 1 shows it is just a low-RF topic by design, route to the topic owner as a durability-posture review, not an incident."
+    follow_up:
+      - "Confirm ISR returns to the configured replica count after recovery."
+      - "Audit topics whose RF is below the org durability standard and decide whether to raise it."
+
+  - name: "KafkaPartitionLeaderMissing"
+    patterns:
+      [
+        "KafkaPartitionLeaderMissing",
+        "partition leader missing",
+        "no leader for partition",
+        "leader is -1",
+        "partition has no leader",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the leaderless partition(s) and whether it is isolated or cluster-wide"
+        description: >-
+          Fires when a partition's leader is -1 (no leader). target_partition_leader reads the
+          leader for the alert's exact topic/partition ($topic/$partition) when carried — value
+          -1 confirms it is leaderless, a real value means it recovered. leaderless_total and
+          worst_topics_leaderless give the cluster picture and name the worst topic. Interpret:
+          only the alert's partition is -1 (leaderless_total small) => an isolated partition
+          leader-election issue. leaderless_total large across worst_topics_leaderless => a
+          cluster/controller/broker-level election failure (much higher impact). target_partition_leader
+          >= 0 => already recovered; state that and cite it.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Leader of the alert's exact topic/partition, total leaderless partitions, and the worst topics."
+            params:
+              queries:
+                - name: target_partition_leader
+                  query: 'min(kafka_topic_partition_leader{topic="$topic",partition="$partition"})'
+                - name: leaderless_total
+                  query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
+                - name: worst_topics_leaderless
+                  query: 'topk(3, sum by (topic) (kafka_topic_partition_leader == bool -1))'
+      - step: 2
+        title: "Explain WHY no leader — broker change, no in-sync replica, or leader instability"
+        description: >-
+          target_isr is the in-sync replica count for the alert's partition; broker_changes_30m
+          flags a broker that left/rejoined; target_leader_flaps_30m counts how many times that
+          partition's leader changed in 30m. Interpret: broker_changes_30m > 0 => a broker change
+          triggered the leader loss (the broker holding the leader/last ISR left). target_isr = 0
+          (or very low) => NO suitable in-sync replica is available to elect — the partition stays
+          leaderless until a replica catches up or unclean election is allowed; this is the common,
+          dangerous case. target_leader_flaps_30m high before going to -1 => leadership was unstable
+          (broker flapping / GC pauses / network) and finally failed to elect. broker steady AND
+          target_isr > 0 but still no leader => a controller/metadata problem prevented election.
+          Honest gap: the broker-side reason (JVM/disk/network) is not in the exporter — point at
+          the broker pods.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "ISR for the alert's partition, broker-count changes, and leader-change count for that partition over 30m."
+            params:
+              queries:
+                - name: target_isr
+                  query: 'min(kafka_topic_partition_in_sync_replica{topic="$topic",partition="$partition"})'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                - name: target_leader_flaps_30m
+                  query: 'max(changes(kafka_topic_partition_leader{topic="$topic",partition="$partition"}[30m])) or vector(0)'
+    remediation: # suggestion-only
+      - action: "restore_broker_for_leader_election"
+        description: "Primary fix: restore the broker that left (broker_changes_30m > 0) or the broker holding the partition's only in-sync replica, so a valid leader can be elected. Recovering the in-sync replica avoids data loss."
+        tool_id: ""
+        requires_approval: true
+      - action: "consider_unclean_leader_election"
+        description: "LAST RESORT only if the in-sync replicas are permanently lost and the partition must serve again accepting possible data loss: allow unclean leader election for the topic. Require explicit sign-off — it can lose un-replicated records."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster on-call immediately — the partition is unavailable for produce/consume. Escalate cluster-wide if many partitions are leaderless (controller/quorum issue)."
+    follow_up:
+      - "Confirm the partition's leader becomes a valid broker id and ISR rebuilds."
+      - "If leadership was flapping, investigate the broker's GC/disk/network stability."
+
+  - name: "KafkaPreferredLeaderImbalance"
+    patterns:
+      [
+        "KafkaPreferredLeaderImbalance",
+        "preferred leader imbalance",
+        "preferred replica",
+        "leader not on preferred",
+        "leader imbalance",
+        "preferred leader election",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Measure the imbalance and name the topics whose leaders moved off preferred"
+        description: >-
+          Fires when partition leaders are not on their preferred (first) replica
+          (kafka_topic_partition_leader_is_preferred == 0). Usually a post-failover / post-restart
+          state, NOT data loss — but it concentrates load on fewer brokers. imbalance_pct is the
+          percentage of partitions not on their preferred leader; not_preferred_total is the count;
+          worst_topics_imbalance names the worst topics. Interpret: imbalance_pct high and
+          concentrated on one topic (worst_topics_imbalance) => topic-specific imbalance. spread
+          across many topics => cluster-wide leader skew after a broker event. Low pct => minor,
+          may self-correct via auto leader rebalancing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Percent of partitions off their preferred leader, the count, and the worst topics."
+            params:
+              queries:
+                - name: imbalance_pct
+                  unit: "%"
+                  query: '100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(kafka_topic_partition_leader_is_preferred)'
+                - name: not_preferred_total
+                  query: 'sum(kafka_topic_partition_leader_is_preferred == bool 0) or vector(0)'
+                - name: worst_topics_imbalance
+                  query: 'topk(3, sum by (topic) (kafka_topic_partition_leader_is_preferred == bool 0))'
+      - step: 2
+        title: "Decide whether it is safe to rebalance now"
+        description: >-
+          A preferred-leader election (rebalance) is the fix, but only when the cluster is otherwise
+          healthy. broker_changes_30m flags a recent broker event that explains the imbalance;
+          under_replicated and offline_partitions are the safety gates. Interpret: broker_changes_30m
+          > 0 with health otherwise clean => a broker restart/add/remove moved leadership; a preferred
+          leader election will rebalance it. under_replicated > 0 => preferred election may be BLOCKED
+          (the preferred replica isn't in sync yet); wait for ISR to rebuild first. offline_partitions
+          > 0 => DO NOT rebalance now — there is an availability issue to fix first; rebalancing during
+          an outage can make it worse. All clean => safe to run a preferred-leader election.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Recent broker changes and the replication/availability safety gates for a rebalance."
+            params:
+              queries:
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                - name: under_replicated
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+    remediation: # suggestion-only
+      - action: "run_preferred_leader_election"
+        description: "Primary fix ONLY when step 2 shows the cluster is otherwise healthy (no offline partitions, ISR rebuilt): trigger a preferred-leader election (kafka-leader-election --election-type preferred, or enable auto.leader.rebalance) to move leaders back onto their preferred replicas and rebalance broker load. Safe and non-destructive when health gates pass."
+        tool_id: ""
+        requires_approval: true
+      - action: "wait_for_replication_then_rebalance"
+        description: "If step 2 shows under-replicated or offline partitions: do NOT rebalance yet — first restore ISR/availability (handle as the URP / offline-partition alert), then run the preferred-leader election once health is green."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster team, low urgency — usually a balance/efficiency issue, not an outage. Raise only if the imbalance is causing broker hot-spotting (saturation on the brokers now carrying extra leaders)."
+    follow_up:
+      - "After the election, confirm imbalance_pct drops toward 0."
+      - "If imbalance recurs after every broker restart, enable/verify auto leader rebalancing."
+
+  # ============================================================ CONSUMER LAG
+  - name: "KafkaConsumerGroupLagHigh"
+    patterns:
+      [
+        "KafkaConsumerGroupLagHigh",
+        "KafkaConsumerGroupLagCritical",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the lag, name the lagging topic/partition, and check the group still has members"
+        description: >-
+          Serves BOTH severities — High (e.g. lag > 10k) and Critical (e.g. > 100k, weight impact
+          higher and treat backlog as worsening). Scoped to the alert's group ($consumergroup).
+          group_lag_total is the group's total lag; lag_by_topic / worst_partition_lag name WHERE
+          the lag is; group_members is the active consumer count. Interpret: group_members = 0 with
+          lag > 0 => the group has NO active consumers (deployment down / scaled to zero / crash
+          loop / disconnected) — the lag can only grow; this is the dominant root cause and is
+          handled in depth by KafkaConsumerGroupNoMembersWithLag. group_members > 0 => consumers
+          are present but behind; continue. worst_partition_lag dominating => a hot/stuck partition
+          concentrates the lag (one slow partition, or key-skew) rather than the whole topic.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Total lag for the alert's group, lag by topic, the worst single partition, and active member count."
+            params:
+              queries:
+                - name: group_lag_total
+                  query: 'sum(kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum(kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                - name: lag_by_topic
+                  query: 'topk(3, sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                - name: worst_partition_lag
+                  query: 'topk(3, kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                - name: group_members
+                  query: 'max(kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
+      - step: 2
+        title: "Producer-outpacing vs consumer-stalled: compare append rate to offset-progress rate"
+        description: >-
+          The root-cause fork for a group that HAS members. producer_rate_by_topic is how fast new
+          messages are appended to the group's topics; consumer_progress_rate is how fast the group
+          advances its committed offsets; lag_growth_15m is the recent lag trend. Interpret:
+          producer_rate > consumer_progress_rate AND lag_growth_15m > 0 => consumers cannot keep up
+          with incoming traffic (under-provisioned consumers, or a producer spike). consumer_progress_rate
+          near 0 while members > 0 => consumers are ALIVE but making no offset progress — stuck
+          (deadlock, poison message they keep retrying, blocked on a downstream dependency, or a
+          rebalance storm); this is worse than simply slow. lag_growth_15m <= 0 => the backlog is
+          stable or draining (recovering) even if currently high — weight impact lower. Pinpoint
+          with worst_partition_lag from step 1 (one stuck partition vs all).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Producer append rate vs the group's offset-progress rate, and the 15m lag trend."
+            params:
+              queries:
+                - name: producer_rate_by_topic
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                - name: consumer_progress_rate
+                  unit: "msg/s"
+                  query: 'sum(clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300'
+                - name: lag_growth_15m
+                  query: 'sum(delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[15m]))'
+      - step: 3
+        title: "Is the consumer slow, or is Kafka itself degraded? OBI processing + cluster health"
+        description: >-
+          Separate an application-side slowdown from a Kafka-side one. OBI app_processing_throughput
+          / app_processing_p95_ms (messaging.system="kafka") show the consuming service's message
+          handling; cluster health (offline/URP) shows whether Kafka is contributing. Interpret:
+          app_processing_throughput dropped or app_processing_p95_ms spiking => the consumer HANDLER
+          is slow or stalling (slow DB/API dependency inside processing, expensive/large messages,
+          retry storm, GC) — the lag is application-side; name the service from the topk labels.
+          offline_partitions/under_replicated > 0 => a Kafka cluster-health issue is contributing to
+          or causing the lag (consumers can't fetch from degraded partitions) — fix Kafka first.
+          Both clean and processing healthy but lag high => likely a recent producer spike (step 2)
+          that consumers are still draining. Honest gap: if OBI has no series for this consumer
+          (not instrumented), say the app-side view is unavailable and lean on the offset-rate
+          evidence from step 2.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "OBI consumer processing throughput and p95 (names the slow service) plus Kafka offline/under-replicated health."
+            params:
+              queries:
+                - name: app_processing_throughput
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (service.name, messaging.destination.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
+                - name: app_processing_p95_ms
+                  unit: "ms"
+                  query: 'topk(3, histogram_quantile(0.95, sum by (le, service.name, messaging.destination.name) (rate({__name__="messaging.process.duration_bucket",messaging.system="kafka"}[5m]))) * 1000)'
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+                - name: under_replicated
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+    remediation: # suggestion-only — fix consumers; if Kafka is degraded, fix Kafka first
+      - action: "scale_or_restart_consumers"
+        description: "When step 1/2 show members > 0 but consumers can't keep up (producer_rate > progress_rate) or are stuck (progress_rate ~0): scale out the consumer deployment (more replicas/partitions-worth of parallelism) or restart it to clear a stuck/deadlocked state or rebalance storm. Match consumer count to partition count for max parallelism."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_consumer_processing_bottleneck"
+        description: "When step 3 shows high processing p95 / dropped throughput: address the handler bottleneck named by OBI — slow downstream DB/API call, oversized messages, synchronous per-message IO that should be batched/async, or a poison-message retry loop. Scaling alone won't help if each message is slow."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_kafka_cluster_health_first"
+        description: "When step 3 shows offline/under-replicated partitions: the lag is downstream of a Kafka health problem — handle the offline-partition / URP alert first; the lag drains once consumers can fetch normally."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning consumer-service team. Escalate (and treat as Critical) when lag is large AND still growing, the group has 0 members, or processing has stalled — business impact scales with topic criticality and backlog age."
+    follow_up:
+      - "After remediation, confirm group_lag_total trends down and consumer_progress_rate exceeds producer_rate until drained."
+      - "If a single partition was hot, review partition keying / add partitions so load spreads across consumers."
+
+  - name: "KafkaConsumerGroupTotalLagHigh"
+    patterns:
+      [
+        "KafkaConsumerGroupTotalLagHigh",
+        "total consumer group lag",
+        "aggregate lag",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Is the total-lag breach one group, one topic, or cluster-wide?"
+        description: >-
+          Broader than a single group — total lag across groups is high. top_groups_by_lag names the
+          worst groups (label consumergroup); lagging_group_count is how many groups have lag > 0;
+          lag_by_group_topic shows the group/topic breakdown. Interpret: one group dominates
+          top_groups_by_lag => a single consumer backlog — pivot to KafkaConsumerGroupLagHigh for that
+          group. many groups on the SAME topic => a topic-level producer spike or a topic/broker issue
+          affecting every consumer of it. many groups across many topics => a cluster-wide Kafka issue
+          or shared consumer infrastructure (node pool, common dependency). Name the worst group(s).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst consumer groups by total lag, the number of lagging groups, and the group/topic breakdown."
+            params:
+              queries:
+                - name: top_groups_by_lag
+                  query: 'topk(5, kafka_consumergroup_lag_sum)'
+                - name: lagging_group_count
+                  query: 'count(kafka_consumergroup_lag_sum > 0) or vector(0)'
+                - name: lag_by_group_topic
+                  query: 'topk(5, sum by (consumergroup, topic) (kafka_consumergroup_lag))'
+      - step: 2
+        title: "Find the common cause — dead consumer fleet, Kafka health, or a producer surge"
+        description: >-
+          groups_without_members counts groups that have lag but zero members (a consumer FLEET
+          outage if many); offline_partitions/under_replicated are the Kafka-health gates;
+          top_producer_topics shows which topics are receiving the most traffic. Interpret:
+          groups_without_members high => a consumer deployment outage or widespread disconnect (a
+          shared node pool drained, a bad rollout) — restore the consumers. offline/under_replicated
+          > 0 => Kafka cluster health is the common cause; fix Kafka first. top_producer_topics
+          spiking => a producer surge created backlog faster than normal consumption. OBI
+          app_processing_throughput dropping across many services => an application-side processing
+          degradation common to the consumers (shared dependency slow).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Groups with lag but no members, Kafka health gates, top producing topics, and OBI processing throughput across services."
+            params:
+              queries:
+                - name: groups_without_members
+                  query: 'count((kafka_consumergroup_members == 0) and (kafka_consumergroup_lag_sum > 0)) or vector(0)'
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+                - name: under_replicated
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                - name: top_producer_topics
+                  unit: "msg/s"
+                  query: 'topk(5, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                - name: app_processing_throughput
+                  unit: "msg/s"
+                  query: 'topk(5, sum by (service.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
+    remediation: # suggestion-only
+      - action: "restore_consumer_fleet"
+        description: "When step 2 shows many groups with no members: a consumer fleet outage — restore the affected consumer deployments / node capacity (check for a bad rollout, drained node pool, or shared crash). This clears the broadest cause first."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_kafka_or_shared_dependency"
+        description: "When step 2 points at Kafka health (offline/URP) or a shared downstream dependency (OBI throughput down across services): fix that common root cause rather than scaling each group individually."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Messaging platform on-call when lag is broad (many groups/topics) — likely a shared cause. Route single-group dominance to that group's owning team."
+    follow_up:
+      - "Confirm lagging_group_count and the top groups' lag trend down after the common cause is fixed."
+      - "If a producer surge was the cause, review producer rate limits / consumer autoscaling."
+
+  - name: "KafkaConsumerGroupLagIncreasingFast"
+    patterns:
+      [
+        "KafkaConsumerGroupLagIncreasingFast",
+        "lag increasing fast",
+        "lag growing",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm lag is growing and localise the growth (group / topic / partition)"
+        description: >-
+          Not just high — lag is GROWING quickly, so the backlog will keep building until acted on.
+          lag_growth_by_group / lag_growth_by_partition surface WHERE the growth is concentrated;
+          group_members shows whether capacity dropped. Interpret: growth concentrated on one
+          partition => a hot or stuck partition (key skew, or one partition's consumer thread
+          wedged). growth across all partitions/topics of a group => a group-wide throughput problem.
+          group_members decreased or 0 => the group lost consumer capacity (scaled down, crashed, or
+          mid-rebalance) — the simplest cause of sudden growth. Name the worst group/partition.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Lag growth over 10m by group and by partition, plus current member counts."
+            params:
+              queries:
+                - name: lag_growth_by_group
+                  query: 'topk(3, sum by (consumergroup, topic) (delta(kafka_consumergroup_lag[10m])))'
+                - name: lag_growth_by_partition
+                  query: 'topk(3, delta(kafka_consumergroup_lag[10m]))'
+                - name: group_members
+                  query: 'topk(3, kafka_consumergroup_members)'
+      - step: 2
+        title: "Producer spike vs consumer regression vs slow processing"
+        description: >-
+          The fork for fast growth. producer_rate_by_topic is the inbound rate; consumer_progress_rate
+          is offset advance; OBI app_processing_p95_ms is handler latency. Interpret: producer_rate
+          increased while consumer_progress_rate is normal => a PRODUCER SPIKE is generating backlog
+          faster than steady consumption (the consumers aren't broken — the input surged).
+          consumer_progress_rate DROPPED while producer_rate is normal => a consumer THROUGHPUT
+          regression (bad deploy, lost capacity, or a dependency slowdown). app_processing_p95_ms high
+          => slow message processing is the driver of the growth. Combine with step 1: a partition-local
+          growth + steady producer rate points at one stuck consumer thread.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Inbound producer rate, consumer offset-progress rate, and OBI processing p95 across services."
+            params:
+              queries:
+                - name: producer_rate_by_topic
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+                - name: consumer_progress_rate
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset[5m]), 0)) / 300)'
+                - name: app_processing_p95_ms
+                  unit: "ms"
+                  query: 'topk(3, histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.process.duration_bucket",messaging.system="kafka"}[5m]))) * 1000)'
+    remediation: # suggestion-only
+      - action: "scale_consumers_to_match_input"
+        description: "When step 2 shows a producer spike or lost consumer capacity: scale the consumer group out (up to the partition count) so consumption rate exceeds the inbound rate and the growing backlog reverses. The faster you act on growing lag, the smaller the backlog to drain."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_consumer_throughput_regression"
+        description: "When step 2 shows a consumer-progress drop / high processing p95: investigate the recent consumer change or slow dependency causing the regression (rollback a bad deploy, fix the slow downstream call). Address the cause of the slowdown, not just the symptom."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning consumer-service team — fast-growing lag becomes a large backlog quickly. Escalate if growth continues after scaling (points at a hard regression or Kafka-side issue)."
+    follow_up:
+      - "Confirm lag_growth turns negative (draining) after remediation."
+      - "If a producer spike is recurring, add consumer autoscaling keyed on lag."
+
+  - name: "KafkaConsumerGroupNoMembersWithLag"
+    patterns:
+      [
+        "KafkaConsumerGroupNoMembersWithLag",
+        "no active members",
+        "no consumers running",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the group has lag but zero active members, and whether it is still growing"
+        description: >-
+          Fires when a group has lag but NO active members consuming it — no progress can be made
+          until consumers rejoin; lag can only stay flat or grow. Scoped to $consumergroup.
+          group_members should be 0; group_lag_total is the stranded backlog; lag_growth_30m shows
+          whether producers are still adding to it; producer_rate_to_topics shows whether anything is
+          still being written. Interpret: members = 0 AND lag_growth_30m > 0 (producer_rate > 0) =>
+          producers are still writing while NO consumer reads — the backlog is actively building
+          (worst case). members = 0 AND lag_growth_30m ~ 0 (producer_rate ~ 0) => the consumer stopped
+          AFTER a backlog formed and production also stopped — a stale backlog, less time-critical but
+          still unprocessed. members > 0 now => the group recovered (consumers rejoined); say so.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Member count, total lag, 30m lag trend, and producer write rate to the group's topics for the alert's group."
+            params:
+              queries:
+                - name: group_members
+                  query: 'max(kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
+                - name: group_lag_total
+                  query: 'sum(kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum(kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                - name: lag_growth_30m
+                  query: 'sum(delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[30m]))'
+                - name: producer_rate_to_topics
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300)'
+      - step: 2
+        title: "Confirm the consumer app is truly down (OBI) and classify why it left"
+        description: >-
+          group_members from the exporter is the Kafka view; OBI confirms the APP view.
+          app_consumed_rate / app_processing_rate (messaging.system="kafka") should be ~0 for a group
+          with no members. Interpret: OBI consumed/processing ~0 => the consumer deployment is genuinely
+          not consuming (scaled to zero, crash-looping, or all pods unhealthy) — confirms the Kafka-side
+          zero-members. OBI shows SOME activity for the service but exporter shows 0 members => the
+          consumers may have changed group id / are committing elsewhere, or there is a group-coordination
+          (rebalance) problem — subtler. Combine with step 1: still-growing backlog + dead app => restore
+          consumers urgently; flat backlog + dead app => restore to drain the stale backlog. Honest gap:
+          the exporter cannot say WHY the pods are gone (OOM, image pull, node drain) — that needs the
+          consumer workload's pod events/logs, which is the next drill-down.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "OBI consumed and processing rates (app-side confirmation that the consumer is not running)."
+            params:
+              queries:
+                - name: app_consumed_rate
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (service.name) (rate({__name__="messaging.client.consumed.messages",messaging.system="kafka"}[5m])))'
+                - name: app_processing_rate
+                  unit: "msg/s"
+                  query: 'topk(3, sum by (service.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
+    remediation: # suggestion-only
+      - action: "restore_consumer_deployment"
+        description: "Primary fix: bring the consumer back — scale the deployment up from zero, or fix why its pods are down (crash loop, OOM, image pull, node drain — check the workload's pod events/logs). Once members rejoin the group, it resumes from its committed offsets and drains the backlog."
+        tool_id: ""
+        requires_approval: true
+      - action: "verify_consumer_group_config"
+        description: "If the app is running (OBI shows activity) but the group shows 0 members: verify the consumer's group.id / topic subscription didn't change and that it is not stuck in a rebalance loop. A config/coordination fix, not a scale-up."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning consumer-service team urgently when producers are still writing (backlog growing) — every minute adds unprocessed messages. Lower urgency for a flat stale backlog, but it still needs a consumer to drain."
+    follow_up:
+      - "Confirm group_members > 0 and lag drains after the consumer is restored."
+      - "Add an alert/guard so the consumer deployment is not left scaled to zero while its topics still receive traffic."
+
+  # ============================================================ TOPIC TRAFFIC
+  - name: "KafkaTopicOffsetDecreased"
+    patterns:
+      [
+        "KafkaTopicOffsetDecreased",
+        "topic offset decreased",
+        "offset went backwards",
+        "offset rollback",
+        "partition offset decreased",
+        "log truncation",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the offset moved backwards and whether the log start also moved"
+        description: >-
+          A partition's current offset moving BACKWARDS is unusual and can indicate topic
+          recreation, partition log truncation, a leader-failover log divergence, or an
+          exporter/metadata anomaly. Scoped to $topic. current_offset_delta_10m < 0 confirms the
+          regression; oldest_offset_delta_10m shows whether the log START moved too. Interpret:
+          current_offset decreased AND oldest_offset also decreased => the topic/partition was
+          likely RECREATED or the log start was reset (retention/recreate) — not in-place data loss
+          so much as a new/rolled log. current_offset decreased while oldest steady => a real
+          truncation or rollback of the head. decrease across MANY topics at once => more likely an
+          exporter/metadata/scrape anomaly than real data movement (the exporter mis-reported) —
+          verify before alarming. Name the affected topic/partition.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current-offset and oldest-offset change over 10m for the alert's topic, and how many topics show a decrease."
+            params:
+              queries:
+                - name: current_offset_delta_10m
+                  query: 'sum(delta(kafka_topic_partition_current_offset{topic="$topic"}[10m]))'
+                - name: oldest_offset_delta_10m
+                  query: 'sum(delta(kafka_topic_partition_oldest_offset{topic="$topic"}[10m]))'
+                - name: topics_with_decrease
+                  query: 'count(sum by (topic) (delta(kafka_topic_partition_current_offset[10m])) < 0) or vector(0)'
+      - step: 2
+        title: "Correlate with leader failover / broker change (truncation cause)"
+        description: >-
+          A backward offset on a single partition is most often a leader failover where the new
+          leader had a shorter log (unclean election / divergence). leader_changes_30m counts leader
+          moves for the topic; under_replicated and isr_min show replication state; broker_changes_30m
+          flags a broker event. Interpret: leader_changes_30m > 0 AND under_replicated > 0 => a leader
+          failover with possible log truncation (the new leader truncated to its shorter log) — the
+          classic cause; assess duplicate/missing-message risk for consumers. broker_changes_30m > 0
+          => a broker restart/failover around the offset change. None of these AND many topics affected
+          => lean toward exporter/metadata anomaly. Honest gap: distinguishing true truncation from an
+          exporter glitch needs the broker logs (look for "truncating to offset") — say so.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Leader changes for the topic, under-replication / min ISR, and broker-count changes around the offset regression."
+            params:
+              queries:
+                - name: leader_changes_30m
+                  query: 'max(changes(kafka_topic_partition_leader{topic="$topic"}[30m])) or vector(0)'
+                - name: under_replicated
+                  query: 'sum(kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                - name: isr_min
+                  query: 'min(kafka_topic_partition_in_sync_replica{topic="$topic"}) or vector(0)'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+    remediation: # suggestion-only — mostly investigative; offset rollback can mean data divergence
+      - action: "investigate_truncation_and_consumer_impact"
+        description: "If step 2 shows a leader failover with under-replication: confirm log truncation from broker logs and assess consumer impact — consumers past the truncated offset may reprocess (duplicates) or skip (gaps) depending on offset handling. Decide whether to reset affected consumer offsets. Investigative first; do not auto-change offsets."
+        tool_id: ""
+        requires_approval: true
+      - action: "verify_topic_lifecycle"
+        description: "If step 1 shows the oldest offset also moved (recreation): verify whether the topic was intentionally recreated/reconfigured (retention change, manual delete+create). If unintended, restore from backup/mirror; if intended, document and adjust consumers' expectations."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster team + the topic's data owner — backward offsets imply possible data loss/divergence. Escalate faster if it coincides with an unclean leader election."
+    follow_up:
+      - "Confirm offsets advance monotonically again and decide on any consumer offset reset."
+      - "If caused by unclean leader election, review whether unclean election should be disabled for this topic."
+
+  - name: "KafkaTopicNoMessages"
+    patterns:
+      [
+        "KafkaTopicNoMessages",
+        "topic no messages",
+        "no new messages",
+        "topic idle",
+        "no produce traffic",
+        "topic not receiving",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm no new messages, then check if a producer is even trying (OBI)"
+        description: >-
+          Fires when no new messages are appended to a topic during the window. Scoped to $topic.
+          append_30m / append_rate measure new records via the partition current offset (the source
+          of truth — kafka_messages_in_total may lack a topic label). OBI producer_throughput shows
+          whether any service is attempting to PRODUCE to the topic. Interpret: append_rate = 0 AND
+          OBI producer_throughput = 0 => the producer is NOT publishing — an upstream application /
+          workflow stopped (the dominant cause); name the expected producer service. append_rate = 0
+          but OBI producer_throughput > 0 => the producer is TRYING but messages aren't landing —
+          producer errors or a Kafka client/broker problem (see step 2). append_rate > 0 => the topic
+          is receiving traffic now; the alert likely recovered.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "New-message append over 30m and per-second for the topic, plus OBI producer/client throughput to it."
+            params:
+              queries:
+                - name: append_30m
+                  query: 'sum(clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[30m]), 0))'
+                - name: append_rate
+                  unit: "msg/s"
+                  query: 'sum(clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[5m]), 0)) / 300'
+                - name: producer_throughput
+                  query: 'topk(3, sum by (service.name) (rate({__name__="messaging.client.operation.duration_count",messaging.system="kafka",messaging.destination.name="$topic"}[5m])))'
+      - step: 2
+        title: "Rule out a Kafka-side block, and judge whether the silence is expected"
+        description: >-
+          If a producer is trying but nothing lands, or to confirm the topic is simply idle, check
+          Kafka health for the topic and producer-side latency. topic_leaderless / topic_under_replicated
+          show whether the topic's partitions can accept writes; producer_client_p95_ms is OBI producer
+          latency. Interpret: topic_leaderless > 0 or topic_under_replicated high => a topic/partition
+          availability issue is PREVENTING writes (producers blocked/erroring) — fix Kafka.
+          producer_client_p95_ms spiking with append_rate 0 => the producer's Kafka client is slow/timing
+          out (broker overload, network, auth) rather than the app not trying. All Kafka health clean AND
+          no producer activity => the upstream app stopped, OR the topic is legitimately idle (batch/
+          scheduled/low-traffic) — if it is a known quiet window with no downstream starvation, say it may
+          be EXPECTED rather than forcing an incident. Honest gap: whether idle is "expected" depends on
+          the topic's role — state the evidence and the assumption.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Topic leader/replication health and OBI producer client p95 latency to judge blocked-write vs genuinely-idle."
+            params:
+              queries:
+                - name: topic_leaderless
+                  query: 'sum(kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
+                - name: topic_under_replicated
+                  query: 'sum(kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                - name: producer_client_p95_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.client.operation.duration_bucket",messaging.system="kafka",messaging.destination.name="$topic"}[5m]))) * 1000'
+    remediation: # suggestion-only
+      - action: "investigate_upstream_producer"
+        description: "When step 1/2 show no producer activity and Kafka is healthy: the upstream producer/workflow stopped — investigate the producing service (is it running, erroring, or paused?) and restart/fix the upstream job. Confirm first that the topic is actually expected to receive traffic now."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_topic_write_path"
+        description: "When step 2 shows the topic is leaderless/under-replicated or producer client p95 is spiking: the write path is blocked on the Kafka side — handle the partition-availability / broker issue so producers can append again."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning producer-service team. Low urgency if the topic is known to be batch/scheduled (state that); raise if a downstream consumer is starving for data it expects."
+    follow_up:
+      - "Confirm append_rate returns to its normal baseline once the producer/write path is restored."
+      - "If the topic is legitimately periodic, tune the alert's window/threshold so quiet periods don't page."
+
+  # ============================================================ METADATA
+  - name: "KafkaBrokerCountChanged"
+    patterns:
+      [
+        "KafkaBrokerCountChanged",
+        "broker count changed",
+        "broker added",
+        "broker removed",
+        "broker count",
+        "broker joined",
+        "broker left",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the change and its direction (broker lost vs added)"
+        description: >-
+          The broker count changed — expected during scaling/maintenance/rolling updates, or
+          unexpected during a broker failure. brokers is the current count; broker_delta_30m is the
+          net change over 30m; broker_changes_30m is how many times it moved; broker_info_count is a
+          cross-check from kafka_broker_info. Interpret: broker_delta_30m < 0 => the count DECREASED —
+          a broker is down, removed, or unreachable (the case that risks availability). broker_delta_30m
+          > 0 => a broker was ADDED or rejoined (scaling up or recovery). broker_changes_30m high with
+          net ~0 => brokers are FLAPPING (repeated restarts — instability) or a rolling update is in
+          progress. Establish direction before judging impact.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current broker count, net change and number of changes over 30m, and the broker_info cross-check."
+            params:
+              queries:
+                - name: brokers
+                  query: 'max(kafka_brokers) or vector(0)'
+                - name: broker_delta_30m
+                  query: 'sum(delta(kafka_brokers[30m]))'
+                - name: broker_changes_30m
+                  query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                - name: broker_info_count
+                  query: 'count(kafka_broker_info) or vector(0)'
+      - step: 2
+        title: "Did the change hurt the cluster? Check partition health and consumer lag"
+        description: >-
+          A broker change only matters by its CONSEQUENCES. offline_partitions, under_replicated,
+          leaderless_total, and preferred_imbalance show whether the change damaged availability or
+          replication; top_groups_lag shows whether consumers fell behind as a result. Interpret:
+          offline_partitions > 0 => the broker change caused partition UNAVAILABILITY (handle as the
+          offline-partitions incident — high impact). under_replicated > 0 => replicas are catching up
+          after the change (under-replication; should recover as the broker rejoins). preferred_imbalance
+          > 0 => leadership moved off preferred replicas (rebalance candidate once healthy). top_groups_lag
+          rising => consumers lagged during the change. ALL clean => the broker count changed but the
+          cluster is healthy (a benign scale/maintenance event) — say impact is low and it likely needs
+          no action beyond noting it. Honest gap: whether the change was planned (maintenance) vs a
+          failure isn't in the exporter — correlate with broker pod events / deployment activity.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Offline/under-replicated/leaderless partitions, preferred-leader imbalance, and top consumer-group lag after the broker change."
+            params:
+              queries:
+                - name: offline_partitions
+                  query: 'sum(kafka_offline_partitions) or vector(0)'
+                - name: under_replicated
+                  query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                - name: leaderless_total
+                  query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
+                - name: preferred_imbalance
+                  query: 'sum(kafka_topic_partition_leader_is_preferred == bool 0) or vector(0)'
+                - name: top_groups_lag
+                  query: 'topk(3, kafka_consumergroup_lag_sum)'
+    remediation: # suggestion-only
+      - action: "recover_lost_broker"
+        description: "When step 1 shows the count decreased AND step 2 shows offline/under-replicated partitions: the loss is hurting the cluster — restore the down broker (investigate its pod for crash/OOM/disk/node failure). Recovery re-elects leaders and rebuilds ISR."
+        tool_id: ""
+        requires_approval: true
+      - action: "confirm_planned_change_or_rebalance"
+        description: "When step 2 is clean: confirm the change was planned (scale/maintenance/rolling update) and no action is needed beyond noting it. If only preferred-leader imbalance remains, schedule a preferred-leader election once replication is fully healthy."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Kafka cluster team only if the change degraded health (offline/URP) or brokers are flapping. A clean planned scale/maintenance change is informational."
+    follow_up:
+      - "If a broker was lost, confirm it rejoins and ISR/leadership rebalance; if flapping, investigate broker stability."
+      - "Record planned scaling/maintenance events so KafkaBrokerCountChanged can be correlated and de-prioritised."
