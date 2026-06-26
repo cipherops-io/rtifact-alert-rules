@@ -1,0 +1,370 @@
+groups:
+  - name: redis.rules
+    interval: 30s
+    rules:
+      - alert: RedisDown
+        expr: redis_up == 0
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_up == 0
+        annotations:
+          summary: "Redis instance is down"
+          description: "Redis instance {{ $labels.instance }} has been unreachable for more than 1 minute. Applications using this Redis endpoint may fail cache reads/writes, session lookups, distributed locks, queues, rate limits, or pub/sub operations depending on how Redis is used. If this is a primary Redis instance, writes may be unavailable until the instance recovers or failover completes."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisdown"
+
+      - alert: RedisMissingMaster
+        expr: (count(redis_instance_info{role="master"}) or vector(0)) < 1
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: (count(redis_instance_info{role="master"}) or vector(0)) < 1
+        annotations:
+          summary: "Redis master is missing"
+          description: "No Redis instance is currently reported with role=master. Write traffic may be unavailable, replicas may be unable to accept promotion safely, and clients that depend on a writable primary may fail or return stale data. This can indicate failed Sentinel/cluster failover, broken replication topology, exporter visibility issues, or a primary node outage."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redismissingmaster"
+
+      - alert: RedisTooManyMasters
+        expr: count(redis_instance_info{role="master"}) > 1
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: count(redis_instance_info{role="master"}) > 1
+        annotations:
+          summary: "Redis has too many masters"
+          description: "More than one Redis instance is reported with role=master. This can indicate split-brain, failed failover cleanup, incorrect replication configuration, or clients writing to different primaries. The impact can be severe data divergence, lost writes after topology repair, inconsistent reads, or corruption of lock/session/queue semantics."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redistoomanymasters"
+
+      - alert: RedisReplicationBroken
+        expr: delta(redis_connected_slaves[1m]) < 0
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: delta(redis_connected_slaves[1m]) < 0
+        annotations:
+          summary: "Redis replication broken"
+          description: "Redis instance {{ $labels.instance }} lost one or more connected replicas in the last minute. Replication redundancy is reduced, failover safety is degraded, and replica reads may become stale or unavailable. If the master fails before replicas reconnect and catch up, the service may lose high availability and could risk data loss depending on persistence and failover configuration."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisreplicationbroken"
+
+      - alert: RedisClusterFlapping
+        expr: changes(redis_connected_slaves[2m]) > 2
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: changes(redis_connected_slaves[2m]) > 2
+        annotations:
+          summary: "Redis replica connection is flapping"
+          description: "Redis replica connection count is changing frequently on {{ $labels.instance }}. Replicas may be repeatedly disconnecting and reconnecting, which can cause unstable failover eligibility, stale replica reads, repeated synchronization load on the master, increased network/disk pressure, and unreliable high-availability behavior during a real primary failure."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisclusterflapping"
+
+      - alert: RedisMissingBackup
+        expr: time() - redis_rdb_last_save_timestamp_seconds > 60 * 60 * 48
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: time() - redis_rdb_last_save_timestamp_seconds > 60 * 60 * 48
+        annotations:
+          summary: "Redis RDB backup is stale"
+          description: "Redis has not completed an RDB save for more than 48 hours on {{ $labels.instance }}. If this instance is lost, restarted incorrectly, or affected by disk failure, the recoverable dataset may be older than the expected recovery point objective. This increases the risk of data loss for Redis workloads that rely on persistence rather than Redis being purely disposable cache."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redismissingbackup"
+
+      - alert: RedisHighMemoryUsage
+        expr: |
+          redis_memory_max_bytes > 0
+          and
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.80
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_memory_max_bytes > 0 and redis_memory_used_bytes / redis_memory_max_bytes > 0.80
+        annotations:
+          summary: "Redis memory usage is high"
+          description: "Redis memory usage is above 80% of configured maxmemory on {{ $labels.instance }}. The instance is approaching memory pressure, which can increase eviction risk, reduce cache effectiveness, slow command execution, and leave less headroom for traffic spikes, large keys, replication buffers, Lua scripts, or temporary memory used during persistence operations."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redishighmemoryusage"
+
+      - alert: RedisOutOfConfiguredMaxmemory
+        expr: |
+          redis_memory_max_bytes > 0
+          and
+          redis_memory_used_bytes / redis_memory_max_bytes > 0.90
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_memory_max_bytes > 0 and redis_memory_used_bytes / redis_memory_max_bytes > 0.90
+        annotations:
+          summary: "Redis is close to configured maxmemory"
+          description: "Redis memory usage is above 90% of configured maxmemory on {{ $labels.instance }}. Depending on maxmemory-policy, Redis may start evicting hot keys, reject writes with OOM errors, break cache/session consistency expectations, or cause latency spikes while trying to free memory. Persistent memory pressure can directly impact application availability and correctness."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisoutofconfiguredmaxmemory"
+
+      - alert: RedisMemoryFragmentationHigh
+        expr: redis_mem_fragmentation_ratio > 1.5
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_mem_fragmentation_ratio > 1.5
+        annotations:
+          summary: "Redis memory fragmentation is high"
+          description: "Redis memory fragmentation ratio is {{ $value }} on {{ $labels.instance }}. Redis may be consuming significantly more RSS memory than its dataset size, which can trigger node-level memory pressure, container OOM kills, swap activity, or misleading capacity signals even when Redis used_memory appears acceptable. Consider MEMORY PURGE or a controlled restart during a low-traffic window."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redismemoryfragmentationhigh"
+
+      - alert: RedisEvictedKeysHigh
+        expr: rate(redis_evicted_keys_total[5m]) > 100
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: rate(redis_evicted_keys_total[5m]) > 100
+        annotations:
+          summary: "Redis is evicting keys at a high rate"
+          description: "Redis is evicting more than 100 keys/s on {{ $labels.instance }}. Frequently used cache entries, sessions, rate-limit counters, locks, or queue metadata may be removed before applications expect them to expire, causing cache misses, user logouts, duplicate work, throttling errors, or inconsistent application behavior. Check memory growth, TTL policy, large keys, and maxmemory-policy."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisevictedkeyshigh"
+
+      - alert: RedisKeyspaceHitRatioLow
+        expr: |
+          (
+            rate(redis_keyspace_hits_total[5m])
+            /
+            (
+              rate(redis_keyspace_hits_total[5m])
+              +
+              rate(redis_keyspace_misses_total[5m])
+            )
+          ) < 0.80
+          and
+          (
+            rate(redis_keyspace_hits_total[5m])
+            +
+            rate(redis_keyspace_misses_total[5m])
+          ) > 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: rate(redis_keyspace_hits_total[5m]) / (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m])) < 0.80 and (rate(redis_keyspace_hits_total[5m]) + rate(redis_keyspace_misses_total[5m])) > 0
+        annotations:
+          summary: "Redis keyspace hit ratio is low"
+          description: "Redis keyspace hit ratio is below 80% on {{ $labels.instance }}. Redis is not serving a large enough share of requested keys from memory, so applications may fall back to databases, APIs, or recomputation more often. This can increase upstream latency, overload backing stores, reduce cache value, and amplify incidents during traffic spikes."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#rediskeyspacehitratiolow"
+
+      - alert: RedisTooManyConnections
+        expr: |
+          redis_config_maxclients > 0
+          and
+          redis_connected_clients / redis_config_maxclients > 0.90
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclients > 0.90
+        annotations:
+          summary: "Redis has too many connections"
+          description: "Redis connected clients are above 90% of maxclients on {{ $labels.instance }}. The instance is close to refusing new connections, which can cause application connection errors, failed cache/session operations, queue workers dropping work, or retry storms. This often indicates connection leaks, missing pooling, too many application replicas, or clients failing to close idle connections."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redistoomanyconnections"
+
+      - alert: RedisConnectedClientsHigh
+        expr: |
+          redis_config_maxclients > 0
+          and
+          redis_connected_clients / redis_config_maxclients > 0.80
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclients > 0.80
+        annotations:
+          summary: "Redis connected clients are high"
+          description: "Redis connected clients are above 80% of maxclients on {{ $labels.instance }}. Redis still has connection headroom, but sustained growth can lead to rejected connections and application errors. This is an early warning for connection leaks, aggressive client pools, insufficient pooling limits, deployment scale-out, or clients stuck in long-running/blocking operations."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisconnectedclientshigh"
+
+      - alert: RedisNotEnoughConnections
+        expr: redis_connected_clients < 5
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_connected_clients < 5
+        annotations:
+          summary: "Redis has very few client connections"
+          description: "Redis instance {{ $labels.instance }} has fewer than 5 connected clients for 5 minutes. For a production instance that normally serves active traffic, this may indicate application connectivity failures, DNS/service discovery issues, network policy changes, client authentication failures, or an upstream outage preventing applications from reaching Redis. For idle, batch, standby, or non-production instances, this may be expected and should be filtered."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisnotenoughconnections"
+
+      - alert: RedisRejectedConnections
+        expr: increase(redis_rejected_connections_total[1m]) > 5
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: increase(redis_rejected_connections_total[1m]) > 5
+        annotations:
+          summary: "Redis is rejecting connections"
+          description: "Redis rejected more than 5 connections in the last minute on {{ $labels.instance }}. Applications attempting to open new Redis connections may fail immediately, causing request errors, failed session/cache operations, worker failures, or retry storms. This is commonly caused by maxclients exhaustion, connection leaks, oversized pools, missing connection reuse, or sudden application scale-out."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisrejectedconnections"
+
+      - alert: RedisBlockedClientsHigh
+        expr: redis_blocked_clients > 10
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_blocked_clients > 10
+        annotations:
+          summary: "Redis has many blocked clients"
+          description: "Redis has more than 10 blocked clients on {{ $labels.instance }}. Clients are waiting on blocking operations such as BLPOP, BRPOP, XREAD, XREADGROUP, or other long waits, which can reduce worker throughput, create queue-processing delays, increase connection usage, and hide downstream consumer slowness. Check whether blocked clients are expected for this workload and whether consumers are keeping up."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisblockedclientshigh"
+
+      - alert: RedisSlowLogGrowing
+        expr: increase(redis_slowlog_last_id[5m]) > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: increase(redis_slowlog_last_id[5m]) > 0
+        annotations:
+          summary: "Redis slowlog is growing"
+          description: "New Redis slowlog entries were observed on {{ $labels.instance }}. One or more commands are exceeding the configured slowlog threshold and may be increasing request latency for all clients because Redis command execution is largely single-threaded. Expensive commands, large keys, broad scans, Lua scripts, or slow disk/network conditions can delay unrelated cache, session, lock, queue, and rate-limit operations."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisslowloggrowing"
+
+      - alert: RedisRDBSaveError
+        expr: redis_rdb_last_bgsave_status == 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_rdb_last_bgsave_status == 0
+        annotations:
+          summary: "Redis RDB background save failed"
+          description: "Redis RDB background save failed on {{ $labels.instance }}. Redis may continue serving traffic, but persistence is degraded and a restart, node loss, or disk failure may recover from an older snapshot than expected. This can violate recovery point objectives for Redis workloads that depend on durability. Check disk space, filesystem permissions, fork failures, memory pressure, and Redis persistence logs."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisrdbsaveerror"
+
+      - alert: RedisAOFRewriteRunningLong
+        expr: redis_aof_rewrite_in_progress == 1
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: redis_aof_rewrite_in_progress == 1
+        annotations:
+          summary: "Redis AOF rewrite is running for too long"
+          description: "Redis AOF rewrite has been running for more than 10 minutes on {{ $labels.instance }}. A long-running rewrite can indicate slow disk I/O, large append-only files, fork pressure, or memory pressure. During this time Redis may consume extra CPU, disk, and memory, which can increase latency and raise the risk of persistence backlog or failure if the node is already resource constrained."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisaofrewriterunninglong"
+
+      - alert: RedisCPUSaturation
+        expr: rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) > 0.80
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: redis
+          signal: cause
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) > 0.80
+        annotations:
+          summary: "Redis CPU usage is high"
+          description: "Redis CPU usage is above 80% on {{ $labels.instance }}. Because Redis command execution is latency-sensitive and often bottlenecked by the main event loop, sustained CPU saturation can increase command latency, timeouts, replication lag, slowlog growth, and application request latency. Common causes include hot keys, large payloads, expensive commands, Lua scripts, heavy pub/sub or stream workloads, or insufficient sharding."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#rediscpusaturation"

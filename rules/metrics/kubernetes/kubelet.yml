@@ -1,0 +1,215 @@
+groups:
+  - name: kubelet.rules
+    interval: 30s
+    rules:
+      - alert: KubeletDown
+        expr: |
+          sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="kubelet"}) == 0
+          or
+          absent(up{job="kubelet"})
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P0
+          tech_stack: kubelet
+          signal: symptom
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: |
+            sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job="kubelet"}) == 0
+            or
+            absent(up{job="kubelet"})
+        annotations:
+          summary: "kubelet down: cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }} svc={{ $labels.rtf_service }}"
+          description: "No healthy kubelet target is available for >5m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{
+            $labels.rtf_env }}, service={{ $labels.rtf_service }}. Node-level telemetry and kubelet-dependent signals are
+            degraded, and node lifecycle issues may go undetected."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletNodeNotReady
+        expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubelet
+          signal: symptom
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kube_node_status_condition{condition="Ready",status="true"} == 0
+        annotations:
+          summary: "node NotReady: node={{ $labels.node }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Node {{ $labels.node }} has been NotReady for >10m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{
+            $labels.rtf_env }}, service={{ $labels.rtf_service }}. Workloads on this node may become unreachable, and pods can
+            be evicted or rescheduled depending on disruption budgets."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletMemoryPressure
+        expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+        annotations:
+          summary: "node MemoryPressure: node={{ $labels.node }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Node {{ $labels.node }} is under MemoryPressure for >5m. Context: cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Kubelet eviction can terminate lower-priority pods and
+            cause cascading restarts."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletDiskPressure
+        expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+        annotations:
+          summary: "node DiskPressure: node={{ $labels.node }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Node {{ $labels.node }} is under DiskPressure for >5m. Context: cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Pod eviction risk is high; inspect image cache growth,
+            container logs, and ephemeral volume usage."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletPIDPressure
+        expr: kube_node_status_condition{condition="PIDPressure",status="true"} == 1
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kube_node_status_condition{condition="PIDPressure",status="true"} == 1
+        annotations:
+          summary: "node PIDPressure: node={{ $labels.node }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Node {{ $labels.node }} is under PIDPressure for >5m. Context: cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Process limits are nearing exhaustion, which can block
+            new workload starts and destabilize node services."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletNetworkUnavailable
+        expr: kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubelet
+          signal: symptom
+          category: network
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kube_node_status_condition{condition="NetworkUnavailable",status="true"} == 1
+        annotations:
+          summary: "node network unavailable: node={{ $labels.node }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "Node {{ $labels.node }} reports NetworkUnavailable for >5m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Pod-to-pod/service traffic on this node is likely
+            broken; expect readiness and connectivity failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletPodLifecycleEventGeneratorLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            rate(kubelet_pleg_relist_duration_seconds_bucket{job="kubelet"}[5m])
+          ) > 10
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: |
+            histogram_quantile(0.99,
+              rate(kubelet_pleg_relist_duration_seconds_bucket{job="kubelet"}[5m])
+            ) > 10
+        annotations:
+          summary: "kubelet PLEG relist p99 high: {{ $value | humanizeDuration }} node={{ $labels.node }}"
+          description: "Kubelet PLEG relist p99 latency is {{ $value | humanizeDuration }} (threshold: >10s for 5m) on node={{
+            $labels.node }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Elevated PLEG latency can delay pod lifecycle sync and push node toward NotReady state."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletPodStartupLatencyHigh
+        expr: |
+          histogram_quantile(0.99,
+            rate(kubelet_pod_start_duration_seconds_bucket{job="kubelet"}[5m])
+          ) > 60
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: |
+            histogram_quantile(0.99,
+              rate(kubelet_pod_start_duration_seconds_bucket{job="kubelet"}[5m])
+            ) > 60
+        annotations:
+          summary: "kubelet pod startup p99 high: {{ $value | humanizeDuration }} node={{ $labels.node }}"
+          description: "Kubelet pod start p99 latency is {{ $value | humanizeDuration }} (threshold: >60s for 15m) on node={{
+            $labels.node }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. Slow starts increase rollout times and autoscaling recovery latency."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletTooManyPods
+        expr: |
+          max by (node) (kubelet_running_pods{job="kubelet"})
+          / max by (node) (kube_node_status_capacity{resource="pods"}) > 0.95
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubelet
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: |
+            max by (node) (kubelet_running_pods{job="kubelet"})
+            / max by (node) (kube_node_status_capacity{resource="pods"}) > 0.95
+        annotations:
+          summary: "node near pod capacity: node={{ $labels.node }} usage={{ $value | humanizePercentage }}"
+          description: "Node {{ $labels.node }} is using {{ $value | humanizePercentage }} of allocatable pod slots (threshold:
+            >95% for 15m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service
+            }}. New pods may remain Pending until capacity is expanded or pods are drained/rescheduled."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"
+
+      - alert: KubeletClientCertExpiring
+        expr: kubelet_certificate_manager_client_ttl_seconds < 86400 * 7
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubelet
+          signal: cause
+          category: security
+          runbook: runbooks/kubernetes/kubelet.yaml
+          query: kubelet_certificate_manager_client_ttl_seconds < 86400 * 7
+        annotations:
+          summary: "kubelet client cert expiring: node={{ $labels.node }} in {{ $value | humanizeDuration }}"
+          description: "Kubelet client certificate expires in {{ $value | humanizeDuration }} (threshold: <7d) on node={{ $labels.node
+            }}. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}.
+            Delayed rotation risks kubelet authentication failures and node management disruption."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/kubelet.yaml"

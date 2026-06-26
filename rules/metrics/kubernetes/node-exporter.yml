@@ -1,0 +1,238 @@
+groups:
+  - name: node-exporter.rules
+    interval: 30s
+    rules:
+      - alert: NodeExporterDown
+        expr: up{job=~"node-exporter|node_exporter"} == 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: up{job=~"node-exporter|node_exporter"} == 0
+        annotations:
+          summary: "node-exporter down: instance={{ $labels.instance }} cluster={{ $labels.rtf_cluster_id }} env={{ $labels.rtf_env }}"
+          description: "node-exporter on {{ $labels.instance }} is unreachable for >10m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Host-level CPU, memory, disk, and network metrics
+            from this node are missing, reducing node incident visibility."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeFilesystemAlmostOutOfSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 30m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+            and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        annotations:
+          summary: "filesystem space low: {{ $labels.instance }} {{ $labels.mountpoint }} free={{ $value | humanizePercentage }}"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage
+            }} free capacity (threshold: <10% for 30m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Persistent low free space can cause pod write failures and kubelet pressure."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeFilesystemOutOfSpace
+        expr: |
+          (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.03
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (node_filesystem_avail_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.03
+            and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        annotations:
+          summary: "filesystem space CRITICAL: {{ $labels.instance }} {{ $labels.mountpoint }} free={{ $value | humanizePercentage }}"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage
+            }} free capacity (critical threshold: <3% for 10m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ $labels.rtf_service }}. Immediate risk of node instability, pod crashes, and write-path failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeFilesystemAlmostOutOfFiles
+        expr: |
+          (node_filesystem_files_free{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+            / node_filesystem_files{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+          and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        for: 30m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (node_filesystem_files_free{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}
+              / node_filesystem_files{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"}) < 0.10
+            and node_filesystem_readonly{fstype!~"tmpfs|fuse.lxcfs|squashfs|overlay"} == 0
+        annotations:
+          summary: "filesystem inodes low: {{ $labels.instance }} {{ $labels.mountpoint }} free={{ $value | humanizePercentage }}"
+          description: "Filesystem {{ $labels.mountpoint }} on {{ $labels.instance }} has only {{ $value | humanizePercentage
+            }} free inodes (threshold: <10% for 30m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ $labels.rtf_service }}. Inode exhaustion prevents new files from being created even when bytes remain."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeMemoryHighUsage
+        expr: |
+          (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)) > 0.90
+        annotations:
+          summary: "node memory high: instance={{ $labels.instance }} usage={{ $value | humanizePercentage }}"
+          description: "Node {{ $labels.instance }} memory utilization is {{ $value | humanizePercentage }} (threshold: >90% for
+            10m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}.
+            Sustained high memory increases OOM and kubelet eviction risk."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeCPUHighUsage
+        expr: |
+          (1 - avg by (instance, rtf_cluster_id, rtf_env, rtf_service) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (1 - avg by (instance, rtf_cluster_id, rtf_env, rtf_service) (rate(node_cpu_seconds_total{mode="idle"}[5m]))) > 0.90
+        annotations:
+          summary: "node CPU high: instance={{ $labels.instance }} usage={{ $value | humanizePercentage }}"
+          description: "Node {{ $labels.instance }} CPU utilization is {{ $value | humanizePercentage }} (threshold: >90% for
+            15m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}.
+            Prolonged CPU saturation can throttle workloads and delay kubelet housekeeping."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeLoad15High
+        expr: node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: node_load15 / count without (cpu, mode) (node_cpu_seconds_total{mode="idle"}) > 2
+        annotations:
+          summary: "node load high: instance={{ $labels.instance }} load/core={{ $value }}"
+          description: "Node {{ $labels.instance }} 15-minute load is {{ $value }}x CPU core count (threshold: >2 for 15m). Context:
+            cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. This indicates
+            sustained run-queue contention and likely workload latency."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeNetworkReceiveErrs
+        expr: rate(node_network_receive_errs_total[2m]) > 10
+        for: 1h
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: node-exporter
+          signal: cause
+          category: network
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: rate(node_network_receive_errs_total[2m]) > 10
+        annotations:
+          summary: "node RX errors high: {{ $labels.instance }} {{ $labels.device }} rate={{ $value | humanize }}/s"
+          description: "Node {{ $labels.instance }} interface {{ $labels.device }} is seeing {{ $value | humanize }} receive
+            errors/s for 1h (threshold: >10/s). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ $labels.rtf_service }}. Persistent NIC errors can cause packet loss and intermittent service failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeNetworkTransmitErrs
+        expr: rate(node_network_transmit_errs_total[2m]) > 10
+        for: 1h
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: node-exporter
+          signal: cause
+          category: network
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: rate(node_network_transmit_errs_total[2m]) > 10
+        annotations:
+          summary: "node TX errors high: {{ $labels.instance }} {{ $labels.device }} rate={{ $value | humanize }}/s"
+          description: "Node {{ $labels.instance }} interface {{ $labels.device }} is seeing {{ $value | humanize }} transmit
+            errors/s for 1h (threshold: >10/s). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ $labels.rtf_service }}. Persistent TX errors degrade node egress and cross-service communication."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeClockSkew
+        expr: |
+          (node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0)
+          or (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0)
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: |
+            (node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0)
+            or (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0)
+        annotations:
+          summary: "node clock skew high: instance={{ $labels.instance }} offset={{ $value | humanizeDuration }}"
+          description: "Node {{ $labels.instance }} clock offset is unhealthy and drifting for >10m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ $labels.rtf_service }}. Time skew breaks TLS validity windows, leader
+            election timing, and distributed tracing/order assumptions."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"
+
+      - alert: NodeFileDescriptorUsage
+        expr: node_filefd_allocated / node_filefd_maximum > 0.80
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: node-exporter
+          signal: cause
+          category: node
+          runbook: runbooks/kubernetes/node-exporter.yaml
+          query: node_filefd_allocated / node_filefd_maximum > 0.80
+        annotations:
+          summary: "node FD usage high: instance={{ $labels.instance }} usage={{ $value | humanizePercentage }}"
+          description: "Node {{ $labels.instance }} is using {{ $value | humanizePercentage }} of file descriptor capacity
+            (threshold: >80% for 10m). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{
+            $labels.rtf_service }}. Further growth can cause socket/file-open failures for system and application processes."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/node-exporter.yaml"

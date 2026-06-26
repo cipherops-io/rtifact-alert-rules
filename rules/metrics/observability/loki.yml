@@ -1,0 +1,152 @@
+groups:
+  - name: loki.rules
+    interval: 30s
+    rules:
+      - alert: LokiDown
+        expr: up{job=~"loki.*"} == 0
+        for: 1m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: loki
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: up{job=~"loki.*"} == 0
+        annotations:
+          summary: "Loki is down"
+          description: "Loki job {{ $labels.job }} instance {{ $labels.instance }} has been unreachable for more than 1 minute."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokidown"
+
+      - alert: LokiIngestionRateNearLimit
+        expr: |
+          sum by (tenant) (rate(loki_distributor_lines_received_total[5m]))
+          / sum by (tenant) (loki_limits_per_tenant_override_config{limit_name="ingestion_rate_mb"}) > 0.80
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: |
+            sum by (tenant) (rate(loki_distributor_lines_received_total[5m]))
+            / sum by (tenant) (loki_limits_per_tenant_override_config{limit_name="ingestion_rate_mb"}) > 0.80
+        annotations:
+          summary: "Loki ingestion rate is approaching its limit"
+          description: "Loki tenant {{ $labels.tenant }} ingestion rate is above 80% of its configured limit — log drops are
+            imminent."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokiingestionratenearlimit"
+
+      - alert: LokiIngestionRateExceeded
+        expr: rate(loki_distributor_ingester_appends_failures_total[5m]) > 0
+        for: 2m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: rate(loki_distributor_ingester_appends_failures_total[5m]) > 0
+        annotations:
+          summary: "Loki ingestion rate limit is being exceeded"
+          description: "Loki ingestion rate limit is being exceeded — logs are being dropped."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokiingestionrateexceeded"
+
+      - alert: LokiQueryTimeout
+        expr: rate(loki_query_frontend_queries_total{status="timeout"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: rate(loki_query_frontend_queries_total{status="timeout"}[5m]) > 0
+        annotations:
+          summary: "Loki queries are timing out"
+          description: "Loki queries are timing out — check query range and log volume."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokiquerytimeout"
+
+      - alert: LokiCompactorFailing
+        expr: rate(loki_boltdb_shipper_compact_tables_operation_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: rate(loki_boltdb_shipper_compact_tables_operation_failures_total[5m]) > 0
+        annotations:
+          summary: "Loki compactor is failing"
+          description: "Loki compactor is failing — TSDB/BoltDB compaction errors. Storage may grow unboundedly."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokicompactorfailing"
+
+      - alert: LokiRingUnhealthy
+        expr: loki_ring_members{state!="ACTIVE"} > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: loki_ring_members{state!="ACTIVE"} > 0
+        annotations:
+          summary: "Loki ring has non-ACTIVE members"
+          description: "Loki ring has {{ $value }} non-ACTIVE members — distributed write/read may be degraded."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokiringunhealthy"
+
+      - alert: LokiChunkFlushFailing
+        expr: rate(loki_ingester_chunks_flushed_total{reason="failed"}[5m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: loki
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: rate(loki_ingester_chunks_flushed_total{reason="failed"}[5m]) > 0
+        annotations:
+          summary: "Loki ingester chunk flush is failing"
+          description: "Loki ingester chunk flush is failing — logs may be lost."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokichunkflushfailing"
+
+      - alert: LokiHighQueueDepth
+        expr: loki_query_scheduler_queue_length > 1000
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: loki_query_scheduler_queue_length > 1000
+        annotations:
+          summary: "Loki query scheduler queue depth is too high"
+          description: "Loki query scheduler queue depth is {{ $value }} — querier capacity is insufficient."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokihighqueuedepth"
+
+      - alert: LokiRulerFailing
+        expr: rate(loki_ruler_evaluation_failures_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: loki
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/loki.md
+          query: rate(loki_ruler_evaluation_failures_total[5m]) > 0
+        annotations:
+          summary: "Loki Ruler rule evaluation is failing"
+          description: "Loki Ruler rule evaluation is failing — log-based alerts may not fire."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/loki.md#lokirulerfailing"

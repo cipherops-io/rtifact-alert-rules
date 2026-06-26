@@ -1,0 +1,130 @@
+groups:
+  - name: vmagent.rules
+    interval: 30s
+    rules:
+      - alert: VMAgentDown
+        expr: absent(up{job=~"vmagent|.*vmagent.*"} == 1)
+        for: 5m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: vmagent
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: absent(up{job=~"vmagent|.*vmagent.*"} == 1)
+        annotations:
+          summary: "vmagent is unreachable"
+          description: "All vmagent instances have been unreachable for 5 minutes — no metrics are being scraped or forwarded."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentdown"
+
+      - alert: VMAgentRemoteWriteErrors
+        expr: |
+          sum by (instance, url) (rate(vmagent_remotewrite_errors_total[5m]))
+          / sum by (instance, url) (rate(vmagent_remotewrite_requests_total[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmagent
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: |
+            sum by (instance, url) (rate(vmagent_remotewrite_errors_total[5m]))
+            / sum by (instance, url) (rate(vmagent_remotewrite_requests_total[5m])) > 0.01
+        annotations:
+          summary: "vmagent remote write error rate is high"
+          description: "vmagent {{ $labels.instance }} remote write to {{ $labels.url }} is failing at {{ $value | humanizePercentage
+            }}."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentremotewriteerrors"
+
+      - alert: VMAgentRemoteWriteAllErrors
+        expr: rate(vmagent_remotewrite_errors_total[5m]) > 0
+        for: 15m
+        labels:
+          severity: critical
+          priority: P1
+          tech_stack: vmagent
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: rate(vmagent_remotewrite_errors_total[5m]) > 0
+        annotations:
+          summary: "vmagent remote write is consistently failing"
+          description: "vmagent {{ $labels.instance }} remote write to {{ $labels.url }} has been failing continuously for
+            15 minutes — metrics will be lost when the persistent queue fills."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentremotewriteallerrors"
+
+      - alert: VMAgentPersistentQueueGrowing
+        expr: |
+          sum by (instance, path) (rate(vmagent_remotewrite_pending_data_bytes[10m])) > 0
+        for: 30m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmagent
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: |
+            sum by (instance, path) (rate(vmagent_remotewrite_pending_data_bytes[10m])) > 0
+        annotations:
+          summary: "vmagent persistent queue is growing"
+          description: "vmagent {{ $labels.instance }} persistent queue at {{ $labels.path }} has been growing for 30 minutes
+            — remote storage cannot keep up."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentpersistentqueuegrowing"
+
+      - alert: VMAgentScrapesSkipped
+        expr: rate(vm_promscrape_scrapes_skipped_by_sample_limit_total[5m]) > 0
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmagent
+          signal: symptom
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: rate(vm_promscrape_scrapes_skipped_by_sample_limit_total[5m]) > 0
+        annotations:
+          summary: "vmagent is skipping scrapes due to sample limits"
+          description: "vmagent {{ $labels.instance }} is skipping scrapes — sample limit exceeded for some targets."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentscrapesskipped"
+
+      - alert: VMAgentRemoteWriteRetries
+        expr: |
+          sum by (instance, url) (rate(vmagent_remotewrite_retries_count_total[5m])) > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: vmagent
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: |
+            sum by (instance, url) (rate(vmagent_remotewrite_retries_count_total[5m])) > 0.1
+        annotations:
+          summary: "vmagent is frequently retrying remote write"
+          description: "vmagent {{ $labels.instance }} is retrying remote write to {{ $labels.url }} at {{ $value | humanize
+            }} retries/s — destination may be unstable."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagentremotewriteretries"
+
+      - alert: VMAgentTargetScrapeFailures
+        expr: |
+          sum by (job, instance) (rate(vm_promscrape_scrapes_failed_total[5m])) > 1
+        for: 15m
+        labels:
+          severity: warning
+          priority: P3
+          tech_stack: vmagent
+          signal: cause
+          category: observability
+          runbook: runbooks/observability/vmagent.md
+          query: |
+            sum by (job, instance) (rate(vm_promscrape_scrapes_failed_total[5m])) > 1
+        annotations:
+          summary: "vmagent has frequent scrape failures"
+          description: "vmagent {{ $labels.instance }} job {{ $labels.job }} is failing scrapes at {{ $value | humanize }}
+            failures/s."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/observability/vmagent.md#vmagenttargetscrapefailures"

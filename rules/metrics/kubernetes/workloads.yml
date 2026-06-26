@@ -1,0 +1,384 @@
+groups:
+  - name: kubernetes-workloads.rules
+    interval: 30s
+    rules:
+      - alert: KubePodCrashLooping
+        expr: |
+          max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m]) >= 1
+          or
+          increase(kube_pod_container_status_restarts_total[15m]) > 5
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"}[5m]) >= 1
+            or
+            increase(kube_pod_container_status_restarts_total[15m]) > 5
+        annotations:
+          summary: "pod crash looping: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} container {{ $labels.container }} is in CrashLoopBackOff
+            or restarting frequently (value={{ $value }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env
+            }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. This often leads to user-facing errors and unstable rollouts."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodOOMKilled
+        expr: |
+          increase(kube_pod_container_status_restarts_total[10m]) > 0
+          and on(namespace, pod, container)
+          max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) == 1
+        for: 0m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            increase(kube_pod_container_status_restarts_total[10m]) > 0
+            and on(namespace, pod, container)
+            max_over_time(kube_pod_container_status_last_terminated_reason{reason="OOMKilled"}[10m]) == 1
+        annotations:
+          summary: "pod OOMKilled: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} was OOMKilled. Context:
+            cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Investigate memory
+            limits/requests, memory leaks, and burst behavior before repeated restarts impact availability."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodCPUThrottlingHigh
+        expr: |
+          (
+            sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+              rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+            )
+            /
+            sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+              rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+            )
+          ) * 100 > 25
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            (
+              sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+              )
+              /
+              sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+              )
+            ) * 100 > 25
+        annotations:
+          summary: "pod CPU throttling high: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has sustained CPU
+            throttling above 25% for >10m (value={{ printf \"%.2f\" $value }}%). Context: cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Review CPU limits, compare usage vs limits,
+            check node CPU saturation, validate HPA behavior, and consider removing CPU limits for latency-sensitive workloads."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeContainerWaiting
+        expr: kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1
+        for: 1h
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1
+        annotations:
+          summary: "container waiting too long: {{ $labels.namespace }}/{{ $labels.pod }} reason={{ $labels.reason }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has stayed waiting
+            for >1h (reason={{ $labels.reason }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Prolonged waiting indicates unresolved scheduling/image/runtime dependency issues."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodNotReady
+        expr: kube_pod_status_ready{condition="true"} == 0
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_pod_status_ready{condition="true"} == 0
+        annotations:
+          summary: "pod not ready: {{ $labels.namespace }}/{{ $labels.pod }} for >15m"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has remained NotReady for >15m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Traffic to this workload may be reduced or unavailable."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeDeploymentReplicasMismatch
+        expr: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: rollout
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_deployment_spec_replicas != kube_deployment_status_replicas_available
+        annotations:
+          summary: "deployment replicas mismatch: {{ $labels.namespace }}/{{ $labels.deployment }}"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has fewer available replicas than desired for
+            >15m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.deployment }}.
+            Capacity may be insufficient during peak traffic or failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeDeploymentRolloutStuck
+        expr: kube_deployment_status_condition{condition="Progressing",status="false"} == 1
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: rollout
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_deployment_status_condition{condition="Progressing",status="false"} == 1
+        annotations:
+          summary: "deployment rollout stuck: {{ $labels.namespace }}/{{ $labels.deployment }}"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} is not progressing for >15m (value={{ $value
+            }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.deployment }}.
+            Check ReplicaSets, pod events, readiness probes, and image pull failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeStatefulSetReplicasMismatch
+        expr: kube_statefulset_status_replicas_ready != kube_statefulset_replicas
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubernetes
+          signal: symptom
+          category: rollout
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_statefulset_status_replicas_ready != kube_statefulset_replicas
+        annotations:
+          summary: "statefulset replicas not ready: {{ $labels.namespace }}/{{ $labels.statefulset }}"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has fewer ready replicas than desired for
+            >10m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.statefulset }}.
+            Stateful workloads may be operating without required quorum/redundancy."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeDaemonSetNotScheduled
+        expr: kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_ready
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: rollout
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_ready
+        annotations:
+          summary: "daemonset not fully ready: {{ $labels.namespace }}/{{ $labels.daemonset }}"
+          description: "DaemonSet {{ $labels.namespace }}/{{ $labels.daemonset }} is not ready on all desired nodes for >15m.
+            Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.daemonset }}. Node-level
+            agents may be missing, creating observability/security/data-plane gaps."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodImagePullBackOff
+        expr: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
+        annotations:
+          summary: "image pull failure: {{ $labels.namespace }}/{{ $labels.pod }} reason={{ $labels.reason }}"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} cannot pull image (reason={{ $labels.reason }}) for >5m.
+            Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Verify
+            image tag, registry reachability, and pull-secret credentials."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeJobFailed
+        expr: kube_job_status_failed > 0 and kube_job_status_succeeded == 0
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: batch
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_job_status_failed > 0 and kube_job_status_succeeded == 0
+        annotations:
+          summary: "job failed: {{ $labels.namespace }}/{{ $labels.job_name }}"
+          description: "Job {{ $labels.namespace }}/{{ $labels.job_name }} has failed {{ $value }} time(s) without succeeding for
+            >15m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.job_name }}.
+            Downstream pipelines or scheduled workloads may be blocked."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeCronJobSuspended
+        expr: kube_cronjob_spec_suspend == 1
+        for: 1h
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          tech_stack: kubernetes
+          signal: cause
+          category: batch
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_cronjob_spec_suspend == 1
+        annotations:
+          summary: "cronjob suspended: {{ $labels.namespace }}/{{ $labels.cronjob }}"
+          description: "CronJob {{ $labels.namespace }}/{{ $labels.cronjob }} has been suspended for >1h. Context: cluster={{
+            $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.cronjob }}. Expected scheduled runs are
+            skipped, which can impact backups, sync jobs, and data freshness."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodEvicted
+        expr: kube_pod_status_reason{reason="Evicted"} == 1
+        for: 0m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_pod_status_reason{reason="Evicted"} == 1
+        annotations:
+          summary: "pod evicted: {{ $labels.namespace }}/{{ $labels.pod }}"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been evicted from its node. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Evictions usually indicate resource pressure or node instability."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePodPendingTooLong
+        expr: kube_pod_status_phase{phase="Pending"} == 1
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: scheduling
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_pod_status_phase{phase="Pending"} == 1
+        annotations:
+          summary: "pod pending too long: {{ $labels.namespace }}/{{ $labels.pod }}"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been Pending for >15m. Context: cluster={{ $labels.rtf_cluster_id
+            }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Check scheduler events for insufficient resources,
+            taints/tolerations mismatch, affinity/anti-affinity, or PVC binding delays."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePersistentVolumeError
+        expr: kube_persistentvolume_status_phase{phase=~"Failed|Lost|Pending"} == 1
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubernetes
+          signal: symptom
+          category: storage
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kube_persistentvolume_status_phase{phase=~"Failed|Lost|Pending"} == 1
+        annotations:
+          summary: "persistent volume unhealthy: pv={{ $labels.persistentvolume }} phase={{ $labels.phase }}"
+          description: "PersistentVolume {{ $labels.persistentvolume }} is in {{ $labels.phase }} state for >10m. Context: cluster={{
+            $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.persistentvolume }}. Workloads depending on this
+            volume may fail to start, mount, or perform read/write operations."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePVCFillingUp
+        expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.15
+        annotations:
+          summary: "PVC free space low: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} free={{ $value | humanizePercentage }}"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has <15% free space for >15m (current={{ $value
+            | humanizePercentage }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.persistentvolumeclaim
+            }}. Plan expansion/cleanup to avoid write-path failures."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubePVCCriticalFull
+        expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.05
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kubernetes
+          signal: cause
+          category: storage
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes < 0.05
+        annotations:
+          summary: "PVC free space CRITICAL: {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} free={{ $value | humanizePercentage }}"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} has <5% free space for >5m (current={{ $value
+            | humanizePercentage }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.persistentvolumeclaim
+            }}. Immediate risk of application write failures and data-path outages."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+      - alert: KubeHpaMaxedOut
+        expr: |
+          kube_horizontalpodautoscaler_status_desired_replicas
+            >= kube_horizontalpodautoscaler_spec_max_replicas
+          and kube_horizontalpodautoscaler_spec_max_replicas > 1
+          and kube_horizontalpodautoscaler_spec_min_replicas
+            != kube_horizontalpodautoscaler_spec_max_replicas
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kubernetes
+          signal: cause
+          category: autoscaling
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            kube_horizontalpodautoscaler_status_desired_replicas
+              >= kube_horizontalpodautoscaler_spec_max_replicas
+            and kube_horizontalpodautoscaler_spec_max_replicas > 1
+            and kube_horizontalpodautoscaler_spec_min_replicas
+              != kube_horizontalpodautoscaler_spec_max_replicas
+        annotations:
+          summary: "HPA maxed out: {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }}"
+          description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} has stayed at max replicas for >15m
+            (desired={{ $value }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.horizontalpodautoscaler
+            }}. Workload is at scaling ceiling and may experience latency or throttling under sustained demand."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"

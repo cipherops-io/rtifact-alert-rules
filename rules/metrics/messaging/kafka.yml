@@ -1,0 +1,351 @@
+groups:
+  - name: kafka-exporter.availability
+    interval: 30s
+    rules:
+      - alert: KafkaExporterDown
+        expr: |
+          up{job=~".*kafka.*exporter.*"} == 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: up{job=~".*kafka.*exporter.*"} == 0
+        annotations:
+          summary: "Kafka exporter target is not scrapeable"
+          description: "Prometheus has not been able to scrape Kafka exporter target {{ $labels.instance }} for 5 minutes. Kafka itself may still be healthy, but broker, topic, partition, ISR, and consumer lag metrics from this exporter may be stale or missing, so Kafka monitoring coverage is degraded. Check the kafka-exporter pod, service, scrape target, exporter logs, Kafka connectivity, and ServiceMonitor/PodMonitor selector."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaexporterdown"
+
+      - alert: KafkaExporterMissing
+        expr: |
+          absent(kafka_exporter_build_info)
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: absent(kafka_exporter_build_info)
+        annotations:
+          summary: "Kafka exporter metrics are completely missing"
+          description: "The metric kafka_exporter_build_info has been absent for 10 minutes, which means Prometheus is not receiving Kafka exporter metrics at all. Kafka lag, partition health, ISR, broker count, and topic offset alerts may be missing or unreliable. Verify that the kafka-exporter deployment exists, the metrics service and port are correct, Prometheus target discovery is working, and ServiceMonitor/PodMonitor labels still match."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaexportermissing"
+
+  - name: kafka-exporter.cluster-health
+    interval: 30s
+    rules:
+      - alert: KafkaOfflinePartitions
+        expr: |
+          kafka_offline_partitions > 0
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P0
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: kafka_offline_partitions > 0
+        annotations:
+          summary: "Kafka has offline partitions"
+          description: "Kafka exporter reports {{ $value }} offline partition(s), meaning one or more partitions currently have no active leader. Producers and consumers for affected partitions may fail, block, or receive unavailable partition errors. This is usually caused by broker failure, controller leader-election issues, unavailable replicas, disk pressure, or network problems between brokers."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaofflinepartitions"
+
+      - alert: KafkaUnderReplicatedPartitions
+        expr: |
+          kafka_under_replicated_partitions > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: kafka_under_replicated_partitions > 0
+        annotations:
+          summary: "Kafka cluster has under-replicated partitions"
+          description: "Kafka exporter reports {{ $value }} under-replicated partition(s) for more than 5 minutes. Kafka may still be serving traffic, but replication durability is degraded and the cluster has reduced tolerance for another broker failure. Common causes include broker restart or failure, slow replica fetchers, disk pressure, inter-broker network latency, replication throttling, or backlog after broker recovery."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaunderreplicatedpartitions"
+
+      - alert: KafkaTopicUnderReplicatedPartition
+        expr: |
+          sum by (topic) (
+            kafka_topic_partition_under_replicated_partition
+          ) > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (topic) (kafka_topic_partition_under_replicated_partition) > 0
+        annotations:
+          summary: "Kafka topic has under-replicated partitions"
+          description: "Topic {{ $labels.topic }} has {{ $value }} under-replicated partition(s) for more than 5 minutes. This topic has reduced replica redundancy, so reads and writes may still work but durability risk is elevated if another broker or replica fails. Check partition ISR, broker placement, broker disk or network pressure, replica fetcher lag, and whether a reassignment or rolling restart is in progress."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkatopicunderreplicatedpartition"
+
+#      - alert: KafkaInsufficientInSyncReplicas
+#        expr: |
+#          min by (topic, partition) (
+#            kafka_topic_partition_in_sync_replica
+#          ) < 2
+#        for: 5m
+#        labels:
+#          sourceType: metric
+#          severity: critical
+#          priority: P1
+#          tech_stack: kafka
+#          signal: cause
+#          category: messaging
+#          runbook: runbooks/messaging/kafka.yaml
+#          query: min by (topic, partition) (kafka_topic_partition_in_sync_replica) < 2
+#        annotations:
+#          summary: "Kafka partition has insufficient in-sync replicas"
+#          description: "Topic {{ $labels.topic }} partition {{ $labels.partition }} has only {{ $value }} in-sync replica(s) for more than 5 minutes. This is a high-risk replication state: producers using acks=all may fail if min.insync.replicas cannot be satisfied, and weaker producer durability settings may increase data-loss risk during another broker failure. Check expected replication factor, topic min.insync.replicas, assigned replica broker health, and ISR shrink events."
+#          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkainsufficientinsyncreplicas"
+
+      - alert: KafkaTopicInSyncReplicasBelowThree
+        expr: |
+          min by (topic) (
+            kafka_topic_partition_in_sync_replica
+          ) < 3
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: min by (topic) (kafka_topic_partition_in_sync_replica) < 3
+        annotations:
+          summary: "Kafka topic has fewer than 3 in-sync replicas"
+          description: "Topic {{ $labels.topic }} has only {{ $value }} in-sync replica(s) for more than 5 minutes. This is a durability warning for production topics expected to run with replication factor 3, because the topic has lost one or more healthy replicas and may not safely tolerate another broker failure. If some topics intentionally use replication factor 1 or 2, exclude them from this rule to avoid noise."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkatopicinsyncreplicasbelowthree"
+
+      - alert: KafkaPartitionLeaderMissing
+        expr: |
+          kafka_topic_partition_leader < 0
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P0
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: kafka_topic_partition_leader < 0
+        annotations:
+          summary: "Kafka partition has no valid leader"
+          description: "Topic {{ $labels.topic }} partition {{ $labels.partition }} has no valid leader according to Kafka exporter. Producers and consumers for this partition may be unable to write or read until Kafka elects a leader, making this a direct availability issue for the affected partition. Check offline partition count, broker status for assigned replicas, controller logs for leader-election failures, ISR state, replica assignment, and any active reassignment or maintenance activity."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkapartitionleadermissing"
+
+      - alert: KafkaPreferredLeaderImbalance
+        expr: |
+          sum by (topic) (
+            kafka_topic_partition_leader_is_preferred == 0
+          ) > 0
+        for: 30m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (topic) (kafka_topic_partition_leader_is_preferred == 0) > 0
+        annotations:
+          summary: "Kafka topic partitions are not on preferred leaders"
+          description: "Topic {{ $labels.topic }} has {{ $value }} partition(s) whose current leader is not the preferred leader for more than 30 minutes. This is usually not an immediate outage, but it can indicate broker imbalance after restarts, failover, maintenance, or leader-election changes and may cause uneven broker CPU, network, and disk load. Check recent broker restarts, controller stability, broker load distribution, and whether preferred leader election is safe."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkapreferredleaderimbalance"
+
+  - name: kafka-exporter.consumer-lag
+    interval: 30s
+    rules:
+      - alert: KafkaConsumerGroupLagHigh
+        expr: |
+          sum by (consumergroup, topic) (
+            kafka_consumergroup_lag
+          ) > 10000
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 10000
+        annotations:
+          summary: "Kafka consumer group lag is high"
+          description: "Consumer group {{ $labels.consumergroup }} has {{ $value }} messages of lag on topic {{ $labels.topic }} for more than 10 minutes. Consumers are not keeping up with producers, so downstream processing may be delayed and systems depending on this consumer may see stale data. Check consumer pod health, restarts, logs, processing latency, rebalance activity, per-partition lag, downstream dependency latency, and recent deployments."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergrouplaghigh"
+
+      - alert: KafkaConsumerGroupLagCritical
+        expr: |
+          sum by (consumergroup, topic) (
+            kafka_consumergroup_lag
+          ) > 50000
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (consumergroup, topic) (kafka_consumergroup_lag) > 50000
+        annotations:
+          summary: "Kafka consumer group lag is critical"
+          description: "Consumer group {{ $labels.consumergroup }} has {{ $value }} messages of lag on topic {{ $labels.topic }} for more than 10 minutes. This consumer group is significantly behind and may delay event processing, reporting, notifications, materialized views, ETL, or other downstream workflows. Check whether consumer replicas are running, whether lag is isolated to specific partitions, consumer processing errors, downstream saturation, and whether scaling consumers is safe for the topic partition count and downstream capacity."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergrouplagcritical"
+
+      - alert: KafkaConsumerGroupTotalLagHigh
+        expr: |
+          sum by (consumergroup) (
+            kafka_consumergroup_lag
+          ) > 10000
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (consumergroup) (kafka_consumergroup_lag) > 10000
+        annotations:
+          summary: "Kafka consumer group total lag is high"
+          description: "Consumer group {{ $labels.consumergroup }} has total lag of {{ $value }} messages across its subscribed topics for more than 5 minutes. This means the group as a whole is falling behind, even if lag may be distributed across multiple topics or partitions. Check consumer pod health, processing latency, rebalance activity, per-topic and per-partition lag, downstream dependency latency, and recent deployments."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergrouptotallaghigh"
+
+      - alert: KafkaConsumerGroupLagIncreasingFast
+        expr: |
+          sum by (consumergroup, topic) (
+            increase(kafka_consumergroup_lag[15m])
+          ) > 10000
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: sum by (consumergroup, topic) (increase(kafka_consumergroup_lag[15m])) > 10000
+        annotations:
+          summary: "Kafka consumer lag is increasing quickly"
+          description: "Consumer group {{ $labels.consumergroup }} on topic {{ $labels.topic }} accumulated an additional {{ $value }} messages of lag over the last 15 minutes. The consumer is falling behind faster than it can recover, often due to increased producer traffic, reduced consumer throughput, consumer deployment regression, downstream latency, rebalance activity, or stuck partitions. Compare producer ingress rate with consumer processing rate and check recent deployments, processing duration, errors, and per-partition lag."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergrouplagincreasingfast"
+
+      - alert: KafkaConsumerGroupNoMembersWithLag
+        expr: |
+          (
+            sum by (consumergroup) (
+              kafka_consumergroup_members
+            ) == 0
+          )
+          and on (consumergroup)
+          (
+            sum by (consumergroup) (
+              kafka_consumergroup_lag
+            ) > 0
+          )
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: (sum by (consumergroup) (kafka_consumergroup_members) == 0) and on (consumergroup) (sum by (consumergroup) (kafka_consumergroup_lag) > 0)
+        annotations:
+          summary: "Kafka consumer group has lag but no active members"
+          description: "Consumer group {{ $labels.consumergroup }} has no active members while it still has pending lag for more than 5 minutes. No active consumer is processing messages for this group, so lag will not drain until the consumer application rejoins the group or another consumer takes over. Check whether the owning deployment is scaled to zero, crashlooping, unable to authenticate, unable to connect to Kafka, failing during startup, or intentionally retired."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkaconsumergroupnomemberswithlag"
+
+  - name: kafka-exporter.topic-traffic
+    interval: 30s
+    rules:
+      - alert: KafkaTopicOffsetDecreased
+        expr: |
+          delta(kafka_topic_partition_current_offset[10m]) < 0
+        for: 1m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: symptom
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: delta(kafka_topic_partition_current_offset[10m]) < 0
+        annotations:
+          summary: "Kafka topic partition offset decreased"
+          description: "Topic {{ $labels.topic }} partition {{ $labels.partition }} reported a lower current offset than before. Kafka offsets should normally increase monotonically, so this can indicate topic recreation, partition deletion or recreation, offset reset, exporter inconsistency, stale scrape data, or unexpected metadata changes. Check recent topic operations, partition changes, exporter restarts, and whether retention or administrative actions explain the offset movement."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkatopicoffsetdecreased"
+
+#      - alert: KafkaTopicNoMessages
+#        expr: |
+#          sum by (topic) (
+#            increase(kafka_topic_partition_current_offset{
+#              topic!~".*dlq.*|.*DLQ.*|.*retry.*|.*Retry.*|.*test.*|.*Test.*|.*audit.*|.*dead-letter.*"
+#            }[30m])
+#          ) == 0
+#        for: 30m
+#        labels:
+#          sourceType: metric
+#          severity: warning
+#          priority: P2
+#          tech_stack: kafka
+#          signal: symptom
+#          category: messaging
+#          runbook: runbooks/messaging/kafka.yaml
+#          query: sum by (topic) (increase(kafka_topic_partition_current_offset{topic!~".*dlq.*|.*DLQ.*|.*retry.*|.*Retry.*|.*test.*|.*Test.*|.*audit.*|.*dead-letter.*"}[30m])) == 0
+#        annotations:
+#          summary: "Kafka topic has no new messages"
+#          description: "Topic {{ $labels.topic }} has had no partition offset increase for at least 30 minutes. If this topic should receive continuous traffic, upstream producers may be stopped, misconfigured, failing, or routing messages elsewhere; if it is a low-volume, DLQ, retry, audit, test, scheduled, or batch topic, this may be expected and should be filtered. Check producer application health, recent producer deployments, topic routing, and expected traffic patterns."
+#          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkatopicnomessages"
+
+  - name: kafka-exporter.metadata
+    interval: 30s
+    rules:
+      - alert: KafkaBrokerCountChanged
+        expr: |
+          changes(kafka_brokers[15m]) > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: kafka
+          signal: cause
+          category: messaging
+          runbook: runbooks/messaging/kafka.yaml
+          query: changes(kafka_brokers[15m]) > 0
+        annotations:
+          summary: "Kafka broker count changed"
+          description: "Kafka exporter observed a broker count change within the last 15 minutes. This may be expected during planned maintenance, autoscaling, broker replacement, or rolling restarts, but if unplanned it can indicate broker failure, network isolation, failed broker registration, controller instability, or exporter connectivity problems. Confirm whether maintenance or scaling was planned, then check broker pod or node readiness, controller logs, and exporter connectivity to all configured brokers."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkabrokercountchanged"
