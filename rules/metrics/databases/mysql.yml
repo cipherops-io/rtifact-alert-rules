@@ -150,8 +150,7 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/mysql.md
-          query: mysql_global_status_innodb_buffer_pool_bytes_data / mysql_global_variables_innodb_buffer_pool_size > 
-            0.90
+          query: mysql_global_status_innodb_buffer_pool_bytes_data / mysql_global_variables_innodb_buffer_pool_size > 0.90
         annotations:
           summary: "MySQL InnoDB buffer pool is nearly full"
           description: "MySQL InnoDB buffer pool utilization is {{ $value | humanizePercentage }} on {{ $labels.instance }}.
