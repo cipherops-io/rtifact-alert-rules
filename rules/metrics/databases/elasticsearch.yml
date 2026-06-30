@@ -76,8 +76,7 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 
-            0.85
+          query: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
         annotations:
           summary: "Elasticsearch JVM heap usage is high"
           description: "Elasticsearch JVM heap usage is {{ $value | humanizePercentage }} on {{ $labels.node }}."
