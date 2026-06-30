@@ -20,7 +20,14 @@ groups:
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisdown"
 
       - alert: RedisMissingMaster
-        expr: (count(redis_instance_info{role="master"}) or vector(0)) < 1
+        expr: |
+          count by (rtf_env, rtf_cluster_id, rtf_service) (
+            redis_up == 1
+          )
+          unless
+          count by (rtf_env, rtf_cluster_id, rtf_service) (
+            redis_instance_info{role="master"}
+          )
         for: 1m
         labels:
           sourceType: metric
@@ -30,14 +37,17 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/redis.yaml
-          query: (count(redis_instance_info{role="master"}) or vector(0)) < 1
+          query: count by (rtf_env, rtf_cluster_id, rtf_service) (redis_up == 1) unless count by (rtf_env, rtf_cluster_id, rtf_service) (redis_instance_info{role="master"})
         annotations:
           summary: "Redis master is missing"
-          description: "No Redis instance is currently reported with role=master. Write traffic may be unavailable, replicas may be unable to accept promotion safely, and clients that depend on a writable primary may fail or return stale data. This can indicate failed Sentinel/cluster failover, broken replication topology, exporter visibility issues, or a primary node outage."
+          description: "No Redis instance is currently reported with role=master for Redis service {{ $labels.rtf_service }} in env {{ $labels.rtf_env }} and cluster {{ $labels.rtf_cluster_id }}. Write traffic may be unavailable, replicas may be unable to accept promotion safely, and clients that depend on a writable primary may fail or return stale data. This can indicate failed Sentinel/cluster failover, broken replication topology, exporter visibility issues, or a primary node outage."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redismissingmaster"
 
       - alert: RedisTooManyMasters
-        expr: count(redis_instance_info{role="master"}) > 1
+        expr: |
+          count by (rtf_env, rtf_cluster_id, rtf_service) (
+            redis_instance_info{role="master"}
+          ) > 1
         for: 1m
         labels:
           sourceType: metric
@@ -47,10 +57,10 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/redis.yaml
-          query: count(redis_instance_info{role="master"}) > 1
+          query: count by (rtf_env, rtf_cluster_id, rtf_service) (redis_instance_info{role="master"}) > 1
         annotations:
           summary: "Redis has too many masters"
-          description: "More than one Redis instance is reported with role=master. This can indicate split-brain, failed failover cleanup, incorrect replication configuration, or clients writing to different primaries. The impact can be severe data divergence, lost writes after topology repair, inconsistent reads, or corruption of lock/session/queue semantics."
+          description: "More than one Redis instance is reported with role=master for Redis service {{ $labels.rtf_service }} in env {{ $labels.rtf_env }} and cluster {{ $labels.rtf_cluster_id }}. This can indicate split-brain, failed failover cleanup, incorrect replication configuration, or clients writing to different primaries. The impact can be severe data divergence, lost writes after topology repair, inconsistent reads, or corruption of lock/session/queue semantics."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redistoomanymasters"
 
       - alert: RedisReplicationBroken
