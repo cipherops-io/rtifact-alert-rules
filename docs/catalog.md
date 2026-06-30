@@ -130,21 +130,26 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `RedisDown` | critical | P1 | 1m | symptom | `redis_up == 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisHighMemoryUsage` | warning | P2 | 5m | cause | `redis_memory_used_bytes / redis_memory_max_bytes > 0.80` | [redis.md](runbooks/databases/redis.md) |
-| `RedisMemoryFragmentationHigh` | warning | P3 | 10m | cause | `redis_mem_fragmentation_ratio > 1.5` | [redis.md](runbooks/databases/redis.md) |
-| `RedisEvictedKeysHigh` | warning | P2 | 5m | cause | `rate(redis_evicted_keys_total[5m]) > 100` | [redis.md](runbooks/databases/redis.md) |
-| `RedisKeyspaceHitRatioLow` | warning | P2 | 10m | cause | `rate(redis_keyspace_hits_total[5m]) / (rate(redis_keyspace_hits_total[5m]) + ra…` | [redis.md](runbooks/databases/redis.md) |
-| `RedisConnectedClientsHigh` | warning | P2 | 5m | cause | `redis_connected_clients / redis_config_maxclients > 0.80` | [redis.md](runbooks/databases/redis.md) |
-| `RedisBlockedClientsHigh` | warning | P2 | 5m | symptom | `redis_blocked_clients > 10` | [redis.md](runbooks/databases/redis.md) |
-| `RedisMasterLinkDown` | critical | P1 | 1m | symptom | `redis_master_link_up == 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisReplicationOffsetHigh` | warning | P2 | 5m | cause | `redis_master_repl_offset - redis_slave_repl_offset > 10485760` | [redis.md](runbooks/databases/redis.md) |
-| `RedisSlowLogGrowing` | warning | P3 | 5m | cause | `rate(redis_slowlog_length[5m]) > 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisRDBSaveError` | warning | P2 | 5m | cause | `redis_rdb_last_bgsave_status == 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisAOFRewriteRunningLong` | warning | P3 | 10m | cause | `redis_aof_rewrite_in_progress == 1` | [redis.md](runbooks/databases/redis.md) |
-| `RedisClusterNodeDown` | critical | P1 | 2m | symptom | `redis_cluster_nodes_total - redis_cluster_nodes_ok > 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisClusterSlotsImporting` | warning | P2 | 10m | cause | `redis_cluster_slots_importing > 0` | [redis.md](runbooks/databases/redis.md) |
-| `RedisCPUSaturation` | warning | P2 | 5m | cause | `rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) …` | [redis.md](runbooks/databases/redis.md) |
+| `RedisDown` | critical | P1 | 1m | symptom | `redis_up == 0` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisMissingMaster` | critical | P1 | 1m | symptom | `(count(redis_instance_info{role="master"}) or vector(0)) < 1` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisTooManyMasters` | critical | P1 | 1m | symptom | `count(redis_instance_info{role="master"}) > 1` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisReplicationBroken` | critical | P1 | 1m | symptom | `delta(redis_connected_slaves[1m]) < 0` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisClusterFlapping` | critical | P1 | 2m | symptom | `changes(redis_connected_slaves[2m]) > 2` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisMissingBackup` | critical | P1 | 5m | cause | `time() - redis_rdb_last_save_timestamp_seconds > 60 * 60 * 48` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisHighMemoryUsage` | warning | P2 | 5m | cause | `redis_memory_max_bytes > 0 and redis_memory_used_bytes / redis_memory_max_bytes…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisOutOfConfiguredMaxmemory` | critical | P1 | 2m | cause | `redis_memory_max_bytes > 0 and redis_memory_used_bytes / redis_memory_max_bytes…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisMemoryFragmentationHigh` | warning | P3 | 10m | cause | `redis_mem_fragmentation_ratio > 1.5` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisEvictedKeysHigh` | warning | P2 | 5m | cause | `rate(redis_evicted_keys_total[5m]) > 100` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisKeyspaceHitRatioLow` | warning | P2 | 10m | cause | `( rate(redis_keyspace_hits_total[5m]) / ( rate(redis_keyspace_hits_total[5m]) +…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisTooManyConnections` | warning | P2 | 2m | cause | `redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclien…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisConnectedClientsHigh` | warning | P2 | 5m | cause | `redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclien…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisNotEnoughConnections` | warning | P3 | 5m | symptom | `redis_connected_clients < 5` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisRejectedConnections` | warning | P2 | 1m | symptom | `increase(redis_rejected_connections_total[1m]) > 5` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisBlockedClientsHigh` | warning | P2 | 5m | symptom | `redis_blocked_clients > 10` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisSlowLogGrowing` | warning | P3 | 5m | cause | `increase(redis_slowlog_last_id[5m]) > 0` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisRDBSaveError` | warning | P2 | 5m | cause | `redis_rdb_last_bgsave_status == 0` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisAOFRewriteRunningLong` | warning | P3 | 10m | cause | `redis_aof_rewrite_in_progress == 1` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisCPUSaturation` | warning | P2 | 5m | cause | `rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) …` | [redis.yaml](runbooks/databases/redis.yaml) |
 
 ## gitops
 
@@ -461,4 +466,4 @@
 
 ---
 
-_296 alerts across 29 files in 8 categories._
+_301 alerts across 29 files in 8 categories._

@@ -1,0 +1,1230 @@
+tech_stack: redis
+version: "1.0"
+description: >-
+  Runbook for Redis alerts, grounded in the metrics exported by the
+  prometheus-redis-exporter (oliver006/redis_exporter). Each assessment names WHICH
+  Redis instance (by its exporter job and instance endpoint), classifies the failure
+  (memory pressure vs eviction vs fragmentation, replica loss vs flapping, slow
+  commands vs CPU saturation, connection exhaustion vs starvation) and surfaces the
+  app-side blast radius from the OBI db-client metrics — instead of generic "ping
+  Redis / read the slowlog" guidance. SCOPING: in this fleet there is ONE exporter
+  PER Redis instance, so the scrape `job` label uniquely identifies the instance
+  (e.g. redis-exporter-ai-redis, controller-redis-exporter,
+  redis-exporter-platform-redis); the alert carries it in impacted_entities, so
+  instance-scoped queries use {job="$job"} and forge skips them cleanly when the
+  alert is cluster-level (the role-count alerts carry no job — those use
+  count by (job) attribution to NAME the offending instance instead).
+  IMPORTANT METRIC-AVAILABILITY CAVEAT: two of the three instances in this fleet
+  (ai-redis, platform-redis) are backed by Dragonfly (a Redis-compatible server,
+  redis_mode=standalone, reported version 7.4) whose exporter does NOT publish a
+  number of INFO fields that the genuine Redis 6.2 instance (controller-redis) does:
+  redis_mem_fragmentation_ratio/_bytes, all redis_aof_*, redis_rdb_last_save_timestamp_seconds
+  and redis_rdb_changes_since_last_save, redis_latest_fork_seconds, redis_master_repl_offset,
+  redis_repl_backlog_*, redis_replica_resyncs_*, redis_clients_in_timeout_table and
+  redis_mem_clients_normal are ABSENT on the Dragonfly-backed instances. Where a step
+  depends on one of those, it provides a computed fallback when one exists (e.g.
+  fragmentation from redis_memory_used_rss_bytes / redis_memory_used_bytes) and
+  otherwise tells the RCA to report the value as n/a for that instance rather than
+  invent it. Also note redis_rejected_connections_total reads a constant -1 on the
+  Dragonfly instances (an exporter sentinel for "unavailable") — never report -1 as a
+  real rejected-connection count.
+
+match_keywords:
+  - redis
+  - dragonfly
+  - redis exporter
+  - redis instance
+  - redis memory
+  - maxmemory
+  - keyspace
+  - eviction
+  - replication
+  - slowlog
+  - redis cluster
+  - cache
+
+categories:
+  - DATA
+  - DATABASE
+  - CACHE
+
+common_alerts:
+  # ============================================================ AVAILABILITY
+  - name: "RedisDown"
+    patterns:
+      [
+        "RedisDown",
+        "redis instance is down",
+        "redis unreachable",
+        "redis_up == 0",
+        "exporter cannot reach redis",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the instance is actually down vs the exporter being blind, and for how long"
+        description: >-
+          RedisDown fires on redis_up == 0 — the exporter could not complete its
+          INFO scrape of the Redis instance ($job). This can mean Redis is genuinely
+          down OR only that the exporter lost its connection (auth, network, or the
+          exporter pod itself). up_now is the live state on the alert's instance;
+          scrape_error is the exporter's own last-scrape error flag; up_changes_30m
+          counts how many times it toggled; seconds_since_redis_start is the age of
+          the Redis process (from redis_start_time_seconds). Interpret: up_now = 0 AND
+          scrape_error = 1 => the exporter is failing its scrape — could be Redis down
+          OR an exporter→Redis connection problem; step 2 separates them. up_now = 1
+          now => the instance has RECOVERED; say it likely self-resolved and cite the
+          value. up_changes_30m high => the instance is FLAPPING (crash-looping, OOM
+          restarts, or an unstable network path) rather than cleanly down. seconds_since_redis_start
+          small (seconds–minutes) => Redis RESTARTED recently (crash / OOM / reschedule),
+          which explains a transient down. CRITICAL: while redis_up == 0, treat every
+          other redis_* value for this instance as LAST-KNOWN, not live.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Live up state, exporter scrape-error flag, up-toggle count over 30m, and time since the Redis process started, for the alert's instance."
+            params:
+              queries:
+                - name: up_now
+                  query: 'max by (job, instance) (redis_up{job="$job"})'
+                - name: scrape_error
+                  query: 'max by (job) (redis_exporter_last_scrape_error{job="$job"}) or vector(0)'
+                - name: up_changes_30m
+                  query: 'max by (job) (changes(redis_up{job="$job"}[30m])) or vector(0)'
+                - name: seconds_since_redis_start
+                  unit: "s"
+                  query: 'time() - max by (job) (redis_start_time_seconds{job="$job"})'
+      - step: 2
+        title: "Measure the app-side blast radius (OBI) and read the exporter/Redis pod logs"
+        description: >-
+          The OBI db-client metrics show whether applications can still reach this
+          Redis. redis_client_ops_per_service is the per-service Redis operation rate
+          (db.system.name="redis"); redis_client_p95_ms is client-observed p95 latency.
+          The alert's instance maps to an OBI server.address by its short name (strip
+          the "redis-exporter-"/"-exporter" affixes from $job — e.g. redis-exporter-ai-redis
+          → ai-redis → server.address "ai-redis.dragonfly"); focus on the matching
+          server.address. Interpret: ops rate to this Redis dropped toward zero =>
+          clients can no longer use it — a real outage with user impact; name the top
+          affected services. p95 spiking just before the drop => Redis became slow then
+          unreachable. Other instances' OBI traffic healthy => the outage is isolated to
+          this instance. Then read logs: connection-refused / dial / timeout / auth from
+          the exporter (exporter→Redis path) vs OOM / crash / restart on the Redis pod
+          (real outage). Honest gap: redis_exporter cannot see the Redis process's own
+          crash reason — if logs only show scrape/connection errors, say the pod-level
+          cause needs the Redis/Dragonfly pod's events and stop short of guessing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "OBI per-service Redis operation rate and client p95 latency (names the affected applications and the server.address they target)."
+            params:
+              queries:
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                - name: redis_client_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+          - tool_id: "tool.read_logs"
+            description: "Redis-exporter / Redis pod logs filtered for connection-refused / dial / timeout / auth / OOM / crash / restart signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — restarting Redis can lose un-persisted data; investigate before acting
+      - action: "investigate_redis_pod_and_exporter"
+        description: "Primary path: inspect the Redis/Dragonfly pod (kubectl describe / events / restarts / OOM) and, separately, the exporter pod. If only the exporter is failing while OBI shows clients still using Redis, this is a visibility gap — fix the exporter's scrape/connection, not Redis. If Redis itself is down/crash-looping, address that cause (OOM => raise memory; crash => logs/PVC)."
+        tool_id: ""
+        requires_approval: true
+      - action: "verify_failover_or_recovery"
+        description: "If this instance has replicas (see the replication alerts) and is a primary that is genuinely gone, confirm whether a replica should be promoted / failover should occur. For a disposable cache instance, recovery (restart) may be sufficient; for a persistence-backed instance, confirm the latest RDB/AOF before any restart that could discard memory state."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team + the Redis/Dragonfly platform owner. Escalate immediately if OBI shows the instance's clients are failing (real outage) and the instance is a primary serving writes; lower urgency if only the exporter is blind while traffic flows."
+    follow_up:
+      - "After recovery confirm redis_up returns to 1 and the affected services' Redis op rate / p95 return to baseline."
+      - "If redis_up flapped, chase the restart cause (OOM, liveness probe, node pressure) on the Redis pod rather than treating each blip independently."
+
+  # ============================================================ REPLICATION TOPOLOGY
+  - name: "RedisMissingMaster"
+    patterns:
+      [
+        "RedisMissingMaster",
+        "RedisTooManyMasters",
+        "redis master is missing",
+        "redis has too many masters",
+        "no instance with role master",
+        "split-brain",
+        "multiple primaries",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Count masters PER instance — the firing rule counts cluster-wide and is ambiguous in a multi-instance fleet"
+        description: >-
+          RedisMissingMaster fires on count(redis_instance_info{role="master"}) < 1 and
+          RedisTooManyMasters on count(...) > 1 — both aggregate across the WHOLE VM with
+          no per-instance label, so they carry no $job. CRITICAL framing: this fleet runs
+          several INDEPENDENT standalone Redis instances (each its own exporter job), so a
+          cluster-wide master count > 1 is EXPECTED and is NOT split-brain — every healthy
+          standalone instance reports role=master. The meaningful question is per instance:
+          does any single Redis have zero masters (lost its primary) or, within one
+          replicated group, more than one master (true split-brain)? masters_per_job breaks
+          the count down by job (names each instance and its master count); total_masters /
+          total_instances give the cluster picture; replicas_per_job shows which instances
+          have attached replicas. Interpret: every job shows exactly 1 master => topology is
+          healthy; a cluster-wide >1 is just the sum of independent standalones — report NOT
+          an incident. A job with 0 masters (appears in instance list but not in masters_per_job)
+          => THAT instance lost its primary role (failover/promotion problem) — name it. A
+          single job reporting >1 master is only possible within a replicated group => genuine
+          split-brain on that group. ALWAYS name the specific job(s), never just the aggregate.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Master count broken down by instance (job), total masters and instances cluster-wide, and replicas attached per instance — to tell independent-standalones from a real per-group anomaly."
+            params:
+              queries:
+                - name: masters_per_job
+                  query: 'count by (job) (redis_instance_info{role="master"})'
+                - name: total_masters
+                  query: 'count(redis_instance_info{role="master"}) or vector(0)'
+                - name: total_instances
+                  query: 'count(redis_instance_info) or vector(0)'
+                - name: replicas_per_job
+                  query: 'max by (job) (redis_connected_slaves)'
+      - step: 2
+        title: "Establish each instance's role and whether a role recently changed"
+        description: >-
+          roles_seen surfaces the role label per instance (master vs slave); role_flaps_30m
+          counts how many times any instance's instance_info series changed in 30m (a proxy
+          for a role/topology change or exporter restart). Interpret: an instance now reporting
+          role=slave that is expected to be a primary => an unintended promotion/demotion or a
+          failover that did not complete — the MissingMaster cause for that group. role_flaps_30m
+          high => the topology is unstable (repeated failover / Sentinel churn / exporter
+          restarts) rather than a single clean change. All roles steady and one-master-per-job =>
+          confirm the alert is the multi-standalone false-positive from step 1. Honest gap: this
+          exporter set does not expose Sentinel state, so WHY a failover happened (quorum, master
+          timeout) needs Sentinel/Dragonfly logs — say so.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Role label per instance and 30m change count of the instance_info series (topology-stability proxy)."
+            params:
+              queries:
+                - name: roles_seen
+                  query: 'count by (job, role) (redis_instance_info)'
+                - name: role_flaps_30m
+                  query: 'topk(5, changes(redis_instance_info[30m]))'
+          - tool_id: "tool.read_logs"
+            description: "Redis/Dragonfly + Sentinel pod logs filtered for failover / promotion / role-change / 'MASTER <-> REPLICA' signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — topology repair is risky; never force a role change without confirming the data-newest node
+      - action: "restore_or_promote_primary"
+        description: "When step 1 names an instance with 0 masters: confirm which node holds the newest data and promote it / repair the failover (Sentinel or manual REPLICAOF NO ONE on the chosen node) so writes have a primary. Confirm the data-newest node first — promoting a stale replica loses writes."
+        tool_id: ""
+        requires_approval: true
+      - action: "resolve_split_brain"
+        description: "Only for a genuine within-group >1-master (split-brain): pick the authoritative primary (newest/most-complete dataset), demote the other(s) with REPLICAOF pointing at it, and reconcile any divergent writes. High blast radius — require explicit sign-off and a data-reconciliation plan."
+        tool_id: ""
+        requires_approval: true
+      - action: "tune_alert_for_independent_instances"
+        description: "If step 1 shows the fleet is multiple independent standalones (one master per job) and the alert is a cluster-wide-count false positive: scope the rule per job (count by (job) (...)) so it can no longer fire on the benign sum of independent masters."
+        tool_id: ""
+        requires_approval: false
+    escalation: "Redis/Dragonfly platform on-call when a real group has 0 masters (writes down) or >1 master (split-brain — data divergence). If it is the multi-standalone count artefact, route to the alerting team as a rule-scoping fix, not an incident."
+    follow_up:
+      - "After repair, confirm each replicated group reports exactly one master and replicas re-attach."
+      - "Re-scope RedisMissingMaster/RedisTooManyMasters per instance group so independent standalones don't trip the cluster-wide count."
+
+  - name: "RedisReplicationBroken"
+    patterns:
+      [
+        "RedisReplicationBroken",
+        "RedisClusterFlapping",
+        "redis replication broken",
+        "lost connected replica",
+        "replica connection is flapping",
+        "replica disconnect",
+        "connected_slaves dropped",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm replica count moved on the alert's instance — a clean drop vs flapping"
+        description: >-
+          RedisReplicationBroken fires on delta(redis_connected_slaves[1m]) < 0 (the primary
+          $job lost one or more replicas); RedisClusterFlapping on changes(redis_connected_slaves[2m]) > 2
+          (the count is bouncing). Both read redis_connected_slaves on the master. connected_slaves_now
+          is the current attached-replica count; slaves_delta_5m is the recent net change;
+          slaves_changes_30m counts how many times it moved. Interpret: slaves_delta_5m < 0 and
+          slaves_changes_30m low => a clean replica LOSS (a replica went down / was removed / lost
+          its network path) — reduced redundancy; failover safety degraded. slaves_changes_30m high
+          (flapping) => a replica is repeatedly disconnecting and reconnecting (unstable network,
+          replica under resource pressure, or repeated full-resync loops) — this also loads the
+          master with re-sync work. connected_slaves_now = 0 on an instance expected to have
+          replicas => NO redundancy: a primary failure now would have no warm standby. connected_slaves_now
+          back at the expected count => already recovered; say so. Name the instance ($job) and its
+          replica count.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current connected-replica count on the alert's primary, its 5m net change, and 30m change count (loss vs flapping)."
+            params:
+              queries:
+                - name: connected_slaves_now
+                  query: 'max by (job, instance) (redis_connected_slaves{job="$job"})'
+                - name: slaves_delta_5m
+                  query: 'sum by (job) (delta(redis_connected_slaves{job="$job"}[5m]))'
+                - name: slaves_changes_30m
+                  query: 'max by (job) (changes(redis_connected_slaves{job="$job"}[30m])) or vector(0)'
+      - step: 2
+        title: "Look for a resync/backlog cause and the replication offset (where exposed)"
+        description: >-
+          A flapping or lost replica often shows up as repeated full resyncs or a stale
+          backlog. full_resyncs_30m (redis_replica_resyncs_full) and partial_resync_denied_30m
+          (redis_replica_partial_resync_denied) count re-synchronisation events; repl_backlog_active
+          is whether the master's replication backlog is live; master_repl_offset is the master's
+          replication offset. Interpret: full_resyncs_30m rising => replicas keep falling far
+          enough behind to need a FULL sync (backlog too small for the write rate, or the replica
+          keeps dropping) — expensive, loads the master, and is the classic flapping driver.
+          partial_resync_denied_30m rising => the backlog could not satisfy partial resyncs (raise
+          repl-backlog-size). repl_backlog_active = 0 with replicas expected => the backlog is not
+          retaining data for reconnecting replicas. IMPORTANT n/a caveat: redis_replica_resyncs_full,
+          redis_replica_partial_resync_denied, redis_repl_backlog_is_active and redis_master_repl_offset
+          are NOT published by the Dragonfly-backed instances (ai-redis, platform-redis) — when they
+          return empty for this $job, say replication-internals are not exposed for this instance and
+          lean on the connected_slaves trend (step 1) plus the replica pod's own health, rather than
+          reporting a missing value as zero.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Full/partial-resync activity, replication-backlog state, and master replication offset on the alert's primary (several are n/a on Dragonfly-backed instances)."
+            params:
+              queries:
+                - name: full_resyncs_30m
+                  query: 'sum by (job) (increase(redis_replica_resyncs_full{job="$job"}[30m]))'
+                - name: partial_resync_denied_30m
+                  query: 'sum by (job) (increase(redis_replica_partial_resync_denied{job="$job"}[30m]))'
+                - name: repl_backlog_active
+                  query: 'max by (job) (redis_repl_backlog_is_active{job="$job"})'
+                - name: master_repl_offset
+                  query: 'max by (job) (redis_master_repl_offset{job="$job"})'
+          - tool_id: "tool.read_logs"
+            description: "Redis/Dragonfly pod logs filtered for replica connect/disconnect, 'MASTER <-> REPLICA sync', full/partial resync, and backlog signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — fix the replica/network; never restart the primary, which drops all replicas
+      - action: "recover_disconnected_replica"
+        description: "Primary fix: identify the replica that dropped (its pod health / node IO / network path to the primary) and restore it so it re-attaches and catches up. For flapping, fix the underlying instability (replica resource pressure, network, or too-small replication backlog) rather than restarting repeatedly."
+        tool_id: ""
+        requires_approval: true
+      - action: "raise_replication_backlog"
+        description: "If step 2 shows repeated full resyncs / denied partial resyncs (where exposed): increase repl-backlog-size so a briefly-disconnected replica can partial-resync instead of doing a costly full sync that loads the master and prolongs flapping."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Redis/Dragonfly platform team. Escalate when connected_slaves reaches 0 on a primary that must stay highly available (a primary failure would now have no standby) or when flapping is loading the master enough to raise latency."
+    follow_up:
+      - "Confirm connected_slaves returns to the expected count and stops changing, and that full-resync activity (where visible) settles."
+      - "If a replica flaps repeatedly, investigate its node/network stability and right-size the replication backlog."
+
+  # ============================================================ PERSISTENCE
+  - name: "RedisMissingBackup"
+    patterns:
+      [
+        "RedisMissingBackup",
+        "RedisRDBSaveError",
+        "redis rdb backup is stale",
+        "redis rdb background save failed",
+        "no recent rdb save",
+        "persistence failing",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the persistence problem: stale save vs failed save, and how far behind"
+        description: >-
+          RedisMissingBackup fires on time() - redis_rdb_last_save_timestamp_seconds > 48h
+          (no successful RDB snapshot in 2 days); RedisRDBSaveError on redis_rdb_last_bgsave_status == 0
+          (the last background save FAILED). last_bgsave_status is 1 when the last save succeeded,
+          0 when it failed; rdb_save_age_s is how long since the last successful save;
+          changes_since_last_save is the count of dataset changes not yet persisted; bgsave_in_progress
+          flags a save running now. Interpret: last_bgsave_status = 0 => the most recent save FAILED
+          — persistence is actively broken (chase the cause in step 2). rdb_save_age_s large/growing
+          with status = 1 => saves are not being TRIGGERED often enough (save-points disabled or too
+          lax) rather than failing. changes_since_last_save large => a lot of unsaved data is at risk
+          if the instance restarts/crashes now. bgsave_in_progress = 1 for a long time => a save is
+          stuck (see step 2 fork/disk signals). CRITICAL n/a caveat: redis_rdb_last_save_timestamp_seconds
+          and redis_rdb_changes_since_last_save are NOT exposed by the Dragonfly-backed instances
+          (ai-redis, platform-redis) — so RedisMissingBackup can only fire for the genuine-Redis
+          instance (controller-redis), and on a Dragonfly instance rdb_save_age_s / changes_since_last_save
+          will be empty: report them as n/a and rely on last_bgsave_status + bgsave_in_progress (which
+          ARE published everywhere) plus the question of whether this instance is meant to persist at all.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Last background-save status, age since last successful save, unsaved-changes count, and whether a save is in progress, on the alert's instance (save-age/changes are n/a on Dragonfly-backed instances)."
+            params:
+              queries:
+                - name: last_bgsave_status
+                  query: 'min by (job, instance) (redis_rdb_last_bgsave_status{job="$job"})'
+                - name: rdb_save_age_s
+                  unit: "s"
+                  query: 'time() - max by (job) (redis_rdb_last_save_timestamp_seconds{job="$job"})'
+                - name: changes_since_last_save
+                  query: 'max by (job) (redis_rdb_changes_since_last_save{job="$job"})'
+                - name: bgsave_in_progress
+                  query: 'max by (job) (redis_rdb_bgsave_in_progress{job="$job"})'
+      - step: 2
+        title: "Find WHY the save fails/stalls — memory/fork pressure, save duration, and disk from logs"
+        description: >-
+          A background save forks the process and writes to disk, so it fails or stalls on
+          out-of-disk, fork failure under memory pressure, or slow IO. last_bgsave_duration_s is
+          how long the last save took; latest_fork_s is the most recent fork duration (a fork
+          stall blocks the main thread); used_memory_rss_bytes indicates memory pressure that
+          can make fork/copy-on-write expensive. Interpret: last_bgsave_duration_s or latest_fork_s
+          large => the save is heavy / the fork is slow (big dataset + memory pressure) — saves may
+          time out or get killed. rss high and growing => copy-on-write during save doubles memory
+          demand and risks an OOM kill mid-save. Then read logs for the smoking gun: "Background save
+          error", "Failed opening .rdb for saving", "No space left on device", "Can't save in
+          background: fork: Cannot allocate memory". n/a caveat: latest_fork_s is not exposed on the
+          Dragonfly instances — if empty, say so and lean on the log evidence. Honest gap: free-disk
+          for the data volume is not a redis_* metric — confirm it from the pod / PVC if logs point
+          at disk.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Last save duration, latest fork duration (n/a on Dragonfly), and RSS memory as a fork/COW-pressure signal, on the alert's instance."
+            params:
+              queries:
+                - name: last_bgsave_duration_s
+                  unit: "s"
+                  query: 'max by (job) (redis_rdb_last_bgsave_duration_sec{job="$job"})'
+                - name: latest_fork_s
+                  unit: "s"
+                  query: 'max by (job) (redis_latest_fork_seconds{job="$job"})'
+                - name: used_memory_rss_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+          - tool_id: "tool.read_logs"
+            description: "Redis/Dragonfly pod logs filtered for background-save / fork / 'No space left' / 'Cannot allocate memory' / rdb-write signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — persistence/disk config fix, not a k8s restart
+      - action: "fix_persistence_failure"
+        description: "When step 2 points at disk: free or expand the data volume (a full PVC is the most common RDBSaveError cause). When it points at fork/memory: ensure the node has memory headroom for copy-on-write during save (Redis can need up to ~2x dataset memory briefly), or lower memory pressure. Restore successful saves before relying on the snapshot for recovery."
+        tool_id: ""
+        requires_approval: true
+      - action: "review_save_policy_or_durability_need"
+        description: "If saves merely aren't triggered (stale but not failing) decide whether this instance is meant to persist: a pure disposable cache may legitimately have no recent RDB (tune/silence the alert); a persistence-backed instance needs its save points (or AOF) configured so the recovery point objective is met."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning data/platform team. Escalate when changes_since_last_save is large and persistence is failing (real data-loss exposure on restart) or when a full data volume threatens to also stop writes."
+    follow_up:
+      - "After the fix confirm last_bgsave_status returns to 1 and the save age resets (where the timestamp metric is exposed)."
+      - "If this instance is persistence-critical, verify the save policy / AOF and that the data volume has sustained free space."
+
+  - name: "RedisAOFRewriteRunningLong"
+    patterns:
+      [
+        "RedisAOFRewriteRunningLong",
+        "aof rewrite is running for too long",
+        "aof rewrite stuck",
+        "append only file rewrite",
+        "bgrewriteaof",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm AOF is enabled and the rewrite is genuinely long/stuck"
+        description: >-
+          Fires on redis_aof_rewrite_in_progress == 1 held for >10m — an AOF rewrite
+          (BGREWRITEAOF) that is taking unusually long. aof_enabled confirms AOF is on;
+          rewrite_in_progress is whether one is running now; current_rewrite_duration_s is
+          how long the running rewrite has been going; last_rewrite_duration_s is the previous
+          rewrite's duration (a baseline); last_bgrewrite_status is 1 if the last one succeeded;
+          rewrite_scheduled flags another rewrite queued behind this one. Interpret:
+          current_rewrite_duration_s >> last_rewrite_duration_s => this rewrite is abnormally
+          slow vs its own history — disk IO or fork pressure (step 2). rewrite_scheduled = 1 =>
+          a second rewrite is pending, so the system is falling behind on AOF maintenance.
+          last_bgrewrite_status = 0 => the previous rewrite FAILED (AOF persistence already
+          degraded). CRITICAL n/a caveat: ALL redis_aof_* metrics are published ONLY by the
+          genuine-Redis instance (controller-redis); the Dragonfly-backed instances (ai-redis,
+          platform-redis) do NOT expose them, so this alert can only originate from a Redis
+          instance with AOF enabled. If these come back empty for $job, state plainly that AOF
+          metrics are not exposed for this instance (likely AOF disabled / Dragonfly) rather than
+          reporting zeros.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "AOF enabled flag, in-progress flag, current vs last rewrite duration, last rewrite status, and whether another rewrite is scheduled (all n/a on Dragonfly-backed instances)."
+            params:
+              queries:
+                - name: aof_enabled
+                  query: 'max by (job) (redis_aof_enabled{job="$job"})'
+                - name: rewrite_in_progress
+                  query: 'max by (job) (redis_aof_rewrite_in_progress{job="$job"})'
+                - name: current_rewrite_duration_s
+                  unit: "s"
+                  query: 'max by (job) (redis_aof_current_rewrite_duration_sec{job="$job"})'
+                - name: last_rewrite_duration_s
+                  unit: "s"
+                  query: 'max by (job) (redis_aof_last_rewrite_duration_sec{job="$job"})'
+                - name: last_bgrewrite_status
+                  query: 'min by (job) (redis_aof_last_bgrewrite_status{job="$job"})'
+                - name: rewrite_scheduled
+                  query: 'max by (job) (redis_aof_rewrite_scheduled{job="$job"})'
+      - step: 2
+        title: "Attribute the slowness — fork/COW cost and disk — and read logs"
+        description: >-
+          An AOF rewrite forks and rewrites the append-only file, so a long one is usually
+          disk-IO-bound or fork/memory-pressured. latest_fork_s is the most recent fork
+          duration; last_cow_size_bytes is the copy-on-write memory the last rewrite touched;
+          used_memory_rss_bytes shows memory pressure. Interpret: latest_fork_s large => the
+          fork itself stalls the main thread (memory pressure makes fork expensive) and adds
+          latency. last_cow_size_bytes / rss high => heavy write activity during the rewrite is
+          dirtying many pages (more COW work, slower rewrite). Then read logs for "Background AOF
+          rewrite", "Asynchronous AOF fsync is taking too long", disk-slow or fork errors.
+          Honest gap: disk throughput/free space for the AOF volume is not a redis_* metric —
+          confirm from the pod/PVC if logs implicate disk.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Latest fork duration, last rewrite copy-on-write size, and RSS memory on the alert's instance (fork/COW pressure signals; n/a on Dragonfly-backed instances)."
+            params:
+              queries:
+                - name: latest_fork_s
+                  unit: "s"
+                  query: 'max by (job) (redis_latest_fork_seconds{job="$job"})'
+                - name: last_cow_size_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_aof_last_cow_size_bytes{job="$job"})'
+                - name: used_memory_rss_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+          - tool_id: "tool.read_logs"
+            description: "Redis pod logs filtered for AOF rewrite / fsync-slow / fork / disk signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "relieve_aof_rewrite_pressure"
+        description: "When step 2 shows disk or fork/memory pressure: ensure the AOF volume has fast-enough IO and free space, and that the node has memory headroom for the rewrite fork's copy-on-write. A persistently long rewrite on a large dataset may warrant tuning auto-aof-rewrite-percentage / min-size so rewrites are less frequent but not chronically overlapping."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning data/platform team, low urgency unless the long rewrite is also raising command latency or the previous rewrite failed (AOF durability degraded)."
+    follow_up:
+      - "Confirm rewrite_in_progress returns to 0 and last_bgrewrite_status is 1 after it completes."
+      - "If rewrites chronically overlap, review the AOF rewrite thresholds and the volume's IO capacity."
+
+  # ============================================================ MEMORY
+  - name: "RedisHighMemoryUsage"
+    patterns:
+      [
+        "RedisHighMemoryUsage",
+        "RedisOutOfConfiguredMaxmemory",
+        "RedisEvictedKeysHigh",
+        "redis memory usage is high",
+        "close to configured maxmemory",
+        "evicting keys",
+        "maxmemory",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm memory pressure against maxmemory and whether eviction has started"
+        description: >-
+          This entry serves three related alerts on the alert's instance ($job):
+          RedisHighMemoryUsage (used/maxmemory > 0.80, Warning), RedisOutOfConfiguredMaxmemory
+          (> 0.90, Critical — weight impact higher and treat eviction/OOM as imminent), and
+          RedisEvictedKeysHigh (evicting > 100 keys/s). mem_usage_pct is used vs configured
+          maxmemory (guarded with maxmemory > 0, so it is empty when no limit is set);
+          used_bytes / maxmemory_bytes are the raw values; evicted_rate is the current eviction
+          rate. Interpret: mem_usage_pct >= 90 => at/над the configured ceiling — depending on
+          maxmemory-policy Redis will EVICT or REJECT writes; user-facing risk. 80–90 => pressure
+          building, less headroom for spikes/large keys/replication buffers. evicted_rate > 0 =>
+          Redis is ALREADY freeing memory by evicting keys (cache entries / sessions / locks /
+          rate-limit counters disappearing early). maxmemory empty / mem_usage_pct n/a => NO
+          maxmemory is configured on this instance (the genuine controller-redis reports
+          maxmemory = 0) — then memory is bounded only by the pod/node, so percent-of-maxmemory is
+          undefined: say so and pivot to absolute used_bytes vs the container limit instead of
+          claiming a maxmemory breach.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Memory usage percent of maxmemory (guarded), raw used and max bytes, and current eviction rate, on the alert's instance."
+            params:
+              queries:
+                - name: mem_usage_pct
+                  unit: "%"
+                  query: '100 * sum by (job) (redis_memory_used_bytes{job="$job"}) / sum by (job) (redis_config_maxmemory{job="$job"} > 0)'
+                - name: used_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_bytes{job="$job"})'
+                - name: maxmemory_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_config_maxmemory{job="$job"})'
+                - name: evicted_rate
+                  unit: "keys/s"
+                  query: 'sum by (job) (rate(redis_evicted_keys_total{job="$job"}[5m]))'
+      - step: 2
+        title: "Classify WHAT is consuming memory and whether the dataset is growing"
+        description: >-
+          The fix depends on whether memory is dataset growth, overhead, or churn. dataset_bytes
+          is the data itself; overhead_bytes is replication/clients/buffers overhead; total_keys is
+          the key count across DBs; keys_growth_30m is the recent key-count trend; expired_rate is
+          how fast TTL'd keys expire. Interpret: dataset_bytes dominates and keys_growth_30m > 0 =>
+          genuine DATA GROWTH (more/larger keys) — the working set is outgrowing maxmemory; raise
+          the limit, shard, or shed data. overhead_bytes large relative to dataset => replication
+          buffers / client output buffers / Lua are the driver (a slow replica or a big client
+          buffer), not the data. evicted_rate high with expired_rate low => eviction (not natural
+          expiry) is doing the freeing — the working set genuinely exceeds maxmemory. keys_growth_30m
+          flat while usage high => steady-state near the ceiling, sensitive to any spike. Use
+          total_keys / dataset to name the magnitude. (db_keys is per-DB; summed here.) n/a caveat:
+          redis_memory_used_dataset_bytes and redis_memory_used_overhead_bytes are exposed only by the
+          genuine-Redis instance (controller-redis); on the Dragonfly-backed instances they return
+          empty — when dataset_bytes/overhead_bytes are n/a for $job, say so and lean on used_bytes,
+          total_keys and keys_growth_30m to characterise the growth instead of inventing a split.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Dataset vs overhead memory, total key count and its 30m trend, and the expiry rate, on the alert's instance."
+            params:
+              queries:
+                - name: dataset_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_dataset_bytes{job="$job"})'
+                - name: overhead_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_overhead_bytes{job="$job"})'
+                - name: total_keys
+                  query: 'sum by (job) (redis_db_keys{job="$job"})'
+                - name: keys_growth_30m
+                  query: 'sum by (job) (delta(redis_db_keys{job="$job"}[30m]))'
+                - name: expired_rate
+                  unit: "keys/s"
+                  query: 'sum by (job) (rate(redis_expired_keys_total{job="$job"}[5m]))'
+      - step: 3
+        title: "Measure the app-side impact and whether evictions are causing cache misses"
+        description: >-
+          Tie memory pressure to user impact. miss_ratio_pct is the keyspace miss ratio (rising
+          misses after eviction means evicted keys are being re-requested); redis_client_p95_ms is
+          OBI client latency for redis users; redis_client_ops_per_service names the heaviest
+          callers. Interpret: miss_ratio_pct climbing alongside evicted_rate => evicted keys are
+          immediately re-requested (a too-small cache for the working set) — backends take the extra
+          load. client p95 rising => memory-pressure work (eviction, near-OOM) is slowing commands.
+          Map the alert's instance to its server.address (e.g. platform-redis →
+          platform-redis.dragonfly) to focus the OBI rows. If maxmemory-policy is noeviction, the
+          symptom is write REJECTION not eviction — look for command errors instead of evicted_rate.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Keyspace miss ratio and OBI client p95 / per-service op rate to gauge whether memory pressure is causing misses and latency."
+            params:
+              queries:
+                - name: miss_ratio_pct
+                  unit: "%"
+                  query: '100 * sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])))'
+                - name: redis_client_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+    remediation: # suggestion-only — capacity / policy / app-side; raising maxmemory needs node headroom
+      - action: "raise_maxmemory_or_scale"
+        description: "When step 2 shows genuine dataset growth and the working set legitimately exceeds maxmemory: raise maxmemory (only if the pod/node has RAM headroom — each byte of data plus overhead must fit), or shard/scale Redis. Raising the limit without headroom just moves the failure to a pod OOM kill."
+        tool_id: ""
+        requires_approval: true
+      - action: "tune_eviction_policy_and_ttls"
+        description: "When eviction is the symptom and the cache is meant to be bounded: set an appropriate maxmemory-policy (allkeys-lru/lfu is the most forgiving for a cache) and add/right-size TTLs so cold data expires before eviction churns hot data. For noeviction instances that are rejecting writes, this is the way to restore writes."
+        tool_id: ""
+        requires_approval: true
+      - action: "shed_large_keys_or_overhead"
+        description: "When step 2 shows a few large keys or high non-dataset overhead (slow replica buffers, big client output buffers): audit with redis-cli --bigkeys / MEMORY STATS, fix the offending keys or the slow consumer, and cap client output buffer limits. Targets the real consumer rather than blanket-raising memory."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for app-driven growth; Redis/Dragonfly platform team when at >90% with eviction/rejection (user-facing) or when raising the limit needs a node/pod resize."
+    follow_up:
+      - "After remediation confirm mem_usage_pct drops below threshold and evicted_rate returns to ~0."
+      - "If growth is organic, add a capacity plan / autoscaling and a maxmemory-policy that protects hot keys."
+
+  - name: "RedisMemoryFragmentationHigh"
+    patterns:
+      [
+        "RedisMemoryFragmentationHigh",
+        "memory fragmentation is high",
+        "fragmentation ratio",
+        "rss much larger than used",
+        "MEMORY PURGE",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm fragmentation — native ratio where exposed, else the RSS/used fallback"
+        description: >-
+          Fires on redis_mem_fragmentation_ratio > 1.5 — the process holds much more RSS than the
+          logical dataset, so real (node/pod) memory pressure can be high even when used_memory
+          looks fine. frag_ratio_native is the exporter's ratio; frag_ratio_fallback computes
+          RSS/used directly (works on every instance, including the Dragonfly-backed ones that do
+          NOT publish the native ratio); rss_minus_used_bytes is the absolute waste. Interpret:
+          frag_ratio (native or fallback) >> 1 (e.g. > 1.5) with a meaningful rss_minus_used_bytes
+          => genuine fragmentation — the allocator is holding freed pages the OS hasn't reclaimed,
+          inflating RSS. A high ratio with a TINY rss_minus_used_bytes (small dataset) => ratio
+          noise, not a real problem — don't over-escalate. CRITICAL n/a caveat: redis_mem_fragmentation_ratio
+          and redis_mem_fragmentation_bytes are NOT published by the Dragonfly-backed instances
+          (ai-redis, platform-redis) — so the firing alert (which keys on the native ratio) can only
+          come from controller-redis, but the RSS/used fallback lets the RCA still quantify
+          fragmentation for any instance; lead with the fallback when the native ratio is empty and
+          say which you used.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Native fragmentation ratio (n/a on Dragonfly), the RSS/used fallback ratio (works everywhere), and the absolute RSS-minus-used waste, on the alert's instance."
+            params:
+              queries:
+                - name: frag_ratio_native
+                  query: 'max by (job) (redis_mem_fragmentation_ratio{job="$job"})'
+                - name: frag_ratio_fallback
+                  query: 'sum by (job) (redis_memory_used_rss_bytes{job="$job"}) / sum by (job) (redis_memory_used_bytes{job="$job"})'
+                - name: rss_minus_used_bytes
+                  unit: "B"
+                  query: 'sum by (job) (redis_memory_used_rss_bytes{job="$job"}) - sum by (job) (redis_memory_used_bytes{job="$job"})'
+      - step: 2
+        title: "Judge node-OOM risk and whether defrag is already running"
+        description: >-
+          Fragmentation matters mostly because RSS is what the container/node accounts — high RSS can
+          trip a pod OOM kill even when Redis used_memory is modest. used_rss_bytes is the process RSS;
+          active_defrag_running flags Redis's online defragmenter; allocator_frag_ratio is the
+          allocator-level view. Interpret: used_rss_bytes near the pod memory limit => real OOM-kill
+          risk — act. active_defrag_running = 1 => Redis is already trying to defragment online (it may
+          self-recover; watch the ratio trend). allocator_frag_ratio high => jemalloc-level
+          fragmentation (typical after large key churn / mass eviction). n/a caveat: active_defrag_running
+          and allocator_frag_ratio are not exposed on the Dragonfly instances — if empty, rely on the
+          RSS value and the fallback ratio. Honest gap: the pod memory limit is not a redis_* metric —
+          compare used_rss_bytes to the container limit from the workload spec.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Process RSS, online-defrag state, and allocator fragmentation ratio on the alert's instance (defrag/allocator are n/a on Dragonfly-backed instances)."
+            params:
+              queries:
+                - name: used_rss_bytes
+                  unit: "B"
+                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+                - name: active_defrag_running
+                  query: 'max by (job) (redis_active_defrag_running{job="$job"})'
+                - name: allocator_frag_ratio
+                  query: 'max by (job) (redis_allocator_frag_ratio{job="$job"})'
+    remediation: # suggestion-only
+      - action: "reclaim_fragmented_memory"
+        description: "When step 1/2 confirm real fragmentation with OOM risk: run MEMORY PURGE to ask jemalloc to release freed pages, and/or enable active defragmentation (activedefrag yes). If fragmentation persists and RSS threatens the pod limit, schedule a controlled restart during a low-traffic window (after confirming persistence/replica state) to reset RSS."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Redis/Dragonfly platform team, low urgency unless RSS is approaching the pod memory limit (imminent OOM kill), in which case treat as a memory incident."
+    follow_up:
+      - "After purge/defrag/restart confirm the fragmentation ratio and RSS drop."
+      - "If fragmentation recurs after mass eviction/churn, review the eviction policy and key-size distribution that drive it."
+
+  # ============================================================ CACHE EFFICIENCY
+  - name: "RedisKeyspaceHitRatioLow"
+    patterns:
+      [
+        "RedisKeyspaceHitRatioLow",
+        "keyspace hit ratio is low",
+        "cache hit ratio",
+        "high miss rate",
+        "cache misses",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the low hit ratio and that there is enough traffic for it to be meaningful"
+        description: >-
+          Fires when hits/(hits+misses) < 0.80 AND there is real traffic (the rule guards
+          hits+misses > 0). hit_ratio_pct is the ratio; lookup_rate is total key lookups/s (the
+          sample size); miss_rate is misses/s. Interpret: hit_ratio_pct < 80 with a healthy
+          lookup_rate => Redis genuinely isn't serving enough requests from memory — applications
+          fall back to the backing store more often (upstream latency/load). hit_ratio_pct low but
+          lookup_rate very LOW => the ratio is statistically noisy on a near-idle instance; weight
+          it down and say the sample is small. Name the instance ($job) and its ratio.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Keyspace hit ratio, total lookup rate (sample size), and miss rate on the alert's instance."
+            params:
+              queries:
+                - name: hit_ratio_pct
+                  unit: "%"
+                  query: '100 * sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])))'
+                - name: lookup_rate
+                  unit: "ops/s"
+                  query: 'sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m]))'
+                - name: miss_rate
+                  unit: "ops/s"
+                  query: 'sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m]))'
+      - step: 2
+        title: "Explain WHY misses are high — eviction churn, TTL expiry, or a cold/changed working set"
+        description: >-
+          evicted_rate, expired_rate, total_keys and keys_growth_30m separate the causes. Interpret:
+          miss ratio rising WITH evicted_rate > 0 => memory pressure is EVICTING keys that are then
+          re-requested (the cache is too small for the working set) — cross-link to the memory/eviction
+          alert; fixing memory fixes the hit ratio. miss ratio rising WITH a high expired_rate => TTLs
+          are too aggressive (keys expire before reuse) — lengthen TTLs / add cache warming. misses high
+          with LOW eviction and LOW expiry => the working set changed or is COLD: a new traffic pattern,
+          a cache flush/restart (keys_growth_30m climbing from a low base), or keys the app never
+          populated (key-name mismatch). keys_growth_30m near zero with high misses on new key patterns
+          => the app is querying keys that were never written. Use total_keys to sense whether the
+          cache was recently emptied.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Eviction rate, expiry rate, total keys and 30m key-count trend on the alert's instance (eviction-churn vs TTL vs cold-set)."
+            params:
+              queries:
+                - name: evicted_rate
+                  unit: "keys/s"
+                  query: 'sum by (job) (rate(redis_evicted_keys_total{job="$job"}[5m]))'
+                - name: expired_rate
+                  unit: "keys/s"
+                  query: 'sum by (job) (rate(redis_expired_keys_total{job="$job"}[5m]))'
+                - name: total_keys
+                  query: 'sum by (job) (redis_db_keys{job="$job"})'
+                - name: keys_growth_30m
+                  query: 'sum by (job) (delta(redis_db_keys{job="$job"}[30m]))'
+      - step: 3
+        title: "Confirm the upstream impact (OBI) — are callers paying for the misses?"
+        description: >-
+          A low hit ratio only matters if it hurts callers. redis_client_ops_per_service names the
+          services using this Redis (map the instance to its server.address); read_p95_ms is OBI
+          client p95 for read-family ops. Interpret: client read p95 rising as misses rise =>
+          applications are waiting on Redis (and, beyond it, on the backing store) — real impact.
+          Healthy p95 despite a low ratio => the misses are cheap / well-handled (e.g. negative
+          caching) — lower urgency. Name the most-affected service.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "OBI per-service op rate and read p95 for the Redis-using services (blast radius of the misses)."
+            params:
+              queries:
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                - name: read_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",db.operation.name=~"GET|MGET|HGET|HMGET|HGETALL|EXISTS|EVAL"}[5m]))) * 1000)'
+    remediation: # suggestion-only
+      - action: "fix_cache_sizing_or_ttls"
+        description: "When step 2 shows eviction churn: this is a memory-sizing problem — raise maxmemory / shard or protect hot keys (treat with the memory alert). When it shows aggressive expiry: lengthen TTLs and add cache warming so keys survive long enough to be reused."
+        tool_id: ""
+        requires_approval: true
+      - action: "investigate_cold_or_mismatched_keys"
+        description: "When eviction and expiry are low: investigate an app-side cause — a recent cache flush/restart (warm it back up), a changed key-naming scheme, or queries for keys the app never populates. Fix the access pattern rather than Redis config."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team — hit ratio is usually an application caching-strategy issue. Escalate if the misses are overloading a shared backing store (the incident is then downstream of Redis)."
+    follow_up:
+      - "Confirm hit_ratio_pct recovers above threshold after the sizing/TTL/access-pattern fix."
+      - "If a cold cache after restart caused it, consider cache pre-warming so restarts don't spike backend load."
+
+  # ============================================================ CONNECTIONS
+  - name: "RedisTooManyConnections"
+    patterns:
+      [
+        "RedisTooManyConnections",
+        "RedisConnectedClientsHigh",
+        "RedisRejectedConnections",
+        "too many connections",
+        "connected clients are high",
+        "rejecting connections",
+        "maxclients",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm connection pressure against maxclients and whether Redis is already rejecting"
+        description: >-
+          Serves three alerts on the alert's instance ($job): RedisConnectedClientsHigh
+          (connected/maxclients > 0.80, early warning), RedisTooManyConnections (> 0.90, near the
+          ceiling) and RedisRejectedConnections (increase(redis_rejected_connections_total[1m]) > 5,
+          already refusing clients). conn_usage_pct is utilisation vs maxclients (guarded);
+          connected_clients and maxclients are the raw values; rejected_5m is connections refused over
+          5m. Interpret: conn_usage_pct >= 90 => close to refusing new connections — imminent client
+          errors. rejected_5m > 0 => Redis is ALREADY rejecting connections (application connect
+          failures / retry storms happening now). CRITICAL caveats for this fleet: maxclients is very
+          large on the Dragonfly instances (150000), so the percentage rarely trips there — judge by the
+          ABSOLUTE connected_clients trend too, not just the ratio. AND redis_rejected_connections_total
+          reads a constant -1 on the Dragonfly instances (exporter sentinel for "unavailable"): its rate
+          is 0 (so RedisRejectedConnections cannot fire there), and you must NOT report "-1 rejected
+          connections" as a real value — say the metric is unavailable for this instance.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Connection utilisation vs maxclients (guarded), raw connected clients and maxclients, and rejected-connection count over 5m, on the alert's instance."
+            params:
+              queries:
+                - name: conn_usage_pct
+                  unit: "%"
+                  query: '100 * sum by (job) (redis_connected_clients{job="$job"}) / sum by (job) (redis_config_maxclients{job="$job"} > 0)'
+                - name: connected_clients
+                  query: 'max by (job, instance) (redis_connected_clients{job="$job"})'
+                - name: maxclients
+                  query: 'max by (job) (redis_config_maxclients{job="$job"})'
+                - name: rejected_5m
+                  query: 'sum by (job) (increase(redis_rejected_connections_total{job="$job"}[5m]))'
+      - step: 2
+        title: "Connection churn vs leak, and which application is opening them"
+        description: >-
+          conn_receive_rate is new connections accepted/s; blocked_clients are clients parked on
+          blocking commands; redis_client_ops_per_service / connections_by_service (OBI) name the
+          callers. Interpret: conn_receive_rate high => a connection STORM / churn (clients opening and
+          closing rapidly — missing pooling or reconnect loop) rather than a stable pool. conn_receive_rate
+          low but connected_clients high and steady => a connection LEAK (idle connections never closed).
+          One service dominating the OBI op/connection share => that app is the source — name it.
+          blocked_clients large => some of the connections are parked on blocking ops (cross-link to the
+          blocked-clients alert). Map the alert's instance to its server.address to focus the OBI rows.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "New-connection accept rate, blocked-client count, and OBI per-service Redis op rate (names the heaviest caller) on/for the alert's instance."
+            params:
+              queries:
+                - name: conn_receive_rate
+                  unit: "conn/s"
+                  query: 'sum by (job) (rate(redis_connections_received_total{job="$job"}[5m]))'
+                - name: blocked_clients
+                  query: 'max by (job) (redis_blocked_clients{job="$job"})'
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+    remediation: # suggestion-only — fix the client/pool; raising maxclients defers the problem
+      - action: "fix_client_pooling_or_leak"
+        description: "Primary fix: the cause is almost always client-side — add/right-size connection pooling, fix a connection leak (connections opened per request and never closed/reused), or cap the per-service pool so the sum cannot exhaust maxclients. Identify the offending service from step 2 and fix it rather than raising the limit."
+        tool_id: ""
+        requires_approval: true
+      - action: "raise_maxclients_if_justified"
+        description: "Only when the connection demand is legitimate (genuine fan-out across many app replicas) AND Redis has memory headroom (each client costs output-buffer memory): raise maxclients. On the Dragonfly instances maxclients is already very high, so a true ceiling breach there is unlikely — re-check the absolute count and the metric's validity first."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team (connection usage is app/pool driven). Escalate to the Redis/Dragonfly platform team when rejected_5m > 0 with real client errors (user-facing) or the instance is at the ceiling."
+    follow_up:
+      - "Confirm connected_clients / conn_usage_pct fall back to baseline and rejected connections return to 0 after the pool/leak fix."
+      - "Standardise connection pooling across services so no single deploy can exhaust maxclients."
+
+  - name: "RedisNotEnoughConnections"
+    patterns:
+      [
+        "RedisNotEnoughConnections",
+        "very few client connections",
+        "too few connections",
+        "redis traffic dropped",
+        "no clients connected",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the drop is real (not idle-by-design) and whether the instance is still up"
+        description: >-
+          Fires when redis_connected_clients < 5 for 5m — for an instance that normally serves
+          traffic this can mean applications LOST connectivity (DNS / service-discovery change,
+          network policy, auth failure, or an upstream outage); for an idle/batch/standby instance it
+          is expected. connected_clients is the current count; clients_min_30m / clients_avg_1h give
+          the recent baseline; up_now confirms Redis is reachable to the exporter. Interpret:
+          connected_clients far BELOW clients_avg_1h => a real drop from this instance's own norm —
+          investigate connectivity. connected_clients always low (avg_1h also low) => the instance is
+          normally idle; likely a false positive — say it may be expected and should be filtered.
+          up_now = 1 => Redis itself is fine, so the gap is on the CLIENT side (apps not connecting),
+          not Redis being down.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current connected clients, the 30m-min and 1h-avg baseline, and the up state, on the alert's instance."
+            params:
+              queries:
+                - name: connected_clients
+                  query: 'max by (job, instance) (redis_connected_clients{job="$job"})'
+                - name: clients_min_30m
+                  query: 'min by (job) (min_over_time(redis_connected_clients{job="$job"}[30m]))'
+                - name: clients_avg_1h
+                  query: 'avg by (job) (avg_over_time(redis_connected_clients{job="$job"}[1h]))'
+                - name: up_now
+                  query: 'max by (job) (redis_up{job="$job"})'
+      - step: 2
+        title: "Confirm app-side: did the Redis clients stop talking to this instance (OBI)?"
+        description: >-
+          The OBI db-client view confirms whether applications stopped using this Redis. redis_client_ops_per_service
+          is the per-service op rate; conn_receive_rate is how fast new connections are being accepted.
+          Interpret: OBI op rate to this instance's server.address dropped to ~0 AND conn_receive_rate ~0
+          => clients genuinely stopped connecting — chase DNS / network policy / service discovery / auth
+          for the services that normally talk to it; correlate with any recent deploy of those services.
+          OBI shows SOME activity but few persistent connections => clients may be using short-lived
+          connections (per-op connect/close) rather than a pool — connection COUNT is low but traffic
+          flows; not an outage. Honest gap: the exporter cannot say WHY clients can't reach Redis — that
+          needs the client services' logs / network policy, which is the next drill-down.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "OBI per-service Redis op rate (did callers go silent) and the new-connection accept rate, for the alert's instance."
+            params:
+              queries:
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                - name: conn_receive_rate
+                  unit: "conn/s"
+                  query: 'sum by (job) (rate(redis_connections_received_total{job="$job"}[5m]))'
+          - tool_id: "tool.read_logs"
+            description: "Redis/exporter pod logs filtered for auth / connection-reset / network signatures around the drop."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "restore_client_connectivity"
+        description: "When step 2 shows callers went silent against a normally-busy instance: investigate the client side — DNS / service endpoint, NetworkPolicy, auth/credentials, and any recent deploy of the consuming services that changed the Redis address or broke connectivity. Redis itself is usually healthy."
+        tool_id: ""
+        requires_approval: true
+      - action: "filter_alert_for_idle_instances"
+        description: "If step 1 shows the instance is normally idle/standby/batch (low avg baseline): this is an expected state — exclude this instance from the alert or raise the threshold so it doesn't page."
+        tool_id: ""
+        requires_approval: false
+    escalation: "Owning service team if a normally-busy instance lost its clients (potential upstream outage). No escalation for a known-idle/standby instance — mark expected."
+    follow_up:
+      - "Confirm connected_clients returns to the instance's normal baseline once connectivity is restored."
+      - "If the instance is legitimately idle, tune the alert so standby/batch instances don't fire."
+
+  # ============================================================ LATENCY / WORKLOAD
+  - name: "RedisBlockedClientsHigh"
+    patterns:
+      [
+        "RedisBlockedClientsHigh",
+        "many blocked clients",
+        "clients waiting on blocking",
+        "BLPOP",
+        "BRPOP",
+        "XREAD blocking",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm blocked clients and whether it is steady-state or a growing backlog"
+        description: >-
+          Fires on redis_blocked_clients > 10 — clients parked on blocking commands (BLPOP/BRPOP/
+          BLMOVE/XREAD(GROUP)/WAIT). This is OFTEN BY DESIGN (queue workers long-polling an empty
+          list/stream), so the question is whether it is normal waiting or a symptom of stuck/slow
+          processing. blocked_clients is the current count; blocked_max_30m / blocked_avg_1h give the
+          baseline; connected_clients gives the share that are blocked. Interpret: blocked_clients near
+          blocked_avg_1h => steady-state long-polling — likely expected; weight low. blocked_clients
+          well ABOVE baseline and a large share of connected_clients => consumers are not draining work
+          (a downstream slowdown so they stay blocked, or far more waiters than producers) — investigate.
+          Name the instance ($job).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current blocked clients, their 30m-max / 1h-avg baseline, and total connected clients, on the alert's instance."
+            params:
+              queries:
+                - name: blocked_clients
+                  query: 'max by (job, instance) (redis_blocked_clients{job="$job"})'
+                - name: blocked_max_30m
+                  query: 'max by (job) (max_over_time(redis_blocked_clients{job="$job"}[30m]))'
+                - name: blocked_avg_1h
+                  query: 'avg by (job) (avg_over_time(redis_blocked_clients{job="$job"}[1h]))'
+                - name: connected_clients
+                  query: 'max by (job) (redis_connected_clients{job="$job"})'
+      - step: 2
+        title: "Is Redis itself slow (server-side), and which consumer is affected (OBI)?"
+        description: >-
+          Blocked clients pile up either because there's no work (benign) or because Redis/processing is
+          slow. avg_cmd_duration_ms is mean server-side command time (rate of duration / rate of
+          processed commands); last_slow_exec_ms is the most recent slowlog entry's duration;
+          cmd_rate is throughput; redis_client_ops_per_service (OBI) names the consuming services.
+          Interpret: avg_cmd_duration_ms / last_slow_exec_ms elevated => Redis is executing commands
+          slowly (expensive commands, large keys, CPU saturation) so blocking waiters back up — cross-link
+          to the slowlog / CPU alerts. cmd_rate dropped while blocked stays high => consumers are stuck
+          (downstream dependency, poison message) rather than just idle. OBI identifies the affected
+          consumer service and its operation. Honest gap: WHICH client connections are blocked and on
+          which keys needs CLIENT LIST / the app's own view — not an exporter metric; name the likely
+          consumer from OBI and say the exact client needs CLIENT LIST.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Mean command duration, last slow-execution duration, command throughput, and OBI per-service op rate, on/for the alert's instance."
+            params:
+              queries:
+                - name: avg_cmd_duration_ms
+                  unit: "ms"
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                - name: last_slow_exec_ms
+                  unit: "ms"
+                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{job="$job"})'
+                - name: cmd_rate
+                  unit: "cmd/s"
+                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                - name: redis_client_ops_per_service
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, server.address, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+    remediation: # suggestion-only
+      - action: "address_consumer_or_downstream_slowness"
+        description: "When step 2 shows blocked clients rising with slow commands or a dropped processing rate: the consumers are stuck — investigate the downstream dependency they call after popping work, a poison message, or far too few producers for the waiters. Scale/fix the consumers or unblock the dependency."
+        tool_id: ""
+        requires_approval: true
+      - action: "confirm_blocking_is_expected"
+        description: "If step 1 shows blocked clients are near the normal baseline and commands are fast: this is expected long-polling — set the alert threshold to the workload's real baseline so normal queue waiting doesn't page."
+        tool_id: ""
+        requires_approval: false
+    escalation: "Owning consumer-service team. Escalate if blocked clients climb alongside slow commands / CPU saturation (a server-side Redis bottleneck affecting all clients)."
+    follow_up:
+      - "Confirm blocked_clients returns to baseline after the consumer/downstream fix."
+      - "If blocking is normal for this workload, set a workload-specific threshold."
+
+  - name: "RedisSlowLogGrowing"
+    patterns:
+      [
+        "RedisSlowLogGrowing",
+        "slowlog is growing",
+        "slow commands",
+        "slowlog entries",
+        "command latency",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm new slowlog entries are being added right now, and how fast"
+        description: >-
+          Fires on increase(redis_slowlog_last_id[5m]) > 0 — Redis recorded new commands that
+          exceeded the slowlog threshold. Because Redis executes commands largely single-threaded, slow
+          commands delay ALL clients. new_slowlog_entries_15m is how many new slowlog ids appeared (the
+          active-growth signal); slowlog_length is the current buffer size; last_slow_exec_ms is the most
+          recent slow command's duration. Interpret: new_slowlog_entries_15m > 0 => slow commands are
+          STILL occurring (an active problem, not a stale buffer). new_slowlog_entries_15m ~ 0 but
+          slowlog_length high => old entries from a past spike; not currently growing — lower urgency.
+          last_slow_exec_ms large => the most recent offender was very expensive. Name the instance
+          ($job). NOTE: in this fleet slowlog growth is genuinely high on the busy Dragonfly instances —
+          treat a high entry rate as real.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "New slowlog entries over 15m (active growth), current slowlog length, and the last slow-execution duration, on the alert's instance."
+            params:
+              queries:
+                - name: new_slowlog_entries_15m
+                  query: 'max by (job) (increase(redis_slowlog_last_id{job="$job"}[15m]))'
+                - name: slowlog_length
+                  query: 'max by (job, instance) (redis_slowlog_length{job="$job"})'
+                - name: last_slow_exec_ms
+                  unit: "ms"
+                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{job="$job"})'
+      - step: 2
+        title: "Tie it to server-side latency, throughput and CPU, and name the affected operations (OBI)"
+        description: >-
+          avg_cmd_duration_ms is the mean server-side command time; cmd_rate is throughput;
+          cpu_total_rate is Redis CPU cores consumed; obi_op_p95_ms / obi_ops_by_operation (OBI) show
+          the client-facing latency and WHICH operations are slow. Interpret: avg_cmd_duration_ms elevated
+          and rising with slowlog growth => genuine command-execution slowdown (expensive commands like
+          KEYS/SMEMBERS/HGETALL on big keys, broad SCANs, or Lua scripts). cmd_rate spiking at the same
+          time => a traffic surge is exposing expensive commands. cpu_total_rate high => the slow commands
+          are also saturating CPU (cross-link to RedisCPUSaturation). obi_op_p95_ms high for a specific
+          db.operation.name => names the offending operation/service. Honest gap: the exact slow COMMAND
+          and key need SLOWLOG GET / the app context — not an exporter metric; name the operation family
+          from OBI and say SLOWLOG GET gives the exact command.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Mean command duration, throughput, total CPU rate, and OBI per-operation p95 / op mix to name the slow operations."
+            params:
+              queries:
+                - name: avg_cmd_duration_ms
+                  unit: "ms"
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                - name: cmd_rate
+                  unit: "cmd/s"
+                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                - name: cpu_total_rate
+                  unit: "cores"
+                  query: 'sum by (job) (rate(redis_cpu_sys_seconds_total{job="$job"}[5m])) + sum by (job) (rate(redis_cpu_user_seconds_total{job="$job"}[5m]))'
+                - name: obi_op_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                - name: obi_ops_by_operation
+                  unit: "ops/s"
+                  query: 'topk(5, sum by (service.name, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+    remediation: # suggestion-only
+      - action: "optimize_slow_commands"
+        description: "Use SLOWLOG GET to read the exact offending commands, then fix them: replace KEYS with SCAN, avoid large HGETALL/SMEMBERS/ZRANGE on big collections (paginate), break up big keys, and review long Lua scripts. The OBI operation breakdown points at which service/operation to start with."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_load_or_shard"
+        description: "If a traffic surge or CPU saturation is exposing the slowness: scale the workload off the hot path, add read replicas for read-heavy patterns, or shard the keyspace so no single instance serves all the expensive commands."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team (slow commands are app/usage driven). Escalate if slowlog growth coincides with CPU saturation and rising client latency across many services (server-side bottleneck)."
+    follow_up:
+      - "Confirm new slowlog entries stop accruing and avg command duration / OBI p95 return to baseline after the command fixes."
+      - "Add a guard against the worst command patterns (e.g. forbid KEYS in app code) so the slowlog doesn't regrow."
+
+  # ============================================================ CPU
+  - name: "RedisCPUSaturation"
+    patterns:
+      [
+        "RedisCPUSaturation",
+        "redis cpu usage is high",
+        "redis cpu saturated",
+        "single-threaded cpu",
+        "main event loop",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm CPU saturation and split traffic-driven vs expensive-command-driven"
+        description: >-
+          Fires when rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) > 0.80
+          — Redis is burning close to (or over) a full core, and since command execution runs on one main
+          event loop, CPU saturation directly raises latency. cpu_total_rate is cores consumed (sys+user);
+          cmd_rate is command throughput; avg_cmd_duration_ms is mean server-side command time. Interpret:
+          cpu_total_rate high WITH a high cmd_rate and NORMAL avg_cmd_duration_ms => a legitimate TRAFFIC
+          spike (many cheap commands) — scale/shard or shed load. cpu_total_rate high WITH normal/low
+          cmd_rate but HIGH avg_cmd_duration_ms => a few EXPENSIVE commands are eating CPU (big keys, broad
+          scans, Lua) — cross-link to RedisSlowLogGrowing; optimise the commands, don't just add capacity.
+          Name the instance ($job) and the cores consumed. NOTE: the main-thread CPU counters
+          (redis_cpu_*_main_thread_*) can show counter resets after an exporter/instance restart that make
+          their rate unreliable — prefer the total-CPU rate here and treat a main-thread split as
+          corroboration only.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Total CPU cores consumed (sys+user), command throughput, and mean command duration, on the alert's instance."
+            params:
+              queries:
+                - name: cpu_total_rate
+                  unit: "cores"
+                  query: 'sum by (job, instance) (rate(redis_cpu_sys_seconds_total{job="$job"}[5m])) + sum by (job, instance) (rate(redis_cpu_user_seconds_total{job="$job"}[5m]))'
+                - name: cmd_rate
+                  unit: "cmd/s"
+                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                - name: avg_cmd_duration_ms
+                  unit: "ms"
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+      - step: 2
+        title: "Look for fork/child CPU, slow commands, and the app-side latency impact (OBI)"
+        description: >-
+          children_cpu_rate is CPU spent in forked children (RDB/AOF saves) — distinct from the main
+          loop; new_slowlog_entries_15m flags expensive commands; net_out_rate hints at large
+          payloads/range replies; obi_op_p95_ms is client-facing latency. Interpret: children_cpu_rate
+          high => a background save/rewrite is consuming CPU (transient; cross-link to the persistence
+          alerts) rather than the command path. new_slowlog_entries_15m > 0 => expensive commands are
+          part of the CPU cost (optimise them). net_out_rate very high => large values / big range
+          replies are driving serialization CPU and bandwidth. obi_op_p95_ms rising => the saturation is
+          already hurting callers — name the worst service/operation. Honest gap: per-command CPU
+          attribution needs SLOWLOG / LATENCY — name the operation family from OBI/slowlog and say the
+          exact command needs SLOWLOG GET.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Forked-child CPU, new slowlog entries, network egress rate, and OBI client p95, on/for the alert's instance."
+            params:
+              queries:
+                - name: children_cpu_rate
+                  unit: "cores"
+                  query: 'sum by (job) (rate(redis_cpu_sys_children_seconds_total{job="$job"}[5m])) + sum by (job) (rate(redis_cpu_user_children_seconds_total{job="$job"}[5m]))'
+                - name: new_slowlog_entries_15m
+                  query: 'max by (job) (increase(redis_slowlog_last_id{job="$job"}[15m]))'
+                - name: net_out_rate
+                  unit: "B/s"
+                  query: 'sum by (job) (rate(redis_net_output_bytes_total{job="$job"}[5m]))'
+                - name: obi_op_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+    remediation: # suggestion-only
+      - action: "optimize_or_shard_for_cpu"
+        description: "When step 1 shows expensive commands (high avg duration / slowlog): optimise them (SCAN over KEYS, paginate big-collection reads, trim Lua) per the slowlog. When it shows a genuine traffic spike: add read replicas for read-heavy load or shard the keyspace — Redis cannot use more than one core for the command loop, so vertical CPU alone won't help."
+        tool_id: ""
+        requires_approval: true
+      - action: "separate_persistence_load"
+        description: "If step 2 shows children CPU from background saves driving the spike: stagger/tune persistence (save points, AOF rewrite thresholds) so save forks don't coincide with peak traffic, or move persistence to a replica."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team + Redis/Dragonfly platform team when CPU saturation is raising client latency across services (the single-threaded command loop is the bottleneck)."
+    follow_up:
+      - "Confirm cpu_total_rate falls below threshold and OBI p95 recovers after optimisation/scaling."
+      - "If recurring at peak, plan read-replica/sharding capacity rather than relying on a single instance's core."
+
+escalation: >-
+  Route Redis alerts to the owning service team first (most Redis problems —
+  connection pools, memory growth, cache strategy, slow commands — are application
+  driven). Engage the Redis/Dragonfly platform on-call for instance-down, missing/split
+  master, replication loss on an HA-critical instance, or saturation that is degrading
+  many services at once. For the Dragonfly-backed instances (ai-redis, platform-redis),
+  remember several Redis INFO metrics are not exposed — escalate with the caveat that
+  some persistence/replication internals must be confirmed from the Dragonfly pod itself.
+
+follow_up:
+  - "Several alerts (RedisMissingBackup, RedisRDBSaveError, RedisAOFRewriteRunningLong, RedisMemoryFragmentationHigh, RedisReplicationBroken internals) depend on INFO fields the Dragonfly-backed instances do not export — where a value is n/a for $job, confirm it from the Dragonfly pod / CLI rather than treating absence as zero."
+  - "RedisMissingMaster / RedisTooManyMasters use a cluster-wide master count that is ambiguous across independent standalone instances — re-scope those rules per instance group so the benign multi-standalone case stops firing."
+  - "Exact slow command/key, blocked client identity, and per-command CPU need SLOWLOG GET / CLIENT LIST / LATENCY against the instance — out of scope for the exporter; named approximately via OBI operation breakdowns until a Redis CLI diagnostic tool exists."
