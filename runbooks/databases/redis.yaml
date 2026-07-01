@@ -8,12 +8,23 @@ description: >-
   commands vs CPU saturation, connection exhaustion vs starvation) and surfaces the
   app-side blast radius from the OBI db-client metrics — instead of generic "ping
   Redis / read the slowlog" guidance. SCOPING: in this fleet there is ONE exporter
-  PER Redis instance, so the scrape `job` label uniquely identifies the instance
-  (e.g. redis-exporter-ai-redis, controller-redis-exporter,
-  redis-exporter-platform-redis); the alert carries it in impacted_entities, so
-  instance-scoped queries use {job="$job"} and forge skips them cleanly when the
-  alert is cluster-level (the role-count alerts carry no job — those use
-  count by (job) attribution to NAME the offending instance instead).
+  PER Redis instance. The alert carries the instance's SHORT name in
+  impacted_entities.service (e.g. ai-redis, platform-redis, controller-redis) — NOT
+  the exporter job — and every redis_* series carries that same short name in its
+  `rtf_service` label, so instance-scoped queries filter `{rtf_service="$service"}`
+  (the job/instance labels are preserved on the result, so attribution still names
+  the exporter job + endpoint). forge skips these cleanly when the alert is
+  cluster-level (the role-count alerts carry no service — those stay unscoped and use
+  count by (job) attribution to NAME the offending instance instead). The OBI
+  db-client metrics are scoped to THIS instance by
+  `server.address=~"$service.*"` (the app-side endpoint is the short name plus a
+  suffix, e.g. ai-redis → server.address "ai-redis.dragonfly") — CRITICAL, because an
+  UNSCOPED topk over db.system.name="redis" surfaces the busiest clients of a
+  DIFFERENT Redis instance and makes the RCA name the wrong services; assess then
+  discovers those (correctly-scoped) client service.names and pulls their real
+  error logs. When the server.address scope returns nothing (e.g. controller-redis,
+  whose app endpoint is not name-matchable), say OBI attribution is unavailable for
+  this instance rather than falling back to a cluster-wide topk.
   IMPORTANT METRIC-AVAILABILITY CAVEAT: two of the three instances in this fleet
   (ai-redis, platform-redis) are backed by Dragonfly (a Redis-compatible server,
   redis_mode=standalone, reported version 7.4) whose exporter does NOT publish a
@@ -65,7 +76,7 @@ common_alerts:
         title: "Confirm the instance is actually down vs the exporter being blind, and for how long"
         description: >-
           RedisDown fires on redis_up == 0 — the exporter could not complete its
-          INFO scrape of the Redis instance ($job). This can mean Redis is genuinely
+          INFO scrape of the Redis instance ($service). This can mean Redis is genuinely
           down OR only that the exporter lost its connection (auth, network, or the
           exporter pod itself). up_now is the live state on the alert's instance;
           scrape_error is the exporter's own last-scrape error flag; up_changes_30m
@@ -85,24 +96,23 @@ common_alerts:
             params:
               queries:
                 - name: up_now
-                  query: 'max by (job, instance) (redis_up{job="$job"})'
+                  query: 'max by (job, instance) (redis_up{rtf_service="$service"})'
                 - name: scrape_error
-                  query: 'max by (job) (redis_exporter_last_scrape_error{job="$job"}) or vector(0)'
+                  query: 'max by (job) (redis_exporter_last_scrape_error{rtf_service="$service"}) or vector(0)'
                 - name: up_changes_30m
-                  query: 'max by (job) (changes(redis_up{job="$job"}[30m])) or vector(0)'
+                  query: 'max by (job) (changes(redis_up{rtf_service="$service"}[30m])) or vector(0)'
                 - name: seconds_since_redis_start
                   unit: "s"
-                  query: 'time() - max by (job) (redis_start_time_seconds{job="$job"})'
+                  query: 'time() - max by (job) (redis_start_time_seconds{rtf_service="$service"})'
       - step: 2
         title: "Measure the app-side blast radius (OBI) and read the exporter/Redis pod logs"
         description: >-
           The OBI db-client metrics show whether applications can still reach this
           Redis. redis_client_ops_per_service is the per-service Redis operation rate
-          (db.system.name="redis"); redis_client_p95_ms is client-observed p95 latency.
-          The alert's instance maps to an OBI server.address by its short name (strip
-          the "redis-exporter-"/"-exporter" affixes from $job — e.g. redis-exporter-ai-redis
-          → ai-redis → server.address "ai-redis.dragonfly"); focus on the matching
-          server.address. Interpret: ops rate to this Redis dropped toward zero =>
+          and redis_client_p95_ms is client-observed p95 latency — BOTH already scoped
+          to THIS instance via server.address=~"$service.*" (e.g. $service ai-redis →
+          server.address "ai-redis.dragonfly"), so the services named are genuinely
+          THIS Redis's clients, not another instance's. Interpret: ops rate to this Redis dropped toward zero =>
           clients can no longer use it — a real outage with user impact; name the top
           affected services. p95 spiking just before the drop => Redis became slow then
           unreachable. Other instances' OBI traffic healthy => the outage is isolated to
@@ -118,10 +128,10 @@ common_alerts:
               queries:
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
                 - name: redis_client_p95_ms
                   unit: "ms"
-                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
           - tool_id: "tool.read_logs"
             description: "Redis-exporter / Redis pod logs filtered for connection-refused / dial / timeout / auth / OOM / crash / restart signatures."
             params:
@@ -159,7 +169,7 @@ common_alerts:
         description: >-
           RedisMissingMaster fires on count(redis_instance_info{role="master"}) < 1 and
           RedisTooManyMasters on count(...) > 1 — both aggregate across the WHOLE VM with
-          no per-instance label, so they carry no $job. CRITICAL framing: this fleet runs
+          no per-instance label, so they carry no $service. CRITICAL framing: this fleet runs
           several INDEPENDENT standalone Redis instances (each its own exporter job), so a
           cluster-wide master count > 1 is EXPECTED and is NOT split-brain — every healthy
           standalone instance reports role=master. The meaningful question is per instance:
@@ -247,7 +257,7 @@ common_alerts:
         title: "Confirm replica count moved on the alert's instance — a clean drop vs flapping"
         description: >-
           RedisReplicationBroken fires on delta(redis_connected_slaves[1m]) < 0 (the primary
-          $job lost one or more replicas); RedisClusterFlapping on changes(redis_connected_slaves[2m]) > 2
+          $service lost one or more replicas); RedisClusterFlapping on changes(redis_connected_slaves[2m]) > 2
           (the count is bouncing). Both read redis_connected_slaves on the master. connected_slaves_now
           is the current attached-replica count; slaves_delta_5m is the recent net change;
           slaves_changes_30m counts how many times it moved. Interpret: slaves_delta_5m < 0 and
@@ -257,7 +267,7 @@ common_alerts:
           replica under resource pressure, or repeated full-resync loops) — this also loads the
           master with re-sync work. connected_slaves_now = 0 on an instance expected to have
           replicas => NO redundancy: a primary failure now would have no warm standby. connected_slaves_now
-          back at the expected count => already recovered; say so. Name the instance ($job) and its
+          back at the expected count => already recovered; say so. Name the instance ($service) and its
           replica count.
         tool_calls:
           - tool_id: "tool.query_metrics"
@@ -265,11 +275,11 @@ common_alerts:
             params:
               queries:
                 - name: connected_slaves_now
-                  query: 'max by (job, instance) (redis_connected_slaves{job="$job"})'
+                  query: 'max by (job, instance) (redis_connected_slaves{rtf_service="$service"})'
                 - name: slaves_delta_5m
-                  query: 'sum by (job) (delta(redis_connected_slaves{job="$job"}[5m]))'
+                  query: 'sum by (job) (delta(redis_connected_slaves{rtf_service="$service"}[5m]))'
                 - name: slaves_changes_30m
-                  query: 'max by (job) (changes(redis_connected_slaves{job="$job"}[30m])) or vector(0)'
+                  query: 'max by (job) (changes(redis_connected_slaves{rtf_service="$service"}[30m])) or vector(0)'
       - step: 2
         title: "Look for a resync/backlog cause and the replication offset (where exposed)"
         description: >-
@@ -285,7 +295,7 @@ common_alerts:
           retaining data for reconnecting replicas. IMPORTANT n/a caveat: redis_replica_resyncs_full,
           redis_replica_partial_resync_denied, redis_repl_backlog_is_active and redis_master_repl_offset
           are NOT published by the Dragonfly-backed instances (ai-redis, platform-redis) — when they
-          return empty for this $job, say replication-internals are not exposed for this instance and
+          return empty for this $service, say replication-internals are not exposed for this instance and
           lean on the connected_slaves trend (step 1) plus the replica pod's own health, rather than
           reporting a missing value as zero.
         tool_calls:
@@ -294,13 +304,13 @@ common_alerts:
             params:
               queries:
                 - name: full_resyncs_30m
-                  query: 'sum by (job) (increase(redis_replica_resyncs_full{job="$job"}[30m]))'
+                  query: 'sum by (job) (increase(redis_replica_resyncs_full{rtf_service="$service"}[30m]))'
                 - name: partial_resync_denied_30m
-                  query: 'sum by (job) (increase(redis_replica_partial_resync_denied{job="$job"}[30m]))'
+                  query: 'sum by (job) (increase(redis_replica_partial_resync_denied{rtf_service="$service"}[30m]))'
                 - name: repl_backlog_active
-                  query: 'max by (job) (redis_repl_backlog_is_active{job="$job"})'
+                  query: 'max by (job) (redis_repl_backlog_is_active{rtf_service="$service"})'
                 - name: master_repl_offset
-                  query: 'max by (job) (redis_master_repl_offset{job="$job"})'
+                  query: 'max by (job) (redis_master_repl_offset{rtf_service="$service"})'
           - tool_id: "tool.read_logs"
             description: "Redis/Dragonfly pod logs filtered for replica connect/disconnect, 'MASTER <-> REPLICA sync', full/partial resync, and backlog signatures."
             params:
@@ -357,14 +367,14 @@ common_alerts:
             params:
               queries:
                 - name: last_bgsave_status
-                  query: 'min by (job, instance) (redis_rdb_last_bgsave_status{job="$job"})'
+                  query: 'min by (job, instance) (redis_rdb_last_bgsave_status{rtf_service="$service"})'
                 - name: rdb_save_age_s
                   unit: "s"
-                  query: 'time() - max by (job) (redis_rdb_last_save_timestamp_seconds{job="$job"})'
+                  query: 'time() - max by (job) (redis_rdb_last_save_timestamp_seconds{rtf_service="$service"})'
                 - name: changes_since_last_save
-                  query: 'max by (job) (redis_rdb_changes_since_last_save{job="$job"})'
+                  query: 'max by (job) (redis_rdb_changes_since_last_save{rtf_service="$service"})'
                 - name: bgsave_in_progress
-                  query: 'max by (job) (redis_rdb_bgsave_in_progress{job="$job"})'
+                  query: 'max by (job) (redis_rdb_bgsave_in_progress{rtf_service="$service"})'
       - step: 2
         title: "Find WHY the save fails/stalls — memory/fork pressure, save duration, and disk from logs"
         description: >-
@@ -388,13 +398,13 @@ common_alerts:
               queries:
                 - name: last_bgsave_duration_s
                   unit: "s"
-                  query: 'max by (job) (redis_rdb_last_bgsave_duration_sec{job="$job"})'
+                  query: 'max by (job) (redis_rdb_last_bgsave_duration_sec{rtf_service="$service"})'
                 - name: latest_fork_s
                   unit: "s"
-                  query: 'max by (job) (redis_latest_fork_seconds{job="$job"})'
+                  query: 'max by (job) (redis_latest_fork_seconds{rtf_service="$service"})'
                 - name: used_memory_rss_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_rss_bytes{rtf_service="$service"})'
           - tool_id: "tool.read_logs"
             description: "Redis/Dragonfly pod logs filtered for background-save / fork / 'No space left' / 'Cannot allocate memory' / rdb-write signatures."
             params:
@@ -440,7 +450,7 @@ common_alerts:
           degraded). CRITICAL n/a caveat: ALL redis_aof_* metrics are published ONLY by the
           genuine-Redis instance (controller-redis); the Dragonfly-backed instances (ai-redis,
           platform-redis) do NOT expose them, so this alert can only originate from a Redis
-          instance with AOF enabled. If these come back empty for $job, state plainly that AOF
+          instance with AOF enabled. If these come back empty for $service, state plainly that AOF
           metrics are not exposed for this instance (likely AOF disabled / Dragonfly) rather than
           reporting zeros.
         tool_calls:
@@ -449,19 +459,19 @@ common_alerts:
             params:
               queries:
                 - name: aof_enabled
-                  query: 'max by (job) (redis_aof_enabled{job="$job"})'
+                  query: 'max by (job) (redis_aof_enabled{rtf_service="$service"})'
                 - name: rewrite_in_progress
-                  query: 'max by (job) (redis_aof_rewrite_in_progress{job="$job"})'
+                  query: 'max by (job) (redis_aof_rewrite_in_progress{rtf_service="$service"})'
                 - name: current_rewrite_duration_s
                   unit: "s"
-                  query: 'max by (job) (redis_aof_current_rewrite_duration_sec{job="$job"})'
+                  query: 'max by (job) (redis_aof_current_rewrite_duration_sec{rtf_service="$service"})'
                 - name: last_rewrite_duration_s
                   unit: "s"
-                  query: 'max by (job) (redis_aof_last_rewrite_duration_sec{job="$job"})'
+                  query: 'max by (job) (redis_aof_last_rewrite_duration_sec{rtf_service="$service"})'
                 - name: last_bgrewrite_status
-                  query: 'min by (job) (redis_aof_last_bgrewrite_status{job="$job"})'
+                  query: 'min by (job) (redis_aof_last_bgrewrite_status{rtf_service="$service"})'
                 - name: rewrite_scheduled
-                  query: 'max by (job) (redis_aof_rewrite_scheduled{job="$job"})'
+                  query: 'max by (job) (redis_aof_rewrite_scheduled{rtf_service="$service"})'
       - step: 2
         title: "Attribute the slowness — fork/COW cost and disk — and read logs"
         description: >-
@@ -482,13 +492,13 @@ common_alerts:
               queries:
                 - name: latest_fork_s
                   unit: "s"
-                  query: 'max by (job) (redis_latest_fork_seconds{job="$job"})'
+                  query: 'max by (job) (redis_latest_fork_seconds{rtf_service="$service"})'
                 - name: last_cow_size_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_aof_last_cow_size_bytes{job="$job"})'
+                  query: 'max by (job) (redis_aof_last_cow_size_bytes{rtf_service="$service"})'
                 - name: used_memory_rss_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_rss_bytes{rtf_service="$service"})'
           - tool_id: "tool.read_logs"
             description: "Redis pod logs filtered for AOF rewrite / fsync-slow / fork / disk signatures."
             params:
@@ -520,7 +530,7 @@ common_alerts:
       - step: 1
         title: "Confirm memory pressure against maxmemory and whether eviction has started"
         description: >-
-          This entry serves three related alerts on the alert's instance ($job):
+          This entry serves three related alerts on the alert's instance ($service):
           RedisHighMemoryUsage (used/maxmemory > 0.80, Warning), RedisOutOfConfiguredMaxmemory
           (> 0.90, Critical — weight impact higher and treat eviction/OOM as imminent), and
           RedisEvictedKeysHigh (evicting > 100 keys/s). mem_usage_pct is used vs configured
@@ -542,16 +552,16 @@ common_alerts:
               queries:
                 - name: mem_usage_pct
                   unit: "%"
-                  query: '100 * sum by (job) (redis_memory_used_bytes{job="$job"}) / sum by (job) (redis_config_maxmemory{job="$job"} > 0)'
+                  query: '100 * sum by (job) (redis_memory_used_bytes{rtf_service="$service"}) / sum by (job) (redis_config_maxmemory{rtf_service="$service"} > 0)'
                 - name: used_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_bytes{rtf_service="$service"})'
                 - name: maxmemory_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_config_maxmemory{job="$job"})'
+                  query: 'max by (job) (redis_config_maxmemory{rtf_service="$service"})'
                 - name: evicted_rate
                   unit: "keys/s"
-                  query: 'sum by (job) (rate(redis_evicted_keys_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_evicted_keys_total{rtf_service="$service"}[5m]))'
       - step: 2
         title: "Classify WHAT is consuming memory and whether the dataset is growing"
         description: >-
@@ -568,7 +578,7 @@ common_alerts:
           total_keys / dataset to name the magnitude. (db_keys is per-DB; summed here.) n/a caveat:
           redis_memory_used_dataset_bytes and redis_memory_used_overhead_bytes are exposed only by the
           genuine-Redis instance (controller-redis); on the Dragonfly-backed instances they return
-          empty — when dataset_bytes/overhead_bytes are n/a for $job, say so and lean on used_bytes,
+          empty — when dataset_bytes/overhead_bytes are n/a for $service, say so and lean on used_bytes,
           total_keys and keys_growth_30m to characterise the growth instead of inventing a split.
         tool_calls:
           - tool_id: "tool.query_metrics"
@@ -577,17 +587,17 @@ common_alerts:
               queries:
                 - name: dataset_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_dataset_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_dataset_bytes{rtf_service="$service"})'
                 - name: overhead_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_overhead_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_overhead_bytes{rtf_service="$service"})'
                 - name: total_keys
-                  query: 'sum by (job) (redis_db_keys{job="$job"})'
+                  query: 'sum by (job) (redis_db_keys{rtf_service="$service"})'
                 - name: keys_growth_30m
-                  query: 'sum by (job) (delta(redis_db_keys{job="$job"}[30m]))'
+                  query: 'sum by (job) (delta(redis_db_keys{rtf_service="$service"}[30m]))'
                 - name: expired_rate
                   unit: "keys/s"
-                  query: 'sum by (job) (rate(redis_expired_keys_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_expired_keys_total{rtf_service="$service"}[5m]))'
       - step: 3
         title: "Measure the app-side impact and whether evictions are causing cache misses"
         description: >-
@@ -607,13 +617,13 @@ common_alerts:
               queries:
                 - name: miss_ratio_pct
                   unit: "%"
-                  query: '100 * sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])))'
+                  query: '100 * sum by (job) (rate(redis_keyspace_misses_total{rtf_service="$service"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{rtf_service="$service"}[5m])))'
                 - name: redis_client_p95_ms
                   unit: "ms"
-                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
     remediation: # suggestion-only — capacity / policy / app-side; raising maxmemory needs node headroom
       - action: "raise_maxmemory_or_scale"
         description: "When step 2 shows genuine dataset growth and the working set legitimately exceeds maxmemory: raise maxmemory (only if the pod/node has RAM headroom — each byte of data plus overhead must fit), or shard/scale Redis. Raising the limit without headroom just moves the failure to a pod OOM kill."
@@ -666,12 +676,12 @@ common_alerts:
             params:
               queries:
                 - name: frag_ratio_native
-                  query: 'max by (job) (redis_mem_fragmentation_ratio{job="$job"})'
+                  query: 'max by (job) (redis_mem_fragmentation_ratio{rtf_service="$service"})'
                 - name: frag_ratio_fallback
-                  query: 'sum by (job) (redis_memory_used_rss_bytes{job="$job"}) / sum by (job) (redis_memory_used_bytes{job="$job"})'
+                  query: 'sum by (job) (redis_memory_used_rss_bytes{rtf_service="$service"}) / sum by (job) (redis_memory_used_bytes{rtf_service="$service"})'
                 - name: rss_minus_used_bytes
                   unit: "B"
-                  query: 'sum by (job) (redis_memory_used_rss_bytes{job="$job"}) - sum by (job) (redis_memory_used_bytes{job="$job"})'
+                  query: 'sum by (job) (redis_memory_used_rss_bytes{rtf_service="$service"}) - sum by (job) (redis_memory_used_bytes{rtf_service="$service"})'
       - step: 2
         title: "Judge node-OOM risk and whether defrag is already running"
         description: >-
@@ -692,11 +702,11 @@ common_alerts:
               queries:
                 - name: used_rss_bytes
                   unit: "B"
-                  query: 'max by (job) (redis_memory_used_rss_bytes{job="$job"})'
+                  query: 'max by (job) (redis_memory_used_rss_bytes{rtf_service="$service"})'
                 - name: active_defrag_running
-                  query: 'max by (job) (redis_active_defrag_running{job="$job"})'
+                  query: 'max by (job) (redis_active_defrag_running{rtf_service="$service"})'
                 - name: allocator_frag_ratio
-                  query: 'max by (job) (redis_allocator_frag_ratio{job="$job"})'
+                  query: 'max by (job) (redis_allocator_frag_ratio{rtf_service="$service"})'
     remediation: # suggestion-only
       - action: "reclaim_fragmented_memory"
         description: "When step 1/2 confirm real fragmentation with OOM risk: run MEMORY PURGE to ask jemalloc to release freed pages, and/or enable active defragmentation (activedefrag yes). If fragmentation persists and RSS threatens the pod limit, schedule a controlled restart during a low-traffic window (after confirming persistence/replica state) to reset RSS."
@@ -728,7 +738,7 @@ common_alerts:
           lookup_rate => Redis genuinely isn't serving enough requests from memory — applications
           fall back to the backing store more often (upstream latency/load). hit_ratio_pct low but
           lookup_rate very LOW => the ratio is statistically noisy on a near-idle instance; weight
-          it down and say the sample is small. Name the instance ($job) and its ratio.
+          it down and say the sample is small. Name the instance ($service) and its ratio.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Keyspace hit ratio, total lookup rate (sample size), and miss rate on the alert's instance."
@@ -736,13 +746,13 @@ common_alerts:
               queries:
                 - name: hit_ratio_pct
                   unit: "%"
-                  query: '100 * sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m])))'
+                  query: '100 * sum by (job) (rate(redis_keyspace_hits_total{rtf_service="$service"}[5m])) / (sum by (job) (rate(redis_keyspace_hits_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{rtf_service="$service"}[5m])))'
                 - name: lookup_rate
                   unit: "ops/s"
-                  query: 'sum by (job) (rate(redis_keyspace_hits_total{job="$job"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_keyspace_hits_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_keyspace_misses_total{rtf_service="$service"}[5m]))'
                 - name: miss_rate
                   unit: "ops/s"
-                  query: 'sum by (job) (rate(redis_keyspace_misses_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_keyspace_misses_total{rtf_service="$service"}[5m]))'
       - step: 2
         title: "Explain WHY misses are high — eviction churn, TTL expiry, or a cold/changed working set"
         description: >-
@@ -763,14 +773,14 @@ common_alerts:
               queries:
                 - name: evicted_rate
                   unit: "keys/s"
-                  query: 'sum by (job) (rate(redis_evicted_keys_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_evicted_keys_total{rtf_service="$service"}[5m]))'
                 - name: expired_rate
                   unit: "keys/s"
-                  query: 'sum by (job) (rate(redis_expired_keys_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_expired_keys_total{rtf_service="$service"}[5m]))'
                 - name: total_keys
-                  query: 'sum by (job) (redis_db_keys{job="$job"})'
+                  query: 'sum by (job) (redis_db_keys{rtf_service="$service"})'
                 - name: keys_growth_30m
-                  query: 'sum by (job) (delta(redis_db_keys{job="$job"}[30m]))'
+                  query: 'sum by (job) (delta(redis_db_keys{rtf_service="$service"}[30m]))'
       - step: 3
         title: "Confirm the upstream impact (OBI) — are callers paying for the misses?"
         description: >-
@@ -787,10 +797,10 @@ common_alerts:
               queries:
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
                 - name: read_p95_ms
                   unit: "ms"
-                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",db.operation.name=~"GET|MGET|HGET|HMGET|HGETALL|EXISTS|EVAL"}[5m]))) * 1000)'
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, server.address) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*",db.operation.name=~"GET|MGET|HGET|HMGET|HGETALL|EXISTS|EVAL"}[5m]))) * 1000)'
     remediation: # suggestion-only
       - action: "fix_cache_sizing_or_ttls"
         description: "When step 2 shows eviction churn: this is a memory-sizing problem — raise maxmemory / shard or protect hot keys (treat with the memory alert). When it shows aggressive expiry: lengthen TTLs and add cache warming so keys survive long enough to be reused."
@@ -822,7 +832,7 @@ common_alerts:
       - step: 1
         title: "Confirm connection pressure against maxclients and whether Redis is already rejecting"
         description: >-
-          Serves three alerts on the alert's instance ($job): RedisConnectedClientsHigh
+          Serves three alerts on the alert's instance ($service): RedisConnectedClientsHigh
           (connected/maxclients > 0.80, early warning), RedisTooManyConnections (> 0.90, near the
           ceiling) and RedisRejectedConnections (increase(redis_rejected_connections_total[1m]) > 5,
           already refusing clients). conn_usage_pct is utilisation vs maxclients (guarded);
@@ -842,13 +852,13 @@ common_alerts:
               queries:
                 - name: conn_usage_pct
                   unit: "%"
-                  query: '100 * sum by (job) (redis_connected_clients{job="$job"}) / sum by (job) (redis_config_maxclients{job="$job"} > 0)'
+                  query: '100 * sum by (job) (redis_connected_clients{rtf_service="$service"}) / sum by (job) (redis_config_maxclients{rtf_service="$service"} > 0)'
                 - name: connected_clients
-                  query: 'max by (job, instance) (redis_connected_clients{job="$job"})'
+                  query: 'max by (job, instance) (redis_connected_clients{rtf_service="$service"})'
                 - name: maxclients
-                  query: 'max by (job) (redis_config_maxclients{job="$job"})'
+                  query: 'max by (job) (redis_config_maxclients{rtf_service="$service"})'
                 - name: rejected_5m
-                  query: 'sum by (job) (increase(redis_rejected_connections_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (increase(redis_rejected_connections_total{rtf_service="$service"}[5m]))'
       - step: 2
         title: "Connection churn vs leak, and which application is opening them"
         description: >-
@@ -867,12 +877,12 @@ common_alerts:
               queries:
                 - name: conn_receive_rate
                   unit: "conn/s"
-                  query: 'sum by (job) (rate(redis_connections_received_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_connections_received_total{rtf_service="$service"}[5m]))'
                 - name: blocked_clients
-                  query: 'max by (job) (redis_blocked_clients{job="$job"})'
+                  query: 'max by (job) (redis_blocked_clients{rtf_service="$service"})'
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
     remediation: # suggestion-only — fix the client/pool; raising maxclients defers the problem
       - action: "fix_client_pooling_or_leak"
         description: "Primary fix: the cause is almost always client-side — add/right-size connection pooling, fix a connection leak (connections opened per request and never closed/reused), or cap the per-service pool so the sum cannot exhaust maxclients. Identify the offending service from step 2 and fix it rather than raising the limit."
@@ -917,13 +927,13 @@ common_alerts:
             params:
               queries:
                 - name: connected_clients
-                  query: 'max by (job, instance) (redis_connected_clients{job="$job"})'
+                  query: 'max by (job, instance) (redis_connected_clients{rtf_service="$service"})'
                 - name: clients_min_30m
-                  query: 'min by (job) (min_over_time(redis_connected_clients{job="$job"}[30m]))'
+                  query: 'min by (job) (min_over_time(redis_connected_clients{rtf_service="$service"}[30m]))'
                 - name: clients_avg_1h
-                  query: 'avg by (job) (avg_over_time(redis_connected_clients{job="$job"}[1h]))'
+                  query: 'avg by (job) (avg_over_time(redis_connected_clients{rtf_service="$service"}[1h]))'
                 - name: up_now
-                  query: 'max by (job) (redis_up{job="$job"})'
+                  query: 'max by (job) (redis_up{rtf_service="$service"})'
       - step: 2
         title: "Confirm app-side: did the Redis clients stop talking to this instance (OBI)?"
         description: >-
@@ -943,10 +953,10 @@ common_alerts:
               queries:
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
                 - name: conn_receive_rate
                   unit: "conn/s"
-                  query: 'sum by (job) (rate(redis_connections_received_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_connections_received_total{rtf_service="$service"}[5m]))'
           - tool_id: "tool.read_logs"
             description: "Redis/exporter pod logs filtered for auth / connection-reset / network signatures around the drop."
             params:
@@ -989,20 +999,20 @@ common_alerts:
           blocked_avg_1h => steady-state long-polling — likely expected; weight low. blocked_clients
           well ABOVE baseline and a large share of connected_clients => consumers are not draining work
           (a downstream slowdown so they stay blocked, or far more waiters than producers) — investigate.
-          Name the instance ($job).
+          Name the instance ($service).
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Current blocked clients, their 30m-max / 1h-avg baseline, and total connected clients, on the alert's instance."
             params:
               queries:
                 - name: blocked_clients
-                  query: 'max by (job, instance) (redis_blocked_clients{job="$job"})'
+                  query: 'max by (job, instance) (redis_blocked_clients{rtf_service="$service"})'
                 - name: blocked_max_30m
-                  query: 'max by (job) (max_over_time(redis_blocked_clients{job="$job"}[30m]))'
+                  query: 'max by (job) (max_over_time(redis_blocked_clients{rtf_service="$service"}[30m]))'
                 - name: blocked_avg_1h
-                  query: 'avg by (job) (avg_over_time(redis_blocked_clients{job="$job"}[1h]))'
+                  query: 'avg by (job) (avg_over_time(redis_blocked_clients{rtf_service="$service"}[1h]))'
                 - name: connected_clients
-                  query: 'max by (job) (redis_connected_clients{job="$job"})'
+                  query: 'max by (job) (redis_connected_clients{rtf_service="$service"})'
       - step: 2
         title: "Is Redis itself slow (server-side), and which consumer is affected (OBI)?"
         description: >-
@@ -1024,16 +1034,16 @@ common_alerts:
               queries:
                 - name: avg_cmd_duration_ms
                   unit: "ms"
-                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{rtf_service="$service"}[5m])) / sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
                 - name: last_slow_exec_ms
                   unit: "ms"
-                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{job="$job"})'
+                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{rtf_service="$service"})'
                 - name: cmd_rate
                   unit: "cmd/s"
-                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, server.address, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, server.address, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
     remediation: # suggestion-only
       - action: "address_consumer_or_downstream_slowness"
         description: "When step 2 shows blocked clients rising with slow commands or a dropped processing rate: the consumers are stuck — investigate the downstream dependency they call after popping work, a poison message, or far too few producers for the waiters. Scale/fix the consumers or unblock the dependency."
@@ -1070,7 +1080,7 @@ common_alerts:
           STILL occurring (an active problem, not a stale buffer). new_slowlog_entries_15m ~ 0 but
           slowlog_length high => old entries from a past spike; not currently growing — lower urgency.
           last_slow_exec_ms large => the most recent offender was very expensive. Name the instance
-          ($job). NOTE: in this fleet slowlog growth is genuinely high on the busy Dragonfly instances —
+          ($service). NOTE: in this fleet slowlog growth is genuinely high on the busy Dragonfly instances —
           treat a high entry rate as real.
         tool_calls:
           - tool_id: "tool.query_metrics"
@@ -1078,12 +1088,12 @@ common_alerts:
             params:
               queries:
                 - name: new_slowlog_entries_15m
-                  query: 'max by (job) (increase(redis_slowlog_last_id{job="$job"}[15m]))'
+                  query: 'max by (job) (increase(redis_slowlog_last_id{rtf_service="$service"}[15m]))'
                 - name: slowlog_length
-                  query: 'max by (job, instance) (redis_slowlog_length{job="$job"})'
+                  query: 'max by (job, instance) (redis_slowlog_length{rtf_service="$service"})'
                 - name: last_slow_exec_ms
                   unit: "ms"
-                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{job="$job"})'
+                  query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{rtf_service="$service"})'
       - step: 2
         title: "Tie it to server-side latency, throughput and CPU, and name the affected operations (OBI)"
         description: >-
@@ -1104,19 +1114,19 @@ common_alerts:
               queries:
                 - name: avg_cmd_duration_ms
                   unit: "ms"
-                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{rtf_service="$service"}[5m])) / sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
                 - name: cmd_rate
                   unit: "cmd/s"
-                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
                 - name: cpu_total_rate
                   unit: "cores"
-                  query: 'sum by (job) (rate(redis_cpu_sys_seconds_total{job="$job"}[5m])) + sum by (job) (rate(redis_cpu_user_seconds_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_cpu_sys_seconds_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_cpu_user_seconds_total{rtf_service="$service"}[5m]))'
                 - name: obi_op_p95_ms
                   unit: "ms"
-                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
                 - name: obi_ops_by_operation
                   unit: "ops/s"
-                  query: 'topk(5, sum by (service.name, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis"}[5m])))'
+                  query: 'topk(5, sum by (service.name, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
     remediation: # suggestion-only
       - action: "optimize_slow_commands"
         description: "Use SLOWLOG GET to read the exact offending commands, then fix them: replace KEYS with SCAN, avoid large HGETALL/SMEMBERS/ZRANGE on big collections (paginate), break up big keys, and review long Lua scripts. The OBI operation breakdown points at which service/operation to start with."
@@ -1154,7 +1164,7 @@ common_alerts:
           spike (many cheap commands) — scale/shard or shed load. cpu_total_rate high WITH normal/low
           cmd_rate but HIGH avg_cmd_duration_ms => a few EXPENSIVE commands are eating CPU (big keys, broad
           scans, Lua) — cross-link to RedisSlowLogGrowing; optimise the commands, don't just add capacity.
-          Name the instance ($job) and the cores consumed. NOTE: the main-thread CPU counters
+          Name the instance ($service) and the cores consumed. NOTE: the main-thread CPU counters
           (redis_cpu_*_main_thread_*) can show counter resets after an exporter/instance restart that make
           their rate unreliable — prefer the total-CPU rate here and treat a main-thread split as
           corroboration only.
@@ -1165,13 +1175,13 @@ common_alerts:
               queries:
                 - name: cpu_total_rate
                   unit: "cores"
-                  query: 'sum by (job, instance) (rate(redis_cpu_sys_seconds_total{job="$job"}[5m])) + sum by (job, instance) (rate(redis_cpu_user_seconds_total{job="$job"}[5m]))'
+                  query: 'sum by (job, instance) (rate(redis_cpu_sys_seconds_total{rtf_service="$service"}[5m])) + sum by (job, instance) (rate(redis_cpu_user_seconds_total{rtf_service="$service"}[5m]))'
                 - name: cmd_rate
                   unit: "cmd/s"
-                  query: 'sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
                 - name: avg_cmd_duration_ms
                   unit: "ms"
-                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{job="$job"}[5m])) / sum by (job) (rate(redis_commands_processed_total{job="$job"}[5m]))'
+                  query: '1000 * sum by (job) (rate(redis_commands_duration_seconds_total{rtf_service="$service"}[5m])) / sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
       - step: 2
         title: "Look for fork/child CPU, slow commands, and the app-side latency impact (OBI)"
         description: >-
@@ -1192,15 +1202,15 @@ common_alerts:
               queries:
                 - name: children_cpu_rate
                   unit: "cores"
-                  query: 'sum by (job) (rate(redis_cpu_sys_children_seconds_total{job="$job"}[5m])) + sum by (job) (rate(redis_cpu_user_children_seconds_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_cpu_sys_children_seconds_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_cpu_user_children_seconds_total{rtf_service="$service"}[5m]))'
                 - name: new_slowlog_entries_15m
-                  query: 'max by (job) (increase(redis_slowlog_last_id{job="$job"}[15m]))'
+                  query: 'max by (job) (increase(redis_slowlog_last_id{rtf_service="$service"}[15m]))'
                 - name: net_out_rate
                   unit: "B/s"
-                  query: 'sum by (job) (rate(redis_net_output_bytes_total{job="$job"}[5m]))'
+                  query: 'sum by (job) (rate(redis_net_output_bytes_total{rtf_service="$service"}[5m]))'
                 - name: obi_op_p95_ms
                   unit: "ms"
-                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis"}[5m]))) * 1000)'
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
     remediation: # suggestion-only
       - action: "optimize_or_shard_for_cpu"
         description: "When step 1 shows expensive commands (high avg duration / slowlog): optimise them (SCAN over KEYS, paginate big-collection reads, trim Lua) per the slowlog. When it shows a genuine traffic spike: add read replicas for read-heavy load or shard the keyspace — Redis cannot use more than one core for the command loop, so vertical CPU alone won't help."
@@ -1225,6 +1235,6 @@ escalation: >-
   some persistence/replication internals must be confirmed from the Dragonfly pod itself.
 
 follow_up:
-  - "Several alerts (RedisMissingBackup, RedisRDBSaveError, RedisAOFRewriteRunningLong, RedisMemoryFragmentationHigh, RedisReplicationBroken internals) depend on INFO fields the Dragonfly-backed instances do not export — where a value is n/a for $job, confirm it from the Dragonfly pod / CLI rather than treating absence as zero."
+  - "Several alerts (RedisMissingBackup, RedisRDBSaveError, RedisAOFRewriteRunningLong, RedisMemoryFragmentationHigh, RedisReplicationBroken internals) depend on INFO fields the Dragonfly-backed instances do not export — where a value is n/a for $service, confirm it from the Dragonfly pod / CLI rather than treating absence as zero."
   - "RedisMissingMaster / RedisTooManyMasters use a cluster-wide master count that is ambiguous across independent standalone instances — re-scope those rules per instance group so the benign multi-standalone case stops firing."
   - "Exact slow command/key, blocked client identity, and per-command CPU need SLOWLOG GET / CLIENT LIST / LATENCY against the instance — out of scope for the exporter; named approximately via OBI operation breakdowns until a Redis CLI diagnostic tool exists."
