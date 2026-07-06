@@ -1,398 +1,900 @@
 tech_stack: argocd
-version: "1.0"
-description: "Runbook for ArgoCD GitOps incidents: control-plane outages, sync failures, app health degradation, and repository connectivity issues."
+version: "2.0"
+description: >-
+  Runbook for Argo CD (GitOps) alerts, grounded in the argocd_* metrics exported by
+  the Argo CD components (application-controller, server, repo-server, dex) plus the
+  Prometheus `up` scrape signal. Each assessment names WHICH application (by its Argo
+  CD app `name`/`project`/`repo`) or WHICH component is affected, classifies the
+  failure (Git drift vs unhealthy child resources vs unknown health from a broken
+  cluster connection; a control-plane component down vs a Git/Redis/Dex dependency
+  problem vs slow reconciliation) instead of generic "restart the component / check
+  the logs" guidance. SCOPING: Argo CD runs ONE application-controller that exports
+  the per-app metrics, so the app is identified by its `name` label (NOT rtf_service —
+  every app shares rtf_service="argocd-application-controller"). App alerts scope
+  `{name="$app", project="$project"}` (the alert carries the Argo CD app name) AND always include a
+  status-filtered cluster query (argocd_app_info{sync_status=...}/{health_status=...})
+  that names the firing app(s) directly even if the scope token differs. Component
+  alerts key on the Prometheus `up{job=~".*argocd-<component>-metrics"}` signal and
+  the component's own metrics; rtf_service on those series IS the component
+  (argocd-server / argocd-repo-server / argocd-application-controller / argocd-dex-server).
+  IMPORTANT FLEET CAVEATS (validated live): (1) per-app latency metrics
+  argocd_app_reconcile_bucket / argocd_app_reconcile_count carry NO `name` label — they
+  are CONTROLLER-WIDE, so ArgocdSlowReconciliation is a controller-level alert, not
+  per-app. (2) argocd_app_sync_total / argocd_app_sync_duration_seconds_total /
+  argocd_app_k8s_request_total are per-app but SPARSE (only apps with recent
+  sync/apply activity emit them) — when a name-scoped query is empty, say the app has
+  had no recent sync/apply activity rather than inventing zero. (3) There is NO
+  `up{job=~".*argocd-redis.*"}` scrape target in this fleet, so ArgoCDRedisDown cannot
+  be confirmed from `up` — use argocd_redis_request_total (rate + failed="true") and
+  the redis pod's own state as the health proxy, and say so. (4) The Argo CD exporter
+  exposes app HEALTH as a rollup (health_status) but NOT the individual child
+  resource that is unhealthy — naming the exact failing workload needs the app's
+  resource tree / dest-namespace pod state, which is a deferred drill-down.
 
 match_keywords:
   - argocd
   - argo-cd
+  - gitops
   - application-controller
   - repo-server
   - dex
-  - redis
+  - out of sync
   - outofsync
   - degraded
-  - syncfailed
+  - sync failed
+  - reconciliation
+  - git fetch
 
 categories:
+  - GITOPS
   - INFRASTRUCTURE
-  - APPLICATION
-  - MONITORING
+  - DEPLOYMENT
 
 common_alerts:
-  - name: "ArgoCDDown"
-    patterns:
-      - "ArgoCDDown"
-      - "argocd component is down"
-      - "argocd.*unreachable"
-    priority: P1
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Identify which ArgoCD component is down (server/repo-server/application-controller/dex/redis) and current blast radius."
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Collect pod state, events, and recent logs in namespace argocd."
-      - step: 2
-        title: "Check component-specific impact"
-        description: "Server down affects UI/API; repo-server down blocks new syncs; controller down stops reconciliation."
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Search for crash loops, config errors, Redis failures, and API connectivity errors."
-      - step: 3
-        title: "Check resource utilization"
-        tool_calls:
-          - tool_id: "tool.fetch_metrics"
-            description: "Check CPU/memory for argocd-server, repo-server, controller, and redis."
-    remediation:
-      - action: "restart_component"
-        description: "Restart only the impacted component after confirming root cause and maintaining safe operational posture."
-        tool_id: "forge.restart_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall (IMMEDIATE if controller is down)"
-
+  # ============================================================ APP DRIFT
   - name: "ArgoCDAppOutOfSync"
     patterns:
-      - "ArgoCDAppOutOfSync"
-      - "OutOfSync"
-      - "argocd_app_sync_status"
+      [
+        "ArgoCDAppOutOfSync",
+        "argocd app OutOfSync",
+        "application out of sync",
+        "desired state does not match",
+        "configuration drift",
+      ]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Confirm drift source: manual change, sync disabled, failed sync, or health assessment lag."
+        title: "Confirm the app is OutOfSync, name it, and check whether it is also unhealthy"
+        description: >-
+          ArgoCDAppOutOfSync fires when argocd_app_info{sync_status="OutOfSync"} == 1 for >10m —
+          the live cluster state no longer matches Git. app_state is the alerting app's own
+          sync+health (scoped to its name); outofsync_apps lists every OutOfSync app by name/
+          project/repo/dest_namespace (this ALWAYS names the firing app even if scoping differs,
+          and shows the blast radius); outofsync_total is the count. Interpret: read app_state's
+          health_status for the alert's app — Healthy => drift exists but the app is still serving
+          (lower urgency; a pending/undeployed change). Degraded/Missing => the drift is tied to a
+          runtime problem (treat with ArgoCDAppDegraded). outofsync_total large / many apps sharing
+          one repo => a repo- or project-wide change (or a repo/repo-server problem) drifted many
+          apps at once, not a single-app edit. ALWAYS report against the alert's OWN app name.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Capture app status and controller events for the affected application."
+          - tool_id: "tool.query_metrics"
+            description: "The alerting app's own sync+health, the full list of OutOfSync apps (names/repo/dest), and the cluster OutOfSync count."
+            params:
+              queries:
+                - name: app_state
+                  query: 'max by (name, project, sync_status, health_status, repo, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                - name: outofsync_apps
+                  query: 'max by (name, project, repo, dest_namespace) (argocd_app_info{sync_status="OutOfSync"} == 1)'
+                - name: outofsync_total
+                  query: 'sum(argocd_app_info{sync_status="OutOfSync"} == 1) or vector(0)'
       - step: 2
-        title: "Inspect diff and sync policy"
+        title: "Is Argo CD trying to sync, and is auto-sync even on? Look at sync attempts and apply errors"
+        description: >-
+          Decide whether this is a stuck auto-sync, a disabled auto-sync (manual sync needed), or a
+          FAILING sync. autosync_enabled is the app's auto-sync flag (from argocd_app_info label);
+          sync_attempts_1h counts recent sync operations for the app; sync_failures_1h counts
+          Error/Failed phases; k8s_apply_errors surfaces non-2xx Kubernetes API responses the
+          controller got while applying THIS app's resources (by verb/response_code). Interpret:
+          autosync_enabled="false" and sync_attempts_1h ~ 0 => auto-sync is OFF — the drift will not
+          self-heal; a manual sync (or enabling auto-sync) is required — this is the common benign
+          cause. sync_failures_1h > 0 => syncs are being attempted but FAILING (cross-link to
+          ArgoCDSyncFailed; chase the apply/hook error). k8s_apply_errors with 403/409/422 =>
+          RBAC / admission / conflict is blocking the apply. sync_attempts_1h > 0 with no failures
+          and still OutOfSync => a sync is in progress or a resource is immediately re-drifting
+          (a controller/webhook fighting Argo CD). NOTE: sync_total / k8s_request_total are sparse —
+          if empty for this app, say there has been no recent sync/apply activity (often = auto-sync
+          off or nothing attempted), do not read it as zero failures with confidence.
         tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Check comparison/sync errors and confirm whether auto-sync/prune is enabled."
-    remediation:
-      - action: "trigger_manual_sync"
-        description: "Run a controlled sync after reviewing drift and blast radius."
-        tool_id: "forge.restart_deployment"
+          - tool_id: "tool.query_metrics"
+            description: "Auto-sync flag, recent sync attempts and failures, and Kubernetes apply response codes for the alerting app (sparse — may be n/a)."
+            params:
+              queries:
+                - name: autosync_enabled
+                  query: 'max by (name, autosync_enabled) (argocd_app_info{name="$app", project="$project"})'
+                - name: sync_attempts_1h
+                  query: 'sum by (name) (increase(argocd_app_sync_total{name="$app", project="$project"}[1h]))'
+                - name: sync_failures_1h
+                  query: 'sum by (name, phase) (increase(argocd_app_sync_total{name="$app", project="$project",phase=~"Error|Failed"}[1h]))'
+                - name: k8s_apply_errors
+                  query: 'sum by (name, verb, response_code) (increase(argocd_app_k8s_request_total{name="$app", project="$project",response_code!~"2.."}[30m]))'
+          - tool_id: "tool.query_metrics"
+            description: "Whether the drift left unhealthy workloads in the app's destination namespace (KSM) — distinguishes benign pending drift from drift that broke pods."
+            params:
+              queries:
+                - name: unavailable_deployments
+                  query: 'kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"} > 0'
+                - name: crashloop_or_imagepull_pods
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$dest_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName"} == 1'
+                - name: notready_pods
+                  query: 'kube_pod_status_ready{namespace="$dest_namespace",condition="true"} == 0'
+    remediation: # suggestion-only — sync/enable-auto-sync are Argo CD operations, not k8s deploy restarts
+      - action: "review_diff_and_sync"
+        description: "Primary path when the app is Healthy but OutOfSync and auto-sync is off / not attempting: review the diff in the Argo CD UI (or `argocd app diff <app>`) to confirm the pending change is intended, then run a controlled sync (`argocd app sync <app>`, prune only after reviewing). If the drift is a manual live edit, syncing restores Git as the source of truth."
+        tool_id: ""
         requires_approval: true
-    escalation: "#gitops-oncall"
+      - action: "fix_failing_sync"
+        description: "When step 2 shows sync failures / apply errors (403/409/422): this is really a sync failure — handle as ArgoCDSyncFailed (fix the manifest/hook/RBAC/admission cause) rather than repeatedly re-syncing."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning application/service team (drift is usually an app-manifest or deploy-process issue). Escalate to the GitOps/platform team if many apps drifted at once (repo/project or repo-server cause)."
+    follow_up:
+      - "After sync, confirm argocd_app_info{name=...} reports sync_status=Synced and stays there (a re-drifting app points at a controller/webhook mutating the resource)."
+      - "If auto-sync is intentionally off for this app, document it so the alert is understood as expected-until-manual-sync."
 
+  # ============================================================ APP HEALTH
   - name: "ArgoCDAppDegraded"
     patterns:
-      - "ArgoCDAppDegraded"
-      - "Degraded"
-      - "argocd_app_health_status"
+      [
+        "ArgoCDAppDegraded",
+        "argocd app Degraded",
+        "application health is degraded",
+        "managed resources are unhealthy",
+      ]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Identify unhealthy child resources and failing workloads behind ArgoCD health status."
+        title: "Confirm the app is Degraded, name it, and check whether drift or a recent sync is involved"
+        description: >-
+          ArgoCDAppDegraded fires when argocd_app_info{health_status="Degraded"} == 1 for >5m — one
+          or more Kubernetes resources the app manages are unhealthy; user-facing impact is likely.
+          app_state is the alerting app's sync+health+repo+dest_namespace; degraded_apps lists every
+          Degraded app (names the firing app + blast radius); degraded_total is the count.
+          Interpret: sync_status="OutOfSync" alongside Degraded => a drift/change is likely the
+          trigger — a bad manifest or a sync that applied broken config; correlate with a recent sync
+          (step 2). sync_status="Synced" but Degraded => Git was applied correctly but the workload
+          is failing at RUNTIME (image pull, crash loop, failing probes, missing dependency) — the
+          problem is in the deployed app, not Argo CD. degraded_total high / many apps on one repo =>
+          a shared base image / chart / dependency broke many apps together.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Collect resource conditions, pod events, and rollout state."
+          - tool_id: "tool.query_metrics"
+            description: "The alerting app's sync+health+dest, the list of Degraded apps, and the cluster Degraded count."
+            params:
+              queries:
+                - name: app_state
+                  query: 'max by (name, project, sync_status, health_status, repo, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                - name: degraded_apps
+                  query: 'max by (name, project, repo, dest_namespace) (argocd_app_info{health_status="Degraded"} == 1)'
+                - name: degraded_total
+                  query: 'sum(argocd_app_info{health_status="Degraded"} == 1) or vector(0)'
       - step: 2
-        title: "Review workload logs"
+        title: "Name the actual failing workload in the destination namespace (the Argo CD health rollup does not)"
+        description: >-
+          The Argo CD exporter only reports the app's aggregate health_status — it does NOT name the
+          unhealthy child resource. This step pulls the REAL Kubernetes/KSM state from the app's
+          destination namespace ($dest_namespace, e.g. task-framework) to name the concrete failing
+          workload, pod, and reason. unavailable_deployments / unready_statefulsets name workloads not
+          at their desired replica count; crashloop_or_imagepull_pods names pods+containers stuck in
+          CrashLoopBackOff / ImagePullBackOff / CreateContainerConfigError; restarts_30m surfaces the
+          pods restarting right now; last_terminated_reason gives the exit reason (OOMKilled vs Error);
+          notready_pods / not_running_pods catch failing probes and stuck/Pending pods. Interpret:
+          crashloop_or_imagepull_pods + last_terminated_reason=Error/OOMKilled => the workload is
+          crash-looping (app bug, bad config/secret, or OOM) — the direct cause of Degraded; name the
+          pod, container, restart count and reason. reason=ImagePullBackOff => a bad image tag / missing
+          pull secret (often from a recent bad sync). unavailable_deployments with 0 restarts and
+          Pending pods => scheduling/quota/PVC problem, not a crash. CAVEAT: these are scoped to the
+          destination NAMESPACE (Argo CD does not label managed pods with the app name in this fleet),
+          so if the namespace hosts several apps the results may include sibling workloads — correlate
+          the failing workload's NAME with the alerting app ($app, e.g. app tradecall-portal-tier0 ->
+          deployment tradecall-portal) and report that one. The exact crash log line needs that
+          workload's own logs (owning-team drill-down).
         tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Analyze failing workload logs to isolate application vs infrastructure causes."
-    remediation:
-      - action: "rollback_application"
-        description: "Rollback application revision if degradation started after a recent sync/deploy."
-        tool_id: "forge.revert_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall + owning service team"
-
-  - name: "ArgoCDSyncFailed"
-    patterns:
-      - "ArgoCDSyncFailed"
-      - "operation_phase=Failed"
-      - "operation_phase=Error"
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Identify failing operation stage and exact apply/admission/RBAC error."
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Capture operation state and sync result details."
-      - step: 2
-        title: "Inspect failure cause"
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Check controller and repo-server logs for apply failures, webhooks, auth, or repo fetch errors."
-    remediation:
-      - action: "rollback_to_last_successful_revision"
-        description: "Rollback if failure was introduced by a recent manifest change."
-        tool_id: "forge.revert_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall"
-
-  - name: "ArgoCDAppSyncRunningLong"
-    patterns:
-      - "ArgoCDAppSyncRunningLong"
-      - "operation_phase=Running"
-      - "sync running too long"
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Find blocking resource/hook preventing sync completion."
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Check sync operation details, hooks, and health gates."
-      - step: 2
-        title: "Inspect hook jobs and blocked resources"
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Review pre/post-sync hook logs and failing resource conditions."
-    remediation:
-      - action: "terminate_stuck_operation"
-        description: "Terminate stuck sync operation only after identifying and addressing blocker."
-        tool_id: "forge.restart_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall"
-
-  - name: "ArgoCDRepoServerDown"
-    patterns:
-      - "ArgoCDRepoServerDown"
-      - "repo-server down"
-    priority: P1
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Inspect repo-server pod state, events, and resource pressure."
-      - step: 2
-        title: "Check Git/Helm access failures"
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Look for auth failures, network timeouts, x509 errors, and OOM events."
-    remediation:
-      - action: "restart_repo_server"
-        description: "Restart repo-server after validating credentials and remote repository availability."
-        tool_id: "forge.restart_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall"
-
-  - name: "ArgoCDRepoUnreachable"
-    patterns:
-      - "ArgoCDRepoUnreachable"
-      - "argocd git request failed"
-      - "fetch response_code != 200"
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Validate repo URL, connectivity, and authentication state."
-      - step: 2
-        title: "Review repository access errors"
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Look for 401/403 auth failures, DNS/network timeouts, TLS errors, and host outages."
-    remediation:
-      - action: "restore_repo_access"
-        description: "Fix credentials/connectivity and retry sync safely."
-        tool_id: "forge.restart_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall"
-
-  - name: "ArgoCDAppControllerCrashLoop"
-    patterns:
-      - "ArgoCDAppControllerCrashLoop"
-      - "application-controller crash loop"
-    priority: P1
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        description: "Controller crash loop is a GitOps control-plane outage for reconciliation."
-        tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Collect controller events, restart history, and dependency health."
-      - step: 2
-        title: "Analyze previous crash logs"
-        tool_calls:
-          - tool_id: "tool.read_logs"
-            description: "Use previous logs to identify panic, OOM, API access, or Redis dependency failures."
+          - tool_id: "tool.query_metrics"
+            description: "Real workload health in the app's destination namespace — unavailable deployments, crash-looping / image-pull pods, restart counts, exit reasons, and not-ready/stuck pods (names the concrete failing resource behind the health rollup)."
+            params:
+              queries:
+                - name: unavailable_deployments
+                  query: 'kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"} > 0'
+                - name: unready_statefulsets
+                  query: '(kube_statefulset_status_replicas_ready{namespace="$dest_namespace"} < kube_statefulset_replicas{namespace="$dest_namespace"})'
+                - name: crashloop_or_imagepull_pods
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$dest_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName"} == 1'
+                - name: restarts_30m
+                  query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$dest_namespace"}[30m]))'
+                - name: last_terminated_reason
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$dest_namespace",reason=~"OOMKilled|Error|ContainerCannotRun|DeadlineExceeded"} == 1'
+                - name: notready_pods
+                  query: 'kube_pod_status_ready{namespace="$dest_namespace",condition="true"} == 0'
+                - name: not_running_pods
+                  query: 'kube_pod_status_phase{namespace="$dest_namespace",phase=~"Failed|Pending|Unknown"} == 1'
       - step: 3
-        title: "Check resource and dependency pressure"
+        title: "Was it a bad deploy? Correlate with sync history + apply errors, and read the failing pod's logs"
+        description: >-
+          Now separate a BAD DEPLOY from a pre-existing runtime failure and get the crash reason.
+          recent_syncs_1h counts sync operations for the app in the last hour; sync_failures_1h counts
+          failed ones; k8s_apply_errors surfaces Kubernetes apply response codes. Interpret:
+          recent_syncs_1h > 0 just before the degradation => a DEPLOY introduced it (bad image/config in
+          the new revision) — rolling back the app revision is the fast mitigation. sync_failures_1h > 0
+          / apply errors (403/409/422) => the sync partially applied and left resources broken. No recent
+          sync => a runtime regression (dependency, node, image GC, external) rather than a change — the
+          workload was fine and broke on its own. Then read the failing workload's logs (the pod named in
+          step 2, in $dest_namespace) for the concrete crash reason — an application exception, a missing
+          env/secret/config, a failed DB/dependency connection, or an OOM. NOTE sync_total /
+          k8s_request_total are per-app but SPARSE — if empty, say there was no recent sync activity
+          (favouring the runtime-regression branch) rather than reading it as zero failures.
         tool_calls:
-          - tool_id: "tool.fetch_metrics"
-            description: "Validate memory headroom and external dependency latencies."
-    remediation:
-      - action: "scale_or_restart_controller"
-        description: "Increase resource limits if OOM, then restart controller."
-        tool_id: "forge.scale_deployment"
-        requires_approval: true
-    escalation: "#gitops-oncall (IMMEDIATE)"
-
-  - name: "ArgoCDCertificateExpiring"
-    patterns:
-      - "ArgoCDCertificateExpiring"
-      - "argocd certificate expiring"
-      - "cert expiry < 30d"
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Capture diagnostics snapshot"
-        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Recent sync activity, sync failures by phase, and Kubernetes apply response codes for the alerting app (was this a bad deploy?; sparse — may be n/a)."
+            params:
+              queries:
+                - name: recent_syncs_1h
+                  query: 'sum by (name) (increase(argocd_app_sync_total{name="$app", project="$project"}[1h]))'
+                - name: sync_failures_1h
+                  query: 'sum by (name, phase) (increase(argocd_app_sync_total{name="$app", project="$project",phase=~"Error|Failed"}[1h]))'
+                - name: k8s_apply_errors
+                  query: 'sum by (name, verb, response_code) (increase(argocd_app_k8s_request_total{name="$app", project="$project",response_code!~"2.."}[30m]))'
           - tool_id: "tool.capture_diagnostics"
-            description: "Identify certificate scope and expiration timeline."
-      - step: 2
-        title: "Validate TLS chain and consumers"
-        tool_calls:
+            description: "Pod/workload events (restarts, OOM, image-pull, probe failures, scheduling) in the app's destination namespace for the failing resource named in step 2."
           - tool_id: "tool.read_logs"
-            description: "Check x509/TLS errors across server/repo-server/dex paths."
-    remediation:
-      - action: "rotate_certificate"
-        description: "Renew/rotate certificate before expiry and verify ArgoCD component trust."
-        tool_id: "forge.restart_deployment"
+            description: "Failing workload logs in the destination namespace — the actual crash/exception/dependency error behind the CrashLoopBackOff/Error exit."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — rollback/sync are Argo CD ops; fixing the workload is app-team work
+      - action: "rollback_app_revision"
+        description: "When step 2 shows the degradation started right after a sync/deploy: roll the Argo CD app back to the last healthy revision (`argocd app rollback <app> <revision>`, or re-sync the previous Git commit). Fast mitigation while the bad change is fixed in Git."
+        tool_id: ""
         requires_approval: true
-    escalation: "#gitops-oncall + #security-ops"
+      - action: "fix_unhealthy_workload"
+        description: "When the app is Synced but Degraded (runtime failure named in step 2): fix the workload itself — image/tag, resource limits (OOM), failing dependency, or bad probe config. This is app-team work in the destination namespace, not an Argo CD operation."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning application/service team immediately (a Degraded app usually means user-facing impact). Escalate to the GitOps/platform team if many apps degraded together from a shared chart/image."
+    follow_up:
+      - "Confirm health_status returns to Healthy after the rollback/fix, and that the app is Synced."
+      - "If a bad sync caused it, add manifest validation / a canary/health-gate so a broken change cannot roll out cluster-wide."
 
   - name: "ArgoCDAppHealthUnknown"
     patterns:
-      - "ArgoCDAppHealthUnknown"
-      - "health_status=Unknown"
+      [
+        "ArgoCDAppHealthUnknown",
+        "argocd app health Unknown",
+        "health status unknown",
+        "health signals inconclusive",
+      ]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Capture diagnostics snapshot"
+        title: "Confirm Unknown health and check whether it is one app or many (a cluster-connection tell)"
+        description: >-
+          ArgoCDAppHealthUnknown fires when argocd_app_info{health_status="Unknown"} == 1 for >15m —
+          Argo CD cannot evaluate the app's health. app_state is the alerting app's sync+health;
+          unknown_apps lists all Unknown apps; unknown_total is the count. Interpret: MANY apps
+          Unknown at once (unknown_total high, especially all on the same dest_server/cluster) =>
+          this is almost always a CLUSTER-CONNECTION or controller problem, NOT a per-app issue —
+          go to step 2. Just THIS app Unknown while others are fine => an app-specific problem: a
+          custom/CRD resource with no health check, a resource stuck Progressing, or a malformed
+          manifest the controller cannot assess. sync_status also Unknown/empty reinforces a
+          comparison/connection failure over an app-config issue.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Inspect resource kinds without health checks and controller health evaluations."
+          - tool_id: "tool.query_metrics"
+            description: "The alerting app's state, the list of Unknown-health apps, and the cluster Unknown count (one app vs many)."
+            params:
+              queries:
+                - name: app_state
+                  query: 'max by (name, project, sync_status, health_status, dest_server, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                - name: unknown_apps
+                  query: 'max by (name, project, dest_server) (argocd_app_info{health_status="Unknown"} == 1)'
+                - name: unknown_total
+                  query: 'sum(argocd_app_info{health_status="Unknown"} == 1) or vector(0)'
       - step: 2
-        title: "Check health assessment limitations"
+        title: "Check the destination-cluster connection and cache freshness, and whether the controller is keeping up"
+        description: >-
+          Unknown health across apps is the classic symptom of the controller losing its view of the
+          destination cluster. cluster_connection_ok is argocd_cluster_connection_status (1 =
+          connected); cluster_cache_age_s is how stale the cluster cache is; k8s_api_errors are
+          non-2xx responses the controller got from the destination Kubernetes API;
+          reconcile_p95_s is controller reconcile latency. Interpret: cluster_connection_ok != 1 =>
+          the controller cannot reach the destination cluster API (credentials expired, network/
+          firewall, API server down) — THE root cause for Unknown health; fix the cluster connection.
+          cluster_cache_age_s very large / growing => the cluster cache is stale (the controller is
+          not refreshing it — connection or controller-overload). k8s_api_errors elevated (401/403/
+          timeouts) => auth/RBAC or API pressure on the destination cluster. reconcile_p95_s high =>
+          the controller is overloaded and not getting to apps (cross-link ArgocdSlowReconciliation).
+          All healthy and only one app Unknown => app-specific (custom resource without a health
+          check) — say so.
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Destination-cluster connection status, cluster cache age, controller→cluster API error rate, and reconcile p95 (controller-wide)."
+            params:
+              queries:
+                - name: cluster_connection_ok
+                  query: 'min(argocd_cluster_connection_status)'
+                - name: cluster_cache_age_s
+                  unit: "s"
+                  query: 'max(argocd_cluster_cache_age_seconds)'
+                - name: k8s_api_errors_15m
+                  query: 'sum by (response_code) (increase(argocd_app_k8s_request_total{response_code!~"2.."}[15m])) or vector(0)'
+                - name: reconcile_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+          - tool_id: "tool.query_metrics"
+            description: "Workload state in the app's destination namespace (KSM) — separates a genuine workload/CRD problem from a cluster-connection/cache issue."
+            params:
+              queries:
+                - name: crashloop_or_imagepull_pods
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$dest_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName"} == 1'
+                - name: notready_pods
+                  query: 'kube_pod_status_ready{namespace="$dest_namespace",condition="true"} == 0'
+                - name: not_running_pods
+                  query: 'kube_pod_status_phase{namespace="$dest_namespace",phase=~"Failed|Pending|Unknown"} == 1'
           - tool_id: "tool.read_logs"
-            description: "Review health-check errors for CRDs/custom resources."
-    remediation:
-      - action: "add_health_check_or_fix_resource_state"
-        description: "Define custom health checks for CRDs or remediate unknown resource state."
-        tool_id: "forge.restart_deployment"
+            description: "application-controller logs filtered for cluster-connection / comparison / 'failed to get cluster info' / auth / timeout signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "restore_cluster_connection"
+        description: "When step 2 shows cluster_connection_ok != 1 or auth errors: repair the destination-cluster connection — refresh the cluster credentials/token in Argo CD, verify network/firewall to the API server, and confirm the API server is healthy. Health evaluation resumes once the controller can read the cluster."
+        tool_id: ""
         requires_approval: true
-    escalation: "#gitops-oncall"
+      - action: "add_resource_health_check"
+        description: "When only one app is Unknown and the cluster connection is fine: the app likely has a custom/CRD resource with no health assessment — add a resourceHealthChecks / Lua health script for that kind, or confirm the resource is genuinely healthy. App-config fix, not a connection issue."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform on-call when many apps are Unknown (cluster-connection/controller cause — broad visibility loss). Owning team for a single app with a custom-resource health-check gap."
+    follow_up:
+      - "After restoring the connection, confirm health_status leaves Unknown for the affected apps and cluster_cache_age_seconds drops."
+      - "If a custom resource lacks a health check, register one so its apps don't sit in Unknown."
 
-  - name: "ArgoCDDexDown"
+  # ============================================================ SYNC FAILURE
+  - name: "ArgoCDSyncFailed"
     patterns:
-      - "ArgoCDDexDown"
-      - "dex down"
-      - "oidc provider down"
+      [
+        "ArgoCDSyncFailed",
+        "argocd app sync failed",
+        "sync operation failed",
+        "repeated sync failures",
+        "operation phase Failed",
+      ]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Capture diagnostics snapshot"
+        title: "Confirm repeated sync failures, name the app, and read the failing phase"
+        description: >-
+          ArgoCDSyncFailed fires when Error/Failed sync operations for an app exceed 3 in the last
+          hour. app_sync_failures_1h is the alert app's failed-sync count by phase; failing_apps
+          lists every app with recent sync failures (names the firing app + whether it is spreading);
+          app_state gives its current sync+health. Interpret: phase="Error" => the operation errored
+          before/around applying (often repo/manifest generation or a pre-sync hook). phase="Failed"
+          => resources were applied but the sync did not reach a healthy/Synced result (apply
+          rejected, a resource never became healthy, or a sync hook failed). MANY apps failing at
+          once => a shared cause (repo-server, Git, or destination-cluster problem — steps 2), not a
+          single bad manifest. Report against the alert's OWN app.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Confirm Dex pod health and OIDC config/secret validity."
+          - tool_id: "tool.query_metrics"
+            description: "The alert app's failed-sync count by phase, the cluster list of failing apps, and the app's current state."
+            params:
+              queries:
+                - name: app_sync_failures_1h
+                  query: 'sum by (name, phase) (increase(argocd_app_sync_total{name="$app", project="$project",phase=~"Error|Failed"}[1h]))'
+                - name: failing_apps
+                  query: 'sum by (name, project, phase) (increase(argocd_app_sync_total{phase=~"Error|Failed"}[1h])) > 0'
+                - name: app_state
+                  query: 'max by (name, sync_status, health_status, repo) (argocd_app_info{name="$app", project="$project"})'
       - step: 2
-        title: "Inspect auth errors"
+        title: "Classify the cause: Git/repo, Kubernetes apply, or a broken control-plane dependency"
+        description: >-
+          Argo CD syncs fail at one of three stages. git_fetch_fails_30m / git_lsremote_fails_30m are
+          repo-server Git errors (manifest generation stage); k8s_apply_errors are non-2xx responses
+          from the destination API (apply stage); repo_server_up / controller_up confirm the
+          components are alive. Interpret: git_fetch/lsremote fails > 0 => Git access is broken
+          (auth/creds/network/missing revision) — the sync can't even generate manifests (cross-link
+          ArgocdGitFetchErrors); usually hits all apps on that repo. k8s_apply_errors with 403/422/409
+          => RBAC, admission webhook, or a schema/conflict error on apply — inspect the specific verb/
+          code and the manifest. repo_server_up==0 or controller_up==0 => a control-plane component is
+          down (cross-link the component-down entry) and no app can sync. All green and only one app
+          failing => an app-specific manifest / sync-hook / invalid-resource error — read the sync
+          result detail. HONEST GAP: the exact apply error text / failed hook needs the sync result
+          (argocd app get / controller logs) — name the app, phase, and stage; point there for the
+          exact message.
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Repo-server Git errors, destination-cluster apply error codes, and repo-server/controller up state — to place the failure at the Git, apply, or control-plane stage."
+            params:
+              queries:
+                - name: git_fetch_fails_30m
+                  query: 'sum(increase(argocd_git_fetch_fail_total[30m])) or vector(0)'
+                - name: git_lsremote_fails_30m
+                  query: 'sum(increase(argocd_git_lsremote_fail_total[30m])) or vector(0)'
+                - name: k8s_apply_errors
+                  query: 'sum by (name, verb, response_code) (increase(argocd_app_k8s_request_total{name="$app", project="$project",response_code!~"2.."}[30m]))'
+                - name: repo_server_up
+                  query: 'max(up{job=~".*argocd-repo-server-metrics"}) or vector(0)'
+                - name: controller_up
+                  query: 'max(up{job=~".*argocd-application-controller-metrics"}) or vector(0)'
           - tool_id: "tool.read_logs"
-            description: "Look for OIDC issuer, TLS, or connector auth failures."
+            description: "application-controller + repo-server logs filtered for the sync/apply/hook/repo error around the failure window."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "fix_root_cause_by_stage"
+        description: "Fix at the stage step 2 identified: Git errors => restore repo access/credentials/revision (ArgocdGitFetchErrors); apply 403/422 => fix RBAC/admission/manifest schema; component down => recover it first. Then re-sync."
+        tool_id: ""
+        requires_approval: true
+      - action: "rollback_or_retry_sync"
+        description: "If a specific bad manifest change caused the failures, revert that Git commit (or roll the app back) and let the sync succeed on the known-good revision, rather than retrying the broken one."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning app team for a single-app manifest/hook failure; GitOps/platform team when failures span many apps (shared Git/repo-server/cluster cause)."
+    follow_up:
+      - "Confirm the failed-sync rate returns to 0 and the app reaches Synced+Healthy after the fix."
+      - "For a recurring bad-manifest pattern, add CI manifest validation before merge."
+
+  # ============================================================ CONTROL-PLANE DOWN
+  - name: "ArgocdControllerDown"
+    patterns:
+      [
+        "ArgocdControllerDown",
+        "ArgocdServerDown",
+        "ArgocdRepoServerDown",
+        "argocd application-controller down",
+        "argocd server down",
+        "argocd repo-server down",
+        "argocd component down",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify WHICH control-plane component is down and whether it is a scrape gap or a real outage"
+        description: >-
+          This entry serves the three core control-plane down alerts — ArgocdControllerDown,
+          ArgocdServerDown, ArgocdRepoServerDown — each firing when its component's
+          up{job=~".*argocd-<component>-metrics"} == 0 (or absent) for >5m. The three up_* queries
+          report each component's scrape state (0/absent = down, 1 = up), so the RCA can name the
+          component that fired even though they share this entry. Interpret: controller_up == 0 =>
+          RECONCILIATION IS HALTED — no drift detection, no syncs, app health/sync status goes stale
+          (highest GitOps impact). server_up == 0 => the API/UI/CLI/gRPC and webhooks are down —
+          operators lose UI/CLI and webhook syncs stop, but the controller may still reconcile in the
+          background. repo_server_up == 0 => manifest generation and Git access fail, so syncs/reconcile
+          error or stall. More than one down => a broader Argo CD outage (namespace-level: node drain,
+          resource pressure, or a bad rollout of the whole release). A component that is now 1 again =>
+          recovered; say it likely self-resolved.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Up/down scrape state of each Argo CD control-plane component (names which one is down)."
+            params:
+              queries:
+                - name: controller_up
+                  query: 'max(up{job=~".*argocd-application-controller-metrics"}) or vector(0)'
+                - name: server_up
+                  query: 'max(up{job=~".*argocd-server-metrics"}) or vector(0)'
+                - name: repo_server_up
+                  query: 'max(up{job=~".*argocd-repo-server-metrics"}) or vector(0)'
+      - step: 2
+        title: "Confirm the functional impact and read the pod state/logs for the down component"
+        description: >-
+          Confirm the outage from behaviour, not just the scrape. reconcile_rate is the controller's
+          app-reconcile throughput (should drop toward 0 if the controller is truly down);
+          git_request_rate is repo-server Git activity (drops if repo-server is down); apps_visible is
+          how many apps the controller is still reporting (goes stale/absent when the controller is
+          gone). Interpret: reconcile_rate ~0 with controller_up==0 => reconciliation genuinely
+          stopped (not just a scrape blip). git_request_rate ~0 with repo_server_up==0 => manifest/Git
+          operations stopped. Then read the pod state/logs for the affected component: CrashLoopBackOff
+          / OOMKilled / probe failures / a bad image or config. Argo CD components are singletons or
+          small replica sets, so a crash-looping or OOMing pod is the usual cause. HONEST GAP: whether
+          this is a node/scheduling problem vs the pod itself needs the pod events surfaced here.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Reconcile throughput, repo-server Git request rate, and app visibility — the functional confirmation that the component is really down."
+            params:
+              queries:
+                - name: reconcile_rate
+                  query: 'sum(rate(argocd_app_reconcile_count[5m])) or vector(0)'
+                - name: git_request_rate
+                  query: 'sum(rate(argocd_git_request_total[5m])) or vector(0)'
+                - name: apps_visible
+                  query: 'count(argocd_app_info) or vector(0)'
+          - tool_id: "tool.query_metrics"
+            description: "KSM pod-state of the Argo CD component pods in the argo-cd namespace — names WHICH pod crashed/OOMed and its restart count, so the RCA gives the concrete cause of the outage rather than just 'component down'."
+            params:
+              queries:
+                - name: component_restarts_30m
+                  query: 'topk(8, increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*argocd.*"}[30m]))'
+                - name: component_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~".*argocd.*",reason=~"OOMKilled|Error|ContainerCannotRun|DeadlineExceeded"} == 1'
+                - name: component_waiting_reason
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~".*argocd.*",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError"} == 1'
+                - name: component_notready
+                  query: 'kube_pod_status_ready{namespace="$namespace",pod=~".*argocd.*",condition="true"} == 0'
+                - name: component_not_running
+                  query: 'kube_pod_status_phase{namespace="$namespace",pod=~".*argocd.*",phase=~"Failed|Pending|Unknown"} == 1'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod state / restarts / OOM / events for the Argo CD component that is down (argo-cd namespace)."
+          - tool_id: "tool.read_logs"
+            description: "The down component's pod logs filtered for panic/OOM/crash/config-error/bind signatures."
+            params:
+              tail_lines: 200
     remediation:
-      - action: "restart_dex"
-        description: "Restart Dex after fixing invalid provider configuration/secrets."
+      - action: "recover_argocd_component"
+        description: "Primary fix once step 2 names the cause: recover the down component. Crash/OOM => raise its resources or fix the bad config/image and restart the deployment/statefulset (repo-server & server are Deployments; the application-controller is a StatefulSet). Node/scheduling => reschedule. Restarting restores the component; confirm the up signal returns."
         tool_id: "forge.restart_deployment"
         requires_approval: true
-    escalation: "#gitops-oncall"
+      - action: "address_broader_outage"
+        description: "If more than one component is down: treat as a namespace-level incident — check for a node drain, resource quota/pressure, PDB blocking, or a bad rollout of the whole Argo CD release, and recover in dependency order (redis/repo-server → controller → server)."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform on-call IMMEDIATELY when the application-controller is down (GitOps halted) or multiple components are down. Server-only down is UI/API impact — urgent but reconciliation continues."
+    follow_up:
+      - "Confirm the component's up returns to 1 and reconcile/Git throughput recovers to baseline."
+      - "If a component OOMs/crashes repeatedly, right-size it (controller memory scales with app/resource count; consider controller sharding) rather than restart-looping."
 
+  # ============================================================ GIT
+  - name: "ArgocdGitFetchErrors"
+    patterns:
+      [
+        "ArgocdGitFetchErrors",
+        "argocd git fetch errors",
+        "git fetch failed",
+        "repository connectivity",
+        "ls-remote failed",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the fetch failures, name the repo, and separate fetch vs ls-remote"
+        description: >-
+          ArgocdGitFetchErrors fires when repo-server Git fetches fail >5 times in 15m for a repo.
+          git_fetch_fails_15m is fetch failures (cloning/fetching objects); git_lsremote_fails_15m is
+          ls-remote failures (listing refs — the first thing Argo CD does to resolve a revision);
+          repo_pending is the repo-server's pending-request backlog. Interpret: ls-remote failures
+          dominate => Argo CD cannot even reach/authenticate to the repo (bad host, DNS, credentials/
+          deploy-key revoked, or repo deleted) — a connectivity/auth problem at the front door. fetch
+          failures dominate (ls-remote ok) => it can reach the repo but the fetch fails — often a
+          missing/garbage-collected revision, a large-repo timeout, or an LFS/submodule issue.
+          repo_pending climbing => fetch failures are backing up the repo-server queue (broader sync
+          delay). Name the repo (and revision where present). NOTE: the `repo` label on the failure
+          metric can be an on-disk cache path (/tmp/_argocd-repo/...); cross-reference the git
+          request metrics / app repo labels for the human repo URL.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Git fetch vs ls-remote failure counts over 15m and the repo-server pending backlog."
+            params:
+              queries:
+                - name: git_fetch_fails_15m
+                  query: 'sum(increase(argocd_git_fetch_fail_total{rtf_service="$rtf_service"}[15m])) or vector(0)'
+                - name: git_lsremote_fails_15m
+                  query: 'sum(increase(argocd_git_lsremote_fail_total{rtf_service="$rtf_service"}[15m])) or vector(0)'
+                - name: repo_pending
+                  query: 'max(argocd_repo_pending_request_total{rtf_service="$rtf_service"}) or vector(0)'
+      - step: 2
+        title: "Measure Git latency/throughput and the blast radius on app syncs"
+        description: >-
+          git_request_p95_s is repo-server Git request latency by type (ls-remote/fetch); git_request_rate
+          is the request volume; apps_on_repos / sync_failures_1h show whether apps are failing to sync
+          as a result. Interpret: git_request_p95_s high with failures => the Git provider is slow or the
+          repo-server is struggling (network, provider incident, huge repo). git_request_rate collapsed
+          to ~0 while failures rise => Git access is effectively down for that repo. sync_failures_1h > 0
+          across apps on the affected repo => the Git problem is now breaking deployments (drift building).
+          Isolated failures with healthy latency and no sync impact => a transient/flaky blip. HONEST
+          GAP: the exact Git error (auth denied vs host unreachable vs unknown revision) needs the
+          repo-server logs — name the repo and point there for the precise message.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Git request p95 latency by type, request rate, and recent app sync failures (blast radius)."
+            params:
+              queries:
+                - name: git_request_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (request_type, le) (rate(argocd_git_request_duration_seconds_bucket{rtf_service="$rtf_service"}[5m])))'
+                - name: git_request_rate
+                  query: 'sum by (request_type) (rate(argocd_git_request_total{rtf_service="$rtf_service"}[5m]))'
+                - name: sync_failures_1h
+                  query: 'sum(increase(argocd_app_sync_total{phase=~"Error|Failed"}[1h])) or vector(0)'
+          - tool_id: "tool.read_logs"
+            description: "repo-server logs filtered for git/auth/ls-remote/fetch/'authentication required'/'could not resolve host'/'revision not found' signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — credentials/network/repo config fix, not a restart
+      - action: "restore_git_access"
+        description: "Primary fix: repair repo access for the named repo — renew the credential/deploy key/token (revoked or expired keys are the most common cause), fix the repo URL/host or network egress/DNS from the repo-server, or confirm the referenced revision still exists. Fetches recover once access is restored."
+        tool_id: ""
+        requires_approval: true
+      - action: "handle_provider_slowness"
+        description: "If step 2 shows high Git latency (provider slow / very large repo) rather than hard failures: check the Git provider status, consider shallow clones / repo size reduction, and confirm repo-server has enough CPU/parallelism. Transient provider blips may self-resolve."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform team + the repo owner. Escalate when the Git failures are causing app sync failures (deployments blocked) or span many repos (provider/network-wide)."
+    follow_up:
+      - "Confirm git fetch/ls-remote failure counts return to 0 and repo_pending drains."
+      - "If a credential expired, add rotation/expiry monitoring so it does not recur silently."
+
+  # ============================================================ RECONCILIATION
+  - name: "ArgocdSlowReconciliation"
+    patterns:
+      [
+        "ArgocdSlowReconciliation",
+        "argocd slow reconciliation",
+        "reconciliation is slow",
+        "reconcile latency high",
+        "drift detection delayed",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the controller reconcile latency and load (this is controller-wide, not per-app)"
+        description: >-
+          ArgocdSlowReconciliation fires when the application-controller p95 reconcile time exceeds
+          120s for >15m — Git changes and drift detection are delayed for ALL apps this controller
+          manages. NOTE: reconcile metrics carry NO app `name` label, so this is a controller-level
+          signal, not a per-app one. reconcile_p95_s / reconcile_p99_s are the reconcile-latency
+          percentiles; avg_reconcile_s is mean reconcile time; reconcile_rate is throughput;
+          apps_managed is the number of apps the controller reconciles. Interpret: p95 >> 120s with a
+          high apps_managed => the controller has too many apps for its shard/resources (the classic
+          cause — scale controller resources or add shards). p99 far above p95 => a few very expensive
+          apps (huge manifests / many resources) dominate. reconcile_rate dropping while latency rises
+          => the controller is saturated and falling behind. Establish whether it is broad slowness
+          (all reconciles slow) vs a heavy tail before assigning cause in step 2.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Controller reconcile p95/p99, mean, throughput, and number of managed apps (load vs latency)."
+            params:
+              queries:
+                - name: reconcile_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                - name: reconcile_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                - name: avg_reconcile_s
+                  unit: "s"
+                  query: 'sum(rate(argocd_app_reconcile_sum[5m])) / sum(rate(argocd_app_reconcile_count[5m]))'
+                - name: reconcile_rate
+                  query: 'sum(rate(argocd_app_reconcile_count[5m])) or vector(0)'
+                - name: apps_managed
+                  query: 'count(argocd_app_info) or vector(0)'
+      - step: 2
+        title: "Localise the bottleneck: destination Kubernetes API, Git, Redis cache, or stale cluster cache"
+        description: >-
+          A reconcile does Git (manifest gen) + Kubernetes (list/get/apply) + Redis (cache) work, so
+          the slow leg is one of these. kubectl_api_p95_s is the controller→destination-API request
+          latency; git_request_p95_s is repo-server Git latency; redis_p95_s is Argo CD's Redis
+          latency; cluster_cache_age_s is how stale the cluster cache is. Interpret: kubectl_api_p95_s
+          high => the destination cluster's API is slow/throttling the controller (list/watch/apply)
+          — the most common external bottleneck; check destination API health and any client-side
+          rate limiting. git_request_p95_s high => manifest generation is the bottleneck (repo-server/
+          Git slow — cross-link ArgocdGitFetchErrors). redis_p95_s high => the Redis cache is slow, so
+          the controller recomputes more (cross-link the Argo CD Redis entry). cluster_cache_age_s
+          large => the cluster cache is stale and being rebuilt (expensive). All external legs healthy
+          => the controller itself is CPU/memory-starved or under-sharded — scale it. Name the slow
+          leg with its number.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Destination-API, Git, and Redis request p95 latencies plus cluster cache age — to name the slow leg of reconciliation."
+            params:
+              queries:
+                - name: kubectl_api_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_kubectl_request_duration_seconds_bucket[5m])))'
+                - name: git_request_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_git_request_duration_seconds_bucket[5m])))'
+                - name: redis_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_redis_request_duration_seconds_bucket[5m])))'
+                - name: cluster_cache_age_s
+                  unit: "s"
+                  query: 'max(argocd_cluster_cache_age_seconds)'
+          - tool_id: "tool.query_metrics"
+            description: "application-controller pod CPU cores, memory working set, and memory-limit utilisation (cAdvisor/KSM) — confirms whether the controller itself is resource-starved (the classic 'too many apps per shard' cause) vs a slow external leg."
+            params:
+              queries:
+                - name: controller_cpu_cores
+                  unit: "cores"
+                  query: 'topk(3, sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~".*application-controller.*",container!="",container!="POD"}[5m])))'
+                - name: controller_mem_mib
+                  unit: "MiB"
+                  query: 'topk(3, sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~".*application-controller.*",container!="",container!="POD"}) / 1024 / 1024)'
+                - name: controller_mem_limit_pct
+                  unit: "%"
+                  query: 'topk(3, 100 * sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~".*application-controller.*",container!="",container!="POD"}) / sum by (pod) (kube_pod_container_resource_limits{namespace="$namespace",pod=~".*application-controller.*",resource="memory"}))'
+                - name: controller_restarts_30m
+                  query: 'topk(3, increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*application-controller.*"}[30m]))'
+    remediation: # suggestion-only — capacity / sharding / dependency tuning
+      - action: "scale_or_shard_controller"
+        description: "When step 1 shows high app count + broad slowness and step 2 clears the external legs: give the application-controller more CPU/memory, or enable/add controller SHARDS (spread apps across controller replicas). Controller reconcile cost scales with managed apps and resources."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_slow_dependency"
+        description: "When step 2 names a slow leg: address it — destination-API slowness (raise client QPS/burst, fix API pressure), Git slowness (repo-server capacity / repo size), or Redis slowness (Argo CD Redis entry). Fixing the bottleneck restores reconcile latency without scaling the controller."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform team. Escalate if slow reconciliation is delaying critical deployments (drift/sync lag) — it degrades the whole GitOps loop, not one app."
+    follow_up:
+      - "Confirm reconcile p95 drops back under threshold after scaling/sharding or fixing the slow dependency."
+      - "Track apps-per-controller-shard as a capacity metric so reconcile latency is managed proactively."
+
+  # ============================================================ REDIS
   - name: "ArgoCDRedisDown"
     patterns:
-      - "ArgoCDRedisDown"
-      - "argocd redis down"
-      - "redis unavailable"
+      [
+        "ArgoCDRedisDown",
+        "ArgocdRedisConnectionErrors",
+        "argocd redis down",
+        "argocd redis connection errors",
+        "argocd cache unavailable",
+        "failed redis requests",
+      ]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Capture diagnostics snapshot"
+        title: "Confirm the Redis problem — down vs failing requests — and how hard it is hitting"
+        description: >-
+          This entry serves ArgoCDRedisDown (the argocd-redis cache is unreachable) and
+          ArgocdRedisConnectionErrors (Argo CD components report failed Redis requests). redis_up is
+          the redis scrape state — CAVEAT: in this fleet there is often NO up{job=~".*argocd-redis.*"}
+          target, so redis_up may be empty/absent; do NOT read absent as "healthy" — fall back to the
+          request metrics below. redis_failed_5m is the count of failed Redis requests
+          (argocd_redis_request_total{failed="true"}); redis_request_rate is total Redis request
+          volume by initiator (which component is talking to Redis). Interpret: redis_failed_5m > 0 and
+          rising => components cannot use the cache — confirmed Redis connection errors (the request
+          metric is the reliable signal here, not `up`). redis_request_rate collapsing toward 0 =>
+          components stopped reaching Redis at all (cache down / network). redis_up==0 (when present) =>
+          the redis pod scrape is down. Name which initiator (application-controller / server /
+          repo-server) is seeing the failures.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"
-            description: "Check Redis pod status, storage, and network readiness."
+          - tool_id: "tool.query_metrics"
+            description: "Redis scrape state (may be absent), failed-request count over 5m, and request rate by initiating component."
+            params:
+              queries:
+                - name: redis_up
+                  query: 'max(up{job=~".*argocd-redis.*"})'
+                - name: redis_failed_5m
+                  query: 'sum by (initiator) (increase(argocd_redis_request_total{failed="true"}[5m])) or vector(0)'
+                - name: redis_request_rate
+                  query: 'sum by (initiator) (rate(argocd_redis_request_total[5m])) or vector(0)'
       - step: 2
-        title: "Inspect dependency failures"
+        title: "Measure the impact on Argo CD (cache misses → recompute → slow reconcile) and read redis pod state"
+        description: >-
+          Argo CD treats Redis as an ephemeral cache for generated manifests, live resource trees, and
+          app state, so no desired state is lost — but losing it forces expensive recomputation.
+          redis_p95_s is Redis request latency; reconcile_p95_s is controller reconcile latency (rises
+          when the cache is unavailable); redis_failure_ratio is the share of Redis requests failing.
+          Interpret: redis_failure_ratio high AND reconcile_p95_s climbing => the cache loss is
+          degrading reconciliation and UI/API responsiveness (recompute on every request) — real
+          impact even though data is safe. redis_p95_s high without failures => Redis is slow/pressured
+          (memory/eviction) rather than down. Then read the argocd-redis pod state/logs: OOMKilled /
+          evicted / crashloop / redis-ha sentinel failover / PDB blocking. Likely causes per the
+          alert: crashed/OOM/evicted redis pod, HA failover, or a resource/PDB issue.
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Redis request p95 latency, the failure ratio, and controller reconcile p95 (cache-loss impact)."
+            params:
+              queries:
+                - name: redis_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_redis_request_duration_seconds_bucket[5m])))'
+                - name: redis_failure_ratio
+                  unit: "%"
+                  query: '100 * sum(rate(argocd_redis_request_total{failed="true"}[5m])) / sum(rate(argocd_redis_request_total[5m]))'
+                - name: reconcile_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+          - tool_id: "tool.query_metrics"
+            description: "KSM pod-state of the argocd-redis pod (restarts / OOM / crashloop / not-ready) in the argo-cd namespace. NOTE: in this fleet argocd-redis is often NOT a scraped pod (no up/KSM series) — if these are empty, say the redis pod state is not visible here and rely on the argocd_redis_request failure/latency signals + the redis pod's own events."
+            params:
+              queries:
+                - name: redis_pod_restarts_30m
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*argocd-redis.*"}[30m])) or vector(0)'
+                - name: redis_pod_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~".*argocd-redis.*",reason=~"OOMKilled|Error|ContainerCannotRun"} == 1'
+                - name: redis_pod_waiting_reason
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~".*argocd-redis.*",reason=~"CrashLoopBackOff|ImagePullBackOff|CreateContainerConfigError"} == 1'
+                - name: redis_pod_notready
+                  query: 'kube_pod_status_ready{namespace="$namespace",pod=~".*argocd-redis.*",condition="true"} == 0'
+          - tool_id: "tool.capture_diagnostics"
+            description: "argocd-redis pod state — restarts / OOMKilled / evicted / events (argo-cd namespace)."
           - tool_id: "tool.read_logs"
-            description: "Review argocd-server/controller logs for Redis timeouts and request errors."
+            description: "argocd-redis (and redis-ha/sentinel if present) pod logs filtered for OOM / crash / failover / connection-refused signatures."
+            params:
+              tail_lines: 200
     remediation:
-      - action: "recover_redis"
-        description: "Restore Redis availability and then verify ArgoCD API responsiveness."
+      - action: "recover_argocd_redis"
+        description: "Primary fix: recover the argocd-redis cache. OOM/eviction => raise its memory request/limit; crashloop/bad config => fix and restart; HA failover => let sentinel settle or restart the failed replica. Restarting the redis deployment restores caching; Argo CD repopulates it (no desired state lost). Confirm failed requests return to 0."
         tool_id: "forge.restart_deployment"
         requires_approval: true
-    escalation: "#gitops-oncall"
+      - action: "relieve_recompute_pressure"
+        description: "While Redis recovers, expect higher controller/repo-server CPU and Git/API load from recomputation; if that is causing a reconcile backlog, temporarily give the controller/repo-server headroom. Transient — it subsides once the cache is warm again."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform on-call — a down Redis degrades reconcile throughput and UI/API across all apps. Urgency rises if reconcile latency/backlog is building; data itself is safe (ephemeral cache)."
+    follow_up:
+      - "Confirm failed Redis requests return to 0, redis latency normalises, and reconcile p95 recovers."
+      - "If OOM/eviction recurs, right-size argocd-redis and review its eviction policy / memory limit."
 
-general_diagnostic:
-  steps:
-    - step: 1
-      title: "Capture diagnostics snapshot"
-      tool_calls:
-        - tool_id: "tool.capture_diagnostics"
-          description: "Gather pod states, events, and recent logs for argocd components."
-    - step: 2
-      title: "Review application logs"
-      tool_calls:
-        - tool_id: "tool.read_logs"
-          description: "Filter error logs across server, controller, repo-server, dex, and redis."
-    - step: 3
-      title: "Check resource utilization"
-      tool_calls:
-        - tool_id: "tool.fetch_metrics"
-          description: "Check CPU/memory and request error metrics for ArgoCD components."
-    - step: 4
-      title: "Generate AI root cause analysis"
-      tool_calls:
-        - tool_id: "tool.generate_root_cause"
-          description: "Correlate sync, health, Git access, auth, and platform dependencies."
-
-available_tools:
-  - tool_id: "tool.read_logs"
-    endpoint: "/api/tools/read-logs"
-    description: "Fetch pod logs by app_name or deployment_name"
-    params: ["namespace", "app_name", "deployment_name", "tail_lines", "since"]
-  - tool_id: "tool.fetch_metrics"
-    endpoint: "/api/tools/fetch-metrics"
-    description: "Fetch pod resource metrics and HPA status"
-    params: ["namespace", "app_name", "deployment_name"]
-  - tool_id: "tool.capture_diagnostics"
-    endpoint: "/api/tools/capture-diagnostics"
-    description: "Single-shot snapshot: logs + metrics + events"
-    params: ["namespace", "app_name", "deployment_name"]
-  - tool_id: "forge.restart_deployment"
-    endpoint: "/api/tools/restart-deployment"
-    description: "kubectl rollout restart — requires human approval"
-    params: ["namespace", "app_name", "deployment_name"]
-  - tool_id: "forge.scale_deployment"
-    endpoint: "/api/tools/scale-deployment"
-    description: "kubectl scale deployment — requires human approval"
-    params: ["namespace", "app_name", "deployment_name", "replicas"]
-  - tool_id: "forge.revert_deployment"
-    endpoint: "/api/tools/revert-deployment"
-    description: "kubectl rollout undo — requires human approval"
-    params: ["namespace", "app_name", "deployment_name"]
-  - tool_id: "tool.generate_root_cause"
-    endpoint: "/api/tools/generate-root-cause"
-    description: "AI-powered root cause analysis"
-    params: ["namespace", "app_name", "deployment_name"]
-
-key_metrics:
-  - name: "argocd_app_sync_status"
-    threshold: "OutOfSync > 10m"
-    severity: medium
-  - name: "argocd_app_health_status"
-    threshold: "Degraded/Unknown > 5m"
-    severity: high
-  - name: "argocd_git_request_total"
-    threshold: "fetch failures > 0 for 5m"
-    severity: high
-  - name: "kube_pod_container_status_restarts_total{container=\"argocd-application-controller\"}"
-    threshold: "restarts > 3 in 15m"
-    severity: critical
-  - name: "argocd_cert_expiry_timestamp_seconds"
-    threshold: "cert expiry < 30d"
-    severity: high
-
-escalation:
-  P1: "Page #gitops-oncall immediately. If application-controller is impacted, treat as GitOps control-plane incident."
-  P2: "Notify #gitops-oncall within 15 minutes; involve owning service team when app-specific."
-  P3: "Create backlog ticket and review during platform triage."
-  P4: "Backlog"
+  # ============================================================ AUTH / SSO
+  - name: "ArgoCDDexDown"
+    patterns:
+      [
+        "ArgoCDDexDown",
+        "argocd dex down",
+        "dex server down",
+        "sso login failing",
+        "oidc identity broker down",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm Dex is down and gauge the login impact (SSO only — reconciliation is unaffected)"
+        description: >-
+          ArgoCDDexDown fires when up{job=~".*argocd-dex.*"} == 0 (or absent) for >2m. Dex is the
+          bundled OIDC/SSO identity broker that federates Argo CD logins to the upstream IdP (Google/
+          GitHub/LDAP/SAML). dex_up is its scrape state; server_up confirms the API server itself is
+          still up (SSO can fail while the server is fine); login_rate is login request throughput.
+          Interpret: dex_up == 0 with server_up == 1 => the UI/API is reachable but SSO logins FAIL —
+          users cannot sign in via the IdP, so manual syncs/rollbacks are blocked (local admin creds,
+          if enabled, are the break-glass path). login_rate dropping to 0 => users are being blocked
+          (or nobody is trying). CRITICAL context: Dex down does NOT stop reconciliation — already-
+          configured apps keep syncing in the background; this is an access-path outage, not a GitOps
+          outage. dex_up back to 1 => recovered.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Dex scrape state, argocd-server up state, and login request rate (SSO impact scope)."
+            params:
+              queries:
+                - name: dex_up
+                  query: 'max(up{job=~".*argocd-dex.*"}) or vector(0)'
+                - name: server_up
+                  query: 'max(up{job=~".*argocd-server-metrics"}) or vector(0)'
+                - name: login_rate
+                  query: 'sum(rate(argocd_login_request_total[5m])) or vector(0)'
+      - step: 2
+        title: "Find WHY Dex is down — pod state, config/connector, or upstream IdP"
+        description: >-
+          Read the Dex pod and its dependencies. Interpret the pod/log evidence: CrashLoopBackOff /
+          OOMKilled => resource or crash issue on the dex pod (raise resources / fix crash). Config
+          errors on startup ("failed to load config", bad connector, invalid client secret) => a
+          misconfigured Dex connector or an Argo CD OIDC/client-secret mismatch — a config fix, not a
+          restart. "failed to connect"/timeout to the upstream IdP => Dex is up but the upstream
+          identity provider (Google/GitHub/LDAP/SAML) is unreachable or rejecting — the problem is
+          outside Argo CD. Since Dex exposes little beyond `up`/login counts, the pod events and logs
+          are the primary evidence here — name the concrete cause from them rather than guessing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "KSM pod-state of the argocd-dex-server pod (restarts / OOM / crashloop / not-ready) in the argo-cd namespace — names whether it is a crashed/OOMed pod vs a config/IdP problem before reading the logs."
+            params:
+              queries:
+                - name: dex_restarts_30m
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*argocd-dex.*"}[30m])) or vector(0)'
+                - name: dex_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~".*argocd-dex.*",reason=~"OOMKilled|Error|ContainerCannotRun"} == 1'
+                - name: dex_waiting_reason
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~".*argocd-dex.*",reason=~"CrashLoopBackOff|ImagePullBackOff|CreateContainerConfigError|CreateContainerError"} == 1'
+                - name: dex_notready
+                  query: 'kube_pod_status_ready{namespace="$namespace",pod=~".*argocd-dex.*",condition="true"} == 0'
+          - tool_id: "tool.capture_diagnostics"
+            description: "argocd-dex-server pod state — restarts / OOMKilled / crashloop / events (argo-cd namespace)."
+          - tool_id: "tool.read_logs"
+            description: "argocd-dex-server logs filtered for config-load / connector / client-secret / upstream-IdP connection / OIDC signatures."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "recover_dex"
+        description: "When step 2 shows a crashed/OOM dex pod: raise its resources or fix the crash and restart the dex deployment. When it shows a config error: fix the Dex connector / Argo CD OIDC client secret (a restart alone won't help a bad config). Confirm dex_up returns and a test SSO login succeeds."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "check_upstream_idp"
+        description: "When logs show the upstream IdP is unreachable/rejecting: the fault is outside Argo CD — verify the IdP status, network egress to it, and the OIDC/SAML app registration (redirect URIs, client secret validity). Use local admin as break-glass meanwhile."
+        tool_id: ""
+        requires_approval: true
+    escalation: "GitOps/platform team — user-facing SSO/access impact (operators may be locked out of the UI/CLI). NOT a reconciliation outage; de-prioritise vs controller/repo-server down. Note break-glass local-admin availability when escalating."
+    follow_up:
+      - "Confirm dex_up returns to 1 and SSO logins succeed; verify login_rate recovers."
+      - "If a client secret/connector expired or drifted, add config validation / secret-expiry monitoring."

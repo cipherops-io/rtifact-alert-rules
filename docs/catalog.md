@@ -157,18 +157,18 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ArgoCDDown` | critical | P1 | 1m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd.*…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
 | `ArgoCDAppOutOfSync` | warning | P2 | 10m | cause | `argocd_app_info{sync_status="OutOfSync"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
 | `ArgoCDAppDegraded` | critical | P1 | 5m | symptom | `argocd_app_info{health_status="Degraded"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDSyncFailed` | warning | P2 | 2m | symptom | `argocd_app_info{operation_phase=~"Error\|Failed"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDAppSyncRunningLong` | warning | P2 | 10m | cause | `argocd_app_info{operation_phase="Running"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDRepoServerDown` | critical | P1 | 1m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-r…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDRepoUnreachable` | warning | P2 | 5m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, repo, request_type, response_code…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDAppControllerCrashLoop` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, namespace, pod, container) ( incr…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDCertificateExpiring` | warning | P2 | 1h | cause | `min by (rtf_cluster_id, rtf_env, rtf_service, cert_name, instance) ( (argocd_ce…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
 | `ArgoCDAppHealthUnknown` | warning | P2 | 15m | cause | `argocd_app_info{health_status="Unknown"} == 1` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDDexDown` | warning | P2 | 2m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-d…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
-| `ArgoCDRedisDown` | warning | P2 | 2m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~"argocd-r…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDSyncFailed` | warning | P2 | 0s | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, name, project, phase) ( increase(…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdControllerDown` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*argocd-application-co…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdServerDown` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*argocd-server-metrics…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdRepoServerDown` | critical | P1 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service) (up{job=~".*argocd-repo-server-me…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdGitFetchErrors` | warning | P2 | 0s | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, repo) ( increase(argocd_git_fetch…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdSlowReconciliation` | warning | P2 | 15m | cause | `histogram_quantile(0.95, sum by (rtf_cluster_id, rtf_env, rtf_service, le) ( ra…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgocdRedisConnectionErrors` | warning | P2 | 10m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service) ( increase(argocd_redis_request_t…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDDexDown` | warning | P2 | 2m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~".*argocd…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
+| `ArgoCDRedisDown` | warning | P2 | 2m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, job, instance) (up{job=~".*argocd…` | [argocd.yaml](runbooks/gitops/argocd.yaml) |
 
 ## ingress
 
