@@ -1,0 +1,841 @@
+tech_stack: core-apps-logs
+version: "1.0"
+description: >-
+  Runbook for application LOG_ALERT log alerts emitted by the core-apps platform
+  services (chatbot, voice-call/registry workers, ai-worker, chat/copilot,
+  integration/flink). These are LOG-driven alerts, not metric alerts: the evidence
+  backend is VictoriaLogs (LogsQL via the victorialogs toolset), with PromQL used
+  only when a supporting service/infra metric exists. CONVENTIONS (validated against
+  the live TCPROD tenant): every LOG_ALERT line carries an MDC metadata block INSIDE
+  _msg — "{appName=..., contextId=..., organizationId=..., workspaceId=...,
+  kafkaTopic=..., kafkaPartition=..., kafkaOffset=..., userId=...} - LOG_ALERT: ..."
+  — so per-line fields must be parsed at query time with the BASE PARSING PACK
+  (extract_regexp + replace + unpack_logfmt, see general_diagnostic step 2).
+  Structured fields that exist WITHOUT parsing: kubernetes.pod_name,
+  kubernetes.container_name, kubernetes.pod_namespace,
+  "kubernetes.pod_labels.app.kubernetes.io/component" (the worker/service role, e.g.
+  chatbot, multi-registry-worker), "kubernetes.pod_labels.app.kubernetes.io/name"
+  (the app, e.g. core-apps-tier0), _stream, _time. The top-level LOG_ALERT usually
+  proves only WHERE the operation failed; the ACTUAL root cause is found by pulling
+  the full request journey via contextId and reading the correlated
+  exception/provider-response lines. Journeys are INFO-noisy — always narrow with
+  ERROR/WARN or exception keywords before reading. HONEST GAP (verified live): some
+  emitters (e.g. WhatsAppMessagingServiceImpl) log the failure WITHOUT the provider
+  status code / error body and WITHOUT a stack trace; when the journey contains no
+  provider response, SAY the exact upstream error is not logged and recommend the
+  logging fix — do not invent a status code.
+
+match_keywords:
+  - log_alert
+  - log alert
+  - core-apps
+  - core apps
+  - chatbot dialog
+  - whatsapp
+  - voice call
+  - voice sample
+  - copilot
+  - flink job
+  - dead letter
+  - dead-lettered
+  - createmessages
+  - kafka consumer error
+
+categories:
+  - APPLICATION
+  - LOGS
+
+general_diagnostic:
+  description: >-
+    Triage path for ANY LOG_ALERT question ("what log alerts are firing", "give me
+    all critical log alerts"). Enumerate → bucket by service → pick a class → run its
+    common_alert entry. Replace <placeholders> with real values before running a
+    query. Default window: last 24h unless the user says otherwise.
+  steps:
+    - step: 1
+      title: "Enumerate distinct LOG_ALERT classes and their volumes"
+      description: >-
+        One row per distinct alert message with its count — this is the "all my log
+        alerts" answer. Interpret: a class with hundreds of hits is either a
+        persistent failure loop (same IDs repeating — parse the IDs out to check) or
+        a widespread incident (many distinct IDs). Counts of 1-5 are usually
+        input-specific one-offs.
+      tool_calls:
+        - tool_id: "tool.query_logs"
+          description: "Distinct LOG_ALERT messages by volume (24h)."
+          params:
+            queries:
+              - name: log_alert_classes
+                query: |-
+                  "LOG_ALERT:"
+                  | extract_regexp `LOG_ALERT:\s*(?P<alertMessage>.*)` from _msg
+                  | stats by (alertMessage) count() as value
+                  | sort by (value desc)
+                  | limit 40
+    - step: 2
+      title: "Attribute alerts to services and parse the MDC metadata (BASE PARSING PACK)"
+      description: >-
+        Which service/worker emits each class, and the per-line metadata fields
+        (contextId, organizationId, workspaceId, kafkaTopic/Partition/Offset,
+        userId). This parsing block is the prefix for every per-class query in this
+        runbook. Interpret: one component only => that worker's dependency or config;
+        many components => shared downstream (provider, DB, Kafka, network).
+      tool_calls:
+        - tool_id: "tool.query_logs"
+          description: "LOG_ALERT volume per emitting service component (24h)."
+          params:
+            queries:
+              - name: log_alerts_by_service
+                query: |-
+                  "LOG_ALERT:"
+                  | extract_regexp `LOG_ALERT:\s*(?P<alertMessage>.*)` from _msg
+                  | stats by ("kubernetes.pod_labels.app.kubernetes.io/component", alertMessage) count() as value
+                  | sort by (value desc)
+                  | limit 40
+              - name: base_parsing_pack_example
+                query: |-
+                  "LOG_ALERT:"
+                  | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                  | replace (", ", " ") at metadata
+                  | unpack_logfmt from metadata
+                  | fields _time, contextId, organizationId, workspaceId, kafkaTopic, kafkaPartition, kafkaOffset, userId, _msg
+                  | sort by (_time desc)
+                  | limit 10
+    - step: 3
+      title: "Pull the full request journey for one failure via contextId"
+      description: >-
+        The single most important RCA move: take a contextId from step 2 and fetch
+        everything that request did, across services. The journey is INFO-noisy, so
+        run BOTH queries: the full journey to see the flow (Kafka consume → node
+        processing → outbound call), and the narrowed one to find the actual
+        exception / provider response. Interpret: an ERROR from a deeper service
+        (e.g. WhatsAppMessagingServiceImpl, an HTTP client, a gRPC stub) right
+        before the LOG_ALERT is the real cause — report THAT line verbatim. If the
+        narrowed query returns only the LOG_ALERT itself, the upstream error is not
+        logged: say so.
+      tool_calls:
+        - tool_id: "tool.query_logs"
+          description: "Full journey + exception-only view for one contextId."
+          params:
+            queries:
+              - name: journey
+                query: |-
+                  "<contextId>"
+                  | sort by (_time)
+                  | fields _time, "kubernetes.container_name", _msg
+                  | limit 200
+              - name: journey_errors_only
+                query: |-
+                  "<contextId>" ("ERROR" OR "Exception" OR "Caused by" OR "timeout" OR "statusCode" OR "status code" OR "response body" OR "refused")
+                  | sort by (_time)
+                  | fields _time, "kubernetes.container_name", _msg
+                  | limit 60
+
+available_tools:
+  - tool_id: "tool.query_logs"
+    description: "Run a LogsQL query against VictoriaLogs (victorialogs toolset: query_logs)."
+  - tool_id: "tool.get_log_hits"
+    description: "Bucketed hit counts for a LogsQL filter — trend/spike detection (victorialogs toolset: get_log_hits)."
+  - tool_id: "tool.get_log_field_values"
+    description: "Top values of a structured log field for a filter (victorialogs toolset: get_log_field_values)."
+  - tool_id: "tool.query_metrics"
+    description: "PromQL, only where a supporting metric exists (prometheus toolset)."
+
+common_alerts:
+  # ===================================================== CHATBOT / MESSAGING
+  - name: "ChatbotWhatsAppDocumentNodeSendFailure"
+    patterns:
+      [
+        "whatsapp document node",
+        "failed to send whatsapp message",
+        "chatbotdialogdocumentnodeprocessor",
+        "chatbot node processor error",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Detect the failures and extract the affected entities"
+        description: >-
+          What this alert PROVES: a Kafka event from chatbot_dialog_event was
+          consumed, processing reached the WhatsApp Document Node, the outbound
+          WhatsApp document send failed for a specific user/chatbot/dialog. It does
+          NOT yet prove why (provider failure, invalid document, credentials, rate
+          limit, timeout, bad event, app bug). This query returns the affected
+          entities instead of raw logs. Note the alert text embeds
+          "for userId=..., chatbotId=..., dialogId=..." — extracted here as
+          alertUserId/chatbotId/dialogId (userId from the MDC block is the same
+          value; kafkaTopic/Partition/Offset identify the exact event).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Recent WhatsApp Document Node failures with parsed entities."
+            params:
+              queries:
+                - name: detect_failures
+                  query: |-
+                    "Failed to send WhatsApp message from Whatsapp Document Node"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `userId=(?P<alertUserId>[^,\s]+)\s*,\s*chatbotId=(?P<chatbotId>[^,\s]+)\s*,\s*dialogId=(?P<dialogId>[^,\s"]+)` from _msg
+                    | fields _time, contextId, organizationId, workspaceId, kafkaTopic, kafkaPartition, kafkaOffset, alertUserId, chatbotId, dialogId
+                    | sort by (_time desc)
+                    | limit 20
+      - step: 2
+        title: "Find the ACTUAL send error via the contextId journey"
+        description: >-
+          Take a contextId from step 1 and hunt the real failure. VERIFIED live
+          pattern: WhatsAppMessagingServiceImpl logs
+          "[WhatsAppMessagingServiceImpl] Exception while sending message." at ERROR
+          immediately before the LOG_ALERT, often followed by "Retry is disabled." —
+          and does NOT log the provider status code, error body, or stack trace.
+          Interpret by what IS found: 400/422 => invalid payload/document URL/MIME;
+          401/403 => credential, token, permission or account issue; 404 =>
+          document/endpoint not found; 429 => provider rate limit/quota; 5xx or
+          UNAVAILABLE => WhatsApp provider outage; timeout/connection error =>
+          network/downstream latency. If NO provider response appears anywhere in
+          the journey (the verified common case), state plainly: "the exact provider
+          error is not logged" — root-cause confidence is limited to 'outbound
+          WhatsApp send failed inside WhatsAppMessagingServiceImpl, retry disabled',
+          and cite the prevention item (add status code + error body to the log).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Journey errors + provider-response hunt for one failure."
+            params:
+              queries:
+                - name: journey_errors
+                  query: |-
+                    "<contextId>" ("ERROR" OR "Exception" OR "Caused by" OR "statusCode" OR "status code" OR "response body" OR "timeout" OR "refused")
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 60
+                - name: journey_http_status_hunt
+                  query: |-
+                    "<contextId>" ("400" OR "401" OR "403" OR "404" OR "429" OR "500" OR "502" OR "503" OR "504")
+                    | sort by (_time)
+                    | fields _time, _msg
+                    | limit 30
+      - step: 3
+        title: "Blast radius: trend, affected orgs/chatbots, repeat offenders, Kafka retries"
+        description: >-
+          Classify the failure shape. Interpret: one isolated failure => probably
+          message/document-specific; sudden spike => provider, credential, network
+          or deployment issue; continuous => persistent configuration/integration
+          problem. One chatbot only => chatbot/node configuration; one organization
+          only => tenant credential/account issue; many organizations => shared
+          provider/service problem; one user/dialog repeating => invalid document or
+          input-specific issue. Same kafkaTopic+Partition+Offset appearing more than
+          once => the event is being retried/reprocessed (loop risk).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Failure trend, org/chatbot breakdown, repeats, and Kafka reprocessing."
+            params:
+              queries:
+                - name: failure_trend_5m
+                  query: |-
+                    "Failed to send WhatsApp message from Whatsapp Document Node"
+                    | stats by (_time:5m) count() as failures
+                    | sort by (_time)
+                - name: affected_orgs_and_chatbots
+                  query: |-
+                    "Failed to send WhatsApp message from Whatsapp Document Node"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `userId=(?P<alertUserId>[^,\s]+)\s*,\s*chatbotId=(?P<chatbotId>[^,\s]+)\s*,\s*dialogId=(?P<dialogId>[^,\s"]+)` from _msg
+                    | stats by (organizationId, workspaceId, chatbotId) count() as failures, count_uniq(alertUserId) as affectedUsers
+                    | sort by (failures desc)
+                - name: repeat_offenders
+                  query: |-
+                    "Failed to send WhatsApp message from Whatsapp Document Node"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `userId=(?P<alertUserId>[^,\s]+)\s*,\s*chatbotId=(?P<chatbotId>[^,\s]+)\s*,\s*dialogId=(?P<dialogId>[^,\s"]+)` from _msg
+                    | stats by (organizationId, alertUserId, chatbotId, dialogId) count() as failures
+                    | filter failures:>1
+                    | sort by (failures desc)
+                - name: kafka_reprocessing
+                  query: |-
+                    "Failed to send WhatsApp message from Whatsapp Document Node"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | stats by (kafkaTopic, kafkaPartition, kafkaOffset) count() as processingAttempts
+                    | filter processingAttempts:>1
+                    | sort by (processingAttempts desc)
+      - step: 4
+        title: "If the journey hints at document/media or credential problems, confirm the bucket"
+        description: >-
+          Run only the bucket(s) the step-2 evidence points at. Document/media
+          evidence: URL expired, file inaccessible, unsupported MIME, empty
+          document, size limit, provider failed to download. Credential evidence:
+          401 => missing/expired/invalid token; 403 => valid credential but
+          insufficient permission/account restriction; "credential not found" =>
+          tenant configuration issue. Rate-limit/provider: 429/quota/too many
+          requests, 503/unavailable/timeout/connection reset.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Bucket-confirmation hunts on the failing contextId."
+            params:
+              queries:
+                - name: document_media_hunt
+                  query: |-
+                    "<contextId>" ("document" OR "media" OR "mime" OR "file size" OR "content-type" OR "download" OR "upload" OR "URL") ("invalid" OR "unsupported" OR "failed" OR "expired" OR "unreachable" OR "too large")
+                    | sort by (_time)
+                    | limit 30
+                - name: credential_hunt
+                  query: |-
+                    "<contextId>" ("credential" OR "token" OR "api key" OR "authorization" OR "unauthorized" OR "forbidden")
+                    | sort by (_time)
+                    | limit 30
+                - name: ratelimit_provider_hunt
+                  query: |-
+                    "<contextId>" ("rate limit" OR "quota" OR "too many requests" OR "unavailable" OR "timeout" OR "connection reset")
+                    | sort by (_time)
+                    | limit 30
+    remediation:
+      - action: "fix_identified_bucket"
+        description: "Fix per the evidence branch: refresh/repair the tenant's WhatsApp credential (401/403), regenerate or re-host the document / fix MIME-size (400/media bucket), back off or raise quota (429), escalate provider outage (5xx), or fix network path (timeouts). ONLY act on a bucket step 2/4 actually proved."
+        tool_id: ""
+        requires_approval: true
+      - action: "reconcile_stuck_dialog"
+        description: "If one user/dialog repeats (step 3 repeat_offenders), the dialog may be stuck re-sending a bad document: correct or skip the offending node input for that chatbotId/dialogId."
+        tool_id: ""
+        requires_approval: true
+    escalation: "If many organizations are affected simultaneously (step 3), treat as a shared WhatsApp provider/service incident and page the messaging-platform owner."
+    follow_up: >-
+      Prevention (verified logging gap): WhatsAppMessagingServiceImpl logs the send
+      failure without provider status code, provider error body, document
+      URL/MIME/size, or retry attempt — add these as structured fields so the RCA can
+      name the exact provider error instead of stopping at "send failed, retry
+      disabled".
+
+  - name: "ChatbotDialogSchedulerEntryFailure"
+    patterns:
+      [
+        "unable to make entry in scheduler",
+        "chatbot flow error",
+        "chatbotdialoginstanceserviceimpl",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Detect scheduler-entry failures and their retry attempts"
+        description: >-
+          The chatbot flow could not persist a scheduler entry for a dialog; the
+          message carries chatbotId, dialogId and attempt=N. Interpret: rising
+          attempt numbers for the same dialog => a retry loop that is not
+          succeeding; many dialogs at once => the scheduler backend (DB/Redis) is
+          the problem, not the dialog.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Scheduler entry failures with chatbot/dialog/attempt parsed."
+            params:
+              queries:
+                - name: detect_scheduler_failures
+                  query: |-
+                    "Unable to make entry in scheduler"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `chatbotId=(?P<chatbotId>[^,\s]+)\s*,\s*dialogId=(?P<dialogId>[^,\s]+)\s*,\s*attempt=(?P<attempt>[0-9]+)` from _msg
+                    | fields _time, contextId, organizationId, chatbotId, dialogId, attempt
+                    | sort by (_time desc)
+                    | limit 20
+      - step: 2
+        title: "Journey: what did the scheduler write actually fail on"
+        description: >-
+          Pull the contextId journey narrowed to errors. Interpret: Mongo/DB
+          exceptions => persistence-layer incident (check the DB alerts too);
+          validation errors => malformed dialog definition; timeouts => backend
+          saturation.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Errors in the failing request's journey."
+            params:
+              queries:
+                - name: journey_errors
+                  query: |-
+                    "<contextId>" ("ERROR" OR "Exception" OR "Caused by" OR "timeout")
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 40
+    remediation:
+      - action: "fix_scheduler_backend_or_dialog"
+        description: "If the journey shows DB/persistence errors, remediate the backing store; if a single dialog repeatedly fails validation, fix that dialog's definition."
+        tool_id: ""
+        requires_approval: true
+
+  # ===================================================== VOICE / AI-WORKER
+  - name: "VoiceCallAIServiceConnectFailure"
+    patterns:
+      [
+        "error while connecting ai service for voice call",
+        "skipping voice call",
+        "voicecallserviceimpl",
+        "outboundvoicecallhelper",
+        "exception occurred while connecting to ai agent",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm scope: volume, trend, and affected organizations"
+        description: >-
+          VoiceCallServiceImpl.isAIAgentAvailable failed its HTTP POST to the AI
+          service, so the voice call was SKIPPED — user-facing impact. The sibling
+          message "[OutboundVoiceCallHelper] Exception occurred while connecting to
+          AI agent" is the same failure surfaced by the outbound path; investigate
+          them together. Interpret: hundreds/day sustained => the AI service
+          endpoint is down/unreachable or misconfigured (this class has been the
+          top-volume LOG_ALERT); isolated => transient network/timeout. One org only
+          => that org's agent config (aiAgentConfig/baseUrl); all orgs => shared AI
+          service outage.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Volume trend and org breakdown of AI-connect failures."
+            params:
+              queries:
+                - name: failure_trend_15m
+                  query: |-
+                    ("Error while connecting AI service for voice call" OR "Exception occurred while connecting to AI agent")
+                    | stats by (_time:15m) count() as failures
+                    | sort by (_time)
+                - name: affected_orgs
+                  query: |-
+                    ("Error while connecting AI service for voice call" OR "Exception occurred while connecting to AI agent")
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | stats by (organizationId) count() as failures, count_uniq(contextId) as failedCalls
+                    | sort by (failures desc)
+      - step: 2
+        title: "Find the connect exception and the target URL"
+        description: >-
+          The code logs "Making request to voice. url={}, request={}" at INFO just
+          before the failure — the journey therefore CONTAINS the exact target URL.
+          Interpret: connection refused / UnknownHost => AI service down or wrong
+          baseUrl (check callHumanAgentUrl vs getAiServiceBaseUrl config); timeout
+          => AI service saturated or network path broken; 4xx => malformed request
+          payload (validate the request enrichment steps); 5xx => AI service-side
+          failure. Report the URL and the exception class verbatim.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Journey for one failed call: target URL + exception."
+            params:
+              queries:
+                - name: journey_with_url
+                  query: |-
+                    "<contextId>" ("Making request to voice" OR "ERROR" OR "Exception" OR "Caused by" OR "timeout" OR "refused")
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 40
+    remediation:
+      - action: "restore_ai_service_endpoint"
+        description: "If the URL is unreachable (refused/timeout/UnknownHost): restore or scale the AI service behind the resolved baseUrl, or fix the aiAgentConfig URL if it points at a wrong/retired endpoint."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Sustained failures across all organizations mean voice calls are being skipped platform-wide — page the AI-service owner immediately."
+
+  - name: "VoiceSampleFetchExhaustedAllModels"
+    patterns:
+      [
+        "exhausted all models",
+        "failed to fetch/upload voice sample",
+        "tenantaiworkervoiceserviceimpl",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Extract the failing voices/languages/credentials and the shape"
+        description: >-
+          ai-worker tried every model for a voice+language and none produced a
+          non-empty sample. The message embeds Voice ID, Language ID and Credential
+          ID. Interpret: MANY voices under ONE credential => that credential's API
+          key is invalid/expired or its provider account is down/rate-limited (fix
+          the credential, not the voices); one voice only => that voice's model IDs
+          are stale/unavailable; empty-sample errors => provider returned 200 with
+          empty bytes (provider-side defect). Note each voice+language emits its own
+          line, so high counts can be ONE sync run over many voices — check
+          count_uniq(credential) first.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Breakdown of exhausted-models failures by credential and voice."
+            params:
+              queries:
+                - name: failures_by_credential
+                  query: |-
+                    "Exhausted all models. Failed to fetch/upload voice sample"
+                    | extract_regexp `Voice ID: (?P<voiceId>[^,]+), Language ID: (?P<languageId>[^ ]+) and Credential ID: (?P<credentialId>[^\s"]+)` from _msg
+                    | stats by (credentialId) count() as failures, count_uniq(voiceId) as voices
+                    | sort by (failures desc)
+                - name: recent_failures_detail
+                  query: |-
+                    "Exhausted all models. Failed to fetch/upload voice sample"
+                    | extract_regexp `Voice ID: (?P<voiceId>[^,]+), Language ID: (?P<languageId>[^ ]+) and Credential ID: (?P<credentialId>[^\s"]+)` from _msg
+                    | fields _time, voiceId, languageId, credentialId
+                    | sort by (_time desc)
+                    | limit 20
+      - step: 2
+        title: "Read the per-model warnings preceding an exhaustion to get the real provider error"
+        description: >-
+          Before the final LOG_ALERT the loop logs "Failed to fetch sample for Voice
+          ID: {} using Model ID: {}. Retrying with next model..." per model, and the
+          LOG_ALERT itself carries the last exception. Hunt the surrounding window
+          for the provider exception. Interpret: auth errors => credential bucket;
+          "Received empty voice sample bytes." => provider returned empty payloads;
+          network/timeout => provider reachability.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Per-model retry warnings + exceptions around one exhaustion."
+            params:
+              queries:
+                - name: per_model_failures
+                  query: |-
+                    ("Failed to fetch sample for Voice ID" OR "Received empty voice sample bytes" OR "Exhausted all models")
+                    | sort by (_time desc)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 40
+    remediation:
+      - action: "repair_provider_credential"
+        description: "If one credential accounts for the failures: rotate/repair its API key or restore its provider account standing, then re-run the voice sample sync."
+        tool_id: ""
+        requires_approval: true
+      - action: "refresh_stale_model_ids"
+        description: "If a single voice fails across a healthy credential: its modelIds are stale/retired at the provider — refresh the voice's model list."
+        tool_id: ""
+        requires_approval: true
+
+  - name: "CredentialApiClientFactoryMissing"
+    patterns:
+      [
+        "failed to get api client service from factory",
+        "determining credential status",
+        "clientprovidercredentialserviceimpl",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Identify which provider has no registered API client"
+        description: >-
+          aiWorkerAPIClientServiceFactory.getAPIClientService(provider) returned
+          null, so the credential's status is reported ERROR. This is a
+          CONFIGURATION/CODE problem, not a transient one. Interpret: all failures
+          name the same provider => that provider was never registered in the
+          factory (or a new provider enum value shipped without a client);
+          intermittent across providers => factory initialization/DI problem.
+          The provider name may only be visible in surrounding journey lines —
+          pull one contextId journey if the LOG_ALERT lines alone don't name it.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Occurrences + journeys for factory-miss failures."
+            params:
+              queries:
+                - name: detect_factory_miss
+                  query: |-
+                    "Failed to get api client service from factory"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | fields _time, contextId, organizationId, workspaceId
+                    | sort by (_time desc)
+                    | limit 20
+    remediation:
+      - action: "register_provider_client"
+        description: "Register the missing provider's API client in aiWorkerAPIClientServiceFactory (or gate the unsupported provider from credential creation)."
+        tool_id: ""
+        requires_approval: true
+
+  # ===================================================== CHAT / COPILOT
+  - name: "CopilotGrpcStreamingError"
+    patterns:
+      [
+        "grpc error while fetching copilot message response",
+        "aiworkerrunserviceimpl",
+        "statuscode=unavailable",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Read the status code from the alert itself and classify"
+        description: >-
+          The message embeds requestId, statusCode, statusDescription, statusCause —
+          parse them out; the classification is largely in the alert. Interpret:
+          UNAVAILABLE => upstream gRPC server (ai-worker/copilot backend) down,
+          restarting, or connection reset before headers (check for deployments/pod
+          restarts at that time); DEADLINE_EXCEEDED => saturation/timeout;
+          RESOURCE_EXHAUSTED => quota; INTERNAL/UNKNOWN => server-side defect.
+          A burst of UNAVAILABLE during a rollout is usually the deploy itself —
+          check whether it self-recovered after the burst.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Parsed gRPC errors + trend."
+            params:
+              queries:
+                - name: grpc_errors_parsed
+                  query: |-
+                    "gRPC error while fetching copilot message response"
+                    | extract_regexp `requestId=(?P<requestId>[^,\s]+)\s*,\s*statusCode=(?P<statusCode>[^,\s]+)\s*,\s*statusDescription=(?P<statusDescription>[^,]*)` from _msg
+                    | fields _time, requestId, statusCode, statusDescription
+                    | sort by (_time desc)
+                    | limit 20
+                - name: grpc_error_trend
+                  query: |-
+                    "gRPC error while fetching copilot message response"
+                    | stats by (_time:15m) count() as errors
+                    | sort by (_time)
+      - step: 2
+        title: "Trace one requestId end-to-end"
+        description: >-
+          The requestId doubles as the copilot sessionId elsewhere ("Exception
+          occurred while running task for sessionId: <requestId>") — search the raw
+          id to see both sides. Interpret: the failure handling path sends a failure
+          event and persists the error message; confirm the user actually received
+          the failure event (look for the persist/send lines after the error).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Everything for one requestId across services."
+            params:
+              queries:
+                - name: request_journey
+                  query: |-
+                    "<requestId>"
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 100
+    remediation:
+      - action: "restore_upstream_grpc_server"
+        description: "For sustained UNAVAILABLE: restore/scale the upstream copilot gRPC backend and check its pod restarts; for a deploy-time burst that self-recovered, no action beyond noting the rollout gap (consider connection draining)."
+        tool_id: ""
+        requires_approval: true
+
+  - name: "CopilotSessionTaskException"
+    patterns:
+      [
+        "exception occurred while running task for sessionid",
+        "sessiontasksequencerimpl",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Find the underlying exception for the session task"
+        description: >-
+          A Runnable enqueued for a session threw during async execution
+          (thenRunAsync exceptionally-handler). The alert names the sessionId —
+          search the raw sessionId for the surrounding journey; the cause is
+          whatever the task was doing (often the gRPC streaming failure above —
+          check whether a CopilotGrpcStreamingError fired for the same id within
+          the same minute; if so this is a SYMPTOM of that alert, not a separate
+          incident). Interpret: same-id gRPC error nearby => fold into the gRPC
+          RCA; standalone => a task-code defect or executor problem (look for
+          repeated failures across many sessionIds).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Session journey + co-firing check."
+            params:
+              queries:
+                - name: session_journey
+                  query: |-
+                    "<sessionId>"
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 100
+                - name: cofiring_check
+                  query: |-
+                    ("Exception occurred while running task for sessionId" OR "gRPC error while fetching copilot message response")
+                    | sort by (_time desc)
+                    | fields _time, _msg
+                    | limit 30
+    remediation:
+      - action: "fix_task_defect_or_fold_into_grpc_rca"
+        description: "If co-firing with the gRPC error, remediate that upstream failure; otherwise capture the task's stack trace and fix the defect in the Runnable."
+        tool_id: ""
+        requires_approval: true
+
+  - name: "ChatSpanEmitDeadLetter"
+    patterns:
+      [
+        "emit dead-lettered for traceid",
+        "spanemitconsumer",
+        "chat_span_emit-dlt",
+        "marking failed",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Extract the dead-lettered traceIds and hunt the original processing failure"
+        description: >-
+          A chat_span_emit event exhausted its retries and landed on the DLT; the
+          consumer marked the traceId FAILED. The DLT handler is the LAST step —
+          the root cause is the earlier consumer failure. Search the raw traceId to
+          find the original exception in the main-topic consumer. Interpret:
+          store/DB errors => persistence incident; deserialization errors => a
+          producer-side schema change; many traceIds at once => downstream outage
+          during that window.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Dead-lettered traceIds + original failure hunt."
+            params:
+              queries:
+                - name: dead_lettered_traces
+                  query: |-
+                    "emit dead-lettered for traceId"
+                    | extract_regexp `traceId - (?P<traceId>[a-f0-9]+)` from _msg
+                    | fields _time, traceId
+                    | sort by (_time desc)
+                    | limit 20
+                - name: trace_original_failure
+                  query: |-
+                    "<traceId>" ("ERROR" OR "Exception" OR "Caused by")
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 40
+    remediation:
+      - action: "fix_consumer_failure_then_reprocess"
+        description: "Fix the original consumer failure (persistence/schema), then re-emit or manually reconcile the FAILED traceIds if the span data matters."
+        tool_id: ""
+        requires_approval: true
+
+  # ===================================================== VOICE-CALL PERSISTENCE
+  - name: "CreateMessagesNonIdempotentFailure"
+    patterns:
+      [
+        "createmessages failed for",
+        "not enqueueing for retry",
+        "createmessages is not idempotent",
+        "processtranscriptionserviceimpl",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Quantify the data drift and find the underlying persistence exception"
+        description: >-
+          DATA-CONSISTENCY alert: createMessages.saveAll failed AFTER conversation
+          counts were already bumped, and because createMessages is not idempotent
+          the batch was deliberately NOT retried — conversation counts now drift
+          ahead of persisted Message documents until manually reconciled. Every
+          occurrence implies unreconciled drift. Parse how many messages/rows each
+          occurrence lost, then pull the contextId journey for the underlying
+          exception. Interpret: constraint violation / malformed data => fix the
+          input then reconcile; transient DB error => reconcile and consider the
+          outbox-pattern fix; repeated occurrences => stop the bleeding first
+          (pause the pipeline) because each one adds drift.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Failed-batch sizes + journeys."
+            params:
+              queries:
+                - name: drift_occurrences
+                  query: |-
+                    "createMessages failed for" "NOT enqueueing for retry"
+                    | extract_regexp `createMessages failed for (?P<failedMessages>[0-9]+) messages across (?P<failedRows>[0-9]+) rows` from _msg
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | fields _time, contextId, organizationId, failedMessages, failedRows
+                    | sort by (_time desc)
+                    | limit 20
+                - name: journey_persistence_error
+                  query: |-
+                    "<contextId>" ("ERROR" OR "Exception" OR "Caused by" OR "Mongo" OR "duplicate" OR "constraint")
+                    | sort by (_time)
+                    | fields _time, _msg
+                    | limit 40
+    remediation:
+      - action: "manual_reconciliation"
+        description: "Reconcile conversation counts against persisted Message documents for the affected conversations (the runbook's mandated manual step) — sum failedMessages across occurrences to size the drift."
+        tool_id: ""
+        requires_approval: true
+      - action: "implement_idempotent_creation"
+        description: "Prevention: make createMessages idempotent (e.g. outbox pattern / deterministic message ids) so failures become safely retryable."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Repeated occurrences within a day mean ongoing data drift — involve the voice-call data owner before the reconciliation backlog grows."
+
+  # ===================================================== INTEGRATION / FLINK
+  - name: "FlinkJobSubmitFailure"
+    patterns:
+      [
+        "could not submit job to flink",
+        "flinkserviceimplv2",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Find the submission exception and check Flink cluster reachability"
+        description: >-
+          FlinkServiceImplV2.submitJob failed. Interpret from the journey exception:
+          connection refused/timeout to the Flink REST endpoint => Flink
+          JobManager down/unreachable (infra bucket); payload/validation errors
+          (table/source construction) => malformed job definition (input bucket);
+          resource errors from Flink ("NoResourceAvailable", slot allocation) =>
+          cluster capacity. If Flink's own metrics/logs are onboarded, correlate;
+          otherwise state that Flink-side confirmation needs the Flink JobManager
+          logs (honest gap).
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Submit failures + journey exceptions."
+            params:
+              queries:
+                - name: submit_failures
+                  query: |-
+                    "Could not submit job to flink"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | fields _time, contextId, organizationId, workspaceId
+                    | sort by (_time desc)
+                    | limit 20
+                - name: journey_submit_exception
+                  query: |-
+                    "<contextId>" ("ERROR" OR "Exception" OR "Caused by" OR "refused" OR "timeout" OR "NoResource")
+                    | sort by (_time)
+                    | fields _time, _msg
+                    | limit 40
+    remediation:
+      - action: "restore_flink_or_fix_job"
+        description: "Infra bucket: restore the Flink JobManager / REST endpoint reachability or free cluster slots. Input bucket: fix the job payload (source connectors, field mappings) and resubmit."
+        tool_id: ""
+        requires_approval: true
+
+  # ===================================================== CATCH-ALL
+  - name: "GenericLogAlert"
+    patterns:
+      [
+        "log_alert",
+        "log alert",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Triage an unrecognized LOG_ALERT class"
+        description: >-
+          For a LOG_ALERT message with no dedicated entry above: (1) enumerate its
+          volume and trend, (2) attribute it to the emitting service via
+          kubernetes.pod_labels."app.kubernetes.io/component", (3) run the BASE
+          PARSING PACK to get contextId/organizationId/kafka fields, (4) pull one
+          contextId journey narrowed to errors and report the deepest exception
+          verbatim, (5) classify blast radius (one org/user vs many). Always state
+          what the LOG_ALERT proves (where it failed) separately from what the
+          journey proves (why it failed); if the journey holds no deeper error,
+          say the emitting code does not log the underlying cause.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Volume, trend, service attribution for the unknown class."
+            params:
+              queries:
+                - name: class_volume_trend
+                  query: |-
+                    "<distinctive alert phrase>"
+                    | stats by (_time:15m) count() as hits
+                    | sort by (_time)
+                - name: class_by_service_and_org
+                  query: |-
+                    "<distinctive alert phrase>"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | stats by ("kubernetes.pod_labels.app.kubernetes.io/component", organizationId) count() as hits
+                    | sort by (hits desc)
+
+escalation:
+  default: "Escalate to the owning service team with the parsed entities (org/workspace/user/chatbot ids), the exact exception line from the contextId journey, the failure trend, and the blast-radius classification."
