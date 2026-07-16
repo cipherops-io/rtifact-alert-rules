@@ -464,6 +464,11 @@
 | `FastAPIHighOpenConnections` | warning | P2 | 5m | cause | `process_open_fds{job=~"fastapi.*\|python.*"} / process_max_fds{job=~"fastapi.*\|p…` | [python-fastapi.md](runbooks/runtimes/python-fastapi.md) |
 | `FastAPIErrorRateCritical` | critical | P1 | 1m | symptom | `rate(http_requests_total{status_code=~"5..",job=~"fastapi.*\|python.*"}[5m]) / r…` | [python-fastapi.md](runbooks/runtimes/python-fastapi.md) |
 
+## runbooks without alert rules
+
+- [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
+- [service-latency.yaml](runbooks/observability/service-latency.yaml)
+
 ---
 
 _301 alerts across 29 files in 8 categories._

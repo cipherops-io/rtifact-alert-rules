@@ -22,6 +22,7 @@ except ImportError:
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RULES_DIR = REPO_ROOT / "rules"
+RUNBOOKS_DIR = REPO_ROOT / "runbooks"
 
 EXPR_TRUNC = 80
 
@@ -101,6 +102,36 @@ def main() -> int:
                         f"{md_escape(expr_disp)} | {runbook_disp} |"
                     )
             print()
+
+    # Runbooks not referenced by any rule file (e.g. log-alert runbooks —
+    # LOG_ALERT classes have no Prometheus rules). Consumers that enumerate
+    # the repo over HTTP (no directory listing) discover runbook files from
+    # the ](runbooks/...) links in this catalog, so every runbook must appear.
+    linked = set()
+    for f in sorted(RULES_DIR.rglob("*.yaml")):
+        try:
+            with f.open() as fh:
+                doc = yaml.safe_load(fh)
+        except Exception:
+            continue
+        for group in (doc or {}).get("groups", []):
+            for rule in group.get("rules", []):
+                rb = (rule.get("labels") or {}).get("runbook", "")
+                if rb:
+                    linked.add(rb)
+    unlinked = [
+        f.relative_to(REPO_ROOT).as_posix()
+        for f in sorted(RUNBOOKS_DIR.rglob("*"))
+        if f.is_file()
+        and f.suffix.lower() in (".md", ".yaml", ".yml")
+        and f.relative_to(REPO_ROOT).as_posix() not in linked
+    ]
+    if unlinked:
+        print("## runbooks without alert rules")
+        print()
+        for rel in unlinked:
+            print(f"- [{Path(rel).name}]({rel})")
+        print()
 
     print("---")
     print()
