@@ -366,6 +366,157 @@ common_alerts:
         tool_id: ""
         requires_approval: true
 
+  - name: "ChatbotConditionsNodeNoPathMatched"
+    patterns:
+      [
+        "no condition path matched",
+        "chatbotdialogconditionsnodeprocessor",
+        "conditions node processor",
+        "condition path",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Detect the failures and classify by node / dialog / organization"
+        description: >-
+          What this alert PROVES: the chatbot reached the Conditions Node
+          (nodeId in the message) and evaluated the condition paths configured
+          in its ConditionsNodeMetaData, but could not resolve the next node
+          for the dialogInstanceId — either no configured filter evaluated to
+          true, or a filter matched but no outgoing dialog edge has an action
+          matching that condition-path name. This is a chatbot
+          routing/configuration or runtime-attribute issue — it does NOT imply
+          Kafka, the chatbot service, or the database is down (level is WARN).
+          Impact: the affected conversation stops progressing (no next
+          response, or a generic fallback; possible loop back to the same
+          node). Interpret the grouping: ONE dialog only => runtime input or
+          session-specific issue; MANY dialogs on the SAME node => that node's
+          configuration (missing fallback path or edge mismatch — inspect the
+          node); the SAME dialog repeating => loop / dialog state not
+          advancing; MANY organizations at once => shared code regression or a
+          bad deployment, not configuration.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Recent no-path-matched events with parsed entities + grouping."
+            params:
+              queries:
+                - name: detect_no_path_matched
+                  query: |-
+                    "No condition path matched"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `nodeId=(?P<nodeId>[^,\s]+)\s*,\s*dialogInstanceId=(?P<dialogInstanceId>[^,\s"]+)` from _msg
+                    | fields _time, organizationId, workspaceId, contextId, userId, kafkaTopic, nodeId, dialogInstanceId
+                    | sort by (_time desc)
+                    | limit 20
+                - name: group_by_node_and_dialog
+                  query: |-
+                    "No condition path matched"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `nodeId=(?P<nodeId>[^,\s]+)\s*,\s*dialogInstanceId=(?P<dialogInstanceId>[^,\s"]+)` from _msg
+                    | stats by (organizationId, nodeId, dialogInstanceId) count() as failures
+                    | sort by (failures desc)
+                    | limit 20
+      - step: 2
+        title: "Reconstruct the evaluation from the contextId journey and classify the bucket"
+        description: >-
+          Take a contextId from step 1 and pull the narrowed journey (a raw
+          dialogInstanceId search returns 1000+ lines across the dialog's whole
+          life — ALWAYS narrow with the keyword filter). Look before the WARN
+          for: the previous node's execution, the request attributes, attribute
+          replacement, condition-expression evaluation, the selected path name,
+          and edge resolution. Classify into a bucket: (A) no filter evaluated
+          true — runtime values simply don't satisfy any path (may be VALID
+          input the node has no route for); (B) a required attribute was
+          missing/null — the previous node, API response, or session context
+          didn't populate it; (C) attribute replacement produced a wrong/empty
+          value (resolved expression like `"" > 1000`); (D) evaluation
+          mismatch — case/whitespace/type/date-format differences (configured
+          `status == "YES"` vs runtime `"Yes "`); (E) a path MATCHED but no
+          outgoing edge action matches the path name (edge deleted/renamed,
+          case/spacing drift, node metadata and dialog graph from different
+          versions); (F) all filters legitimately false and NO fallback/default
+          path configured — the most common configuration cause; (G) stale
+          dialog running an older chatbot version than the current node/edges.
+          HONEST GAP: the WARN logs ONLY nodeId + dialogInstanceId — the
+          configured paths, per-path evaluation results, runtime attribute
+          values, and edge action names are NOT logged. If the journey doesn't
+          reveal them, SAY the exact bucket cannot be confirmed from logs,
+          list the candidate buckets, and cite the logging improvement in
+          follow_up — do not invent attribute values or path names.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "Narrowed journey + condition/attribute evaluation hunt for one failure."
+            params:
+              queries:
+                - name: journey_condition_hunt
+                  query: |-
+                    "<contextId>" ("condition" OR "filter" OR "attribute" OR "expression" OR "replacement" OR "path" OR "edge" OR "ERROR" OR "WARN")
+                    | sort by (_time)
+                    | fields _time, "kubernetes.container_name", _msg
+                    | limit 60
+                - name: dialog_recent_flow
+                  query: |-
+                    "<dialogInstanceId>" ("Processor" OR "node" OR "condition" OR "WARN" OR "ERROR")
+                    | sort by (_time desc)
+                    | fields _time, _msg
+                    | limit 40
+      - step: 3
+        title: "Blast radius: is the NODE broken, or just this dialog?"
+        description: >-
+          Count every dialog failing on the same nodeId and check the trend.
+          Interpret: many distinct dialogs on this node => the node's
+          configuration is broken for a class of inputs (missing fallback or
+          edge mismatch) — fix the node, not the dialog; failures started at a
+          deploy/publish time => configuration version issue (bucket E/G);
+          isolated single dialog => input-specific, low urgency (P3 stands);
+          sudden multi-organization spike => code regression, escalate.
+        tool_calls:
+          - tool_id: "tool.query_logs"
+            description: "All dialogs failing on the alert's node + failure trend."
+            params:
+              queries:
+                - name: node_blast_radius
+                  query: |-
+                    "No condition path matched" "<nodeId>"
+                    | extract_regexp `\{(?P<metadata>.*)\}\s+-\s+LOG_ALERT:` from _msg
+                    | replace (", ", " ") at metadata
+                    | unpack_logfmt from metadata
+                    | extract_regexp `dialogInstanceId=(?P<dialogInstanceId>[^,\s"]+)` from _msg
+                    | stats by (organizationId, workspaceId, dialogInstanceId) count() as occurrences
+                    | sort by (occurrences desc)
+                - name: failure_trend_1h
+                  query: |-
+                    "No condition path matched"
+                    | stats by (_time:1h) count() as failures
+                    | sort by (_time)
+    remediation:
+      - action: "add_or_fix_fallback_path"
+        description: "If step 2/3 shows all filters evaluating false for valid inputs (bucket A/F): add or correct a default/else/fallback path on the Conditions Node so unmatched inputs have a route, then republish the chatbot configuration and retest with the same runtime input."
+        tool_id: ""
+        requires_approval: true
+      - action: "align_edge_actions_with_condition_paths"
+        description: "If a condition matched but no edge resolved (bucket E/G): compare each condition-path name with the outgoing dialog-edge action names (case/spacing exact) and restore/rename the missing edge; republish so node metadata and dialog graph are the same version."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_attribute_population_or_replacement"
+        description: "If a required attribute was missing or replaced incorrectly (bucket B/C/D): fix the upstream node/API/session population, the placeholder replacement, or the type/case/whitespace handling in the filter expression."
+        tool_id: ""
+        requires_approval: true
+    escalation: "A sudden multi-organization spike (especially aligned with a deployment) means a shared code/config regression in condition evaluation — page the chatbot platform owner."
+    follow_up: >-
+      Prevention (verified logging gap): the WARN carries only nodeId and
+      dialogInstanceId. Add structured fields — chatbotId, chatbotVersion,
+      conditionPathNames, resolved/evaluated filter per path,
+      requiredAttributes with actual values, evaluationResultForEachPath,
+      matchedConditionPath, availableEdgeActions, fallbackPathConfigured — so
+      the RCA can immediately distinguish no-match vs missing-attribute vs
+      evaluation-failure vs missing-edge vs missing-fallback vs
+      version-mismatch instead of listing candidate buckets.
+
   # ===================================================== VOICE / AI-WORKER
   - name: "VoiceCallAIServiceConnectFailure"
     patterns:
