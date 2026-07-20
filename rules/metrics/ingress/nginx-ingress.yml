@@ -2,8 +2,17 @@ groups:
   - name: nginx-ingress.rules
     interval: 30s
     rules:
+      # -----------------------------------------------------------------------
+      # Controller availability
+      # -----------------------------------------------------------------------
+
       - alert: NginxIngressDown
-        expr: absent(up{job=~".*nginx.*ingress.*"} == 1)
+        expr: |
+          absent(
+            up{
+              job=~".*(nginx.*ingress|ingress.*nginx).*"
+            } == 1
+          )
         for: 5m
         labels:
           severity: critical
@@ -12,17 +21,58 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
-          query: absent(up{job=~".*nginx.*ingress.*"} == 1)
+          query: |
+            absent(
+              up{
+                job=~".*(nginx.*ingress|ingress.*nginx).*"
+              } == 1
+            )
         annotations:
-          summary: "All nginx-ingress controllers are unreachable"
-          description: "No nginx-ingress controller has been reachable for 5 minutes — incoming HTTP/HTTPS traffic is not
-            routed."
+          summary: "All nginx-ingress controller targets are unavailable"
+          description: "No healthy nginx-ingress controller target has been available for 5 minutes. External HTTP and HTTPS traffic may no longer reach services through this ingress class, causing customer-facing unavailability, connection failures, load-balancer health-check failures, and failed API or website requests. Verify the controller pods, controller Service, external load balancer health, pod readiness, and whether at least one controller replica is running and able to serve traffic."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressdown"
+
+      - alert: NginxIngressControllerReplicaDown
+        expr: |
+          up{
+            job=~".*(nginx.*ingress|ingress.*nginx).*"
+          } == 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: cause
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            up{
+              job=~".*(nginx.*ingress|ingress.*nginx).*"
+            } == 0
+        annotations:
+          summary: "An nginx-ingress controller replica is unavailable"
+          description: "The nginx-ingress controller target {{ $labels.instance }} has been unavailable for 5 minutes. Other replicas may continue routing traffic, but ingress redundancy and traffic-handling capacity are reduced, increasing the risk of overload or complete ingress outage if another replica fails. Verify the affected controller pod, node health, pod readiness, controller Service endpoints, and network connectivity."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscontrollerreplicadown"
+
+      # -----------------------------------------------------------------------
+      # HTTP errors
+      # -----------------------------------------------------------------------
 
       - alert: NginxIngressHigh5xxRate
         expr: |
-          sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
-          / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 0.05
+          (
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests{status=~"5.."}[5m])
+            )
+            /
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests[5m])
+            )
+          ) > 0.05
+          and on (ingress, exported_namespace)
+          sum by (ingress, exported_namespace) (
+            rate(nginx_ingress_controller_requests[5m])
+          ) > 1
         for: 10m
         labels:
           severity: warning
@@ -32,43 +82,81 @@ groups:
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
           query: |
-            sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))
-            / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 0.05
+            (
+              sum by (ingress, exported_namespace) (
+                rate(nginx_ingress_controller_requests{status=~"5.."}[5m])
+              )
+              /
+              sum by (ingress, exported_namespace) (
+                rate(nginx_ingress_controller_requests[5m])
+              )
+            ) > 0.05
+            and on (ingress, exported_namespace)
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests[5m])
+            ) > 1
         annotations:
           summary: "Ingress 5xx error rate is above 5%"
-          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} 5xx rate is {{ $value | humanizePercentage
-            }}."
+          description: "More than 5% of requests handled by ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} have returned 5xx responses for 10 minutes while the ingress is receiving more than one request per second. Users may experience failed API calls, unavailable pages, gateway errors, broken integrations, or retries. The failures can be generated by unhealthy backend services, missing endpoints, upstream timeouts, connection failures, invalid ingress configuration, or controller resource pressure."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshigh5xxrate"
 
-      - alert: NginxIngressHighLatency
+      - alert: NginxIngressCritical5xxRate
         expr: |
-          histogram_quantile(0.99,
-            sum by (le, ingress, exported_namespace) (
-              rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
+          (
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests{status=~"5.."}[5m])
             )
-          ) > 2
-        for: 10m
+            /
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests[5m])
+            )
+          ) > 0.20
+          and on (ingress, exported_namespace)
+          sum by (ingress, exported_namespace) (
+            rate(nginx_ingress_controller_requests[5m])
+          ) > 1
+        for: 5m
         labels:
-          severity: warning
-          priority: P2
+          severity: critical
+          priority: P1
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
           query: |
-            histogram_quantile(0.99,
-              sum by (le, ingress, exported_namespace) (
-                rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])
+            (
+              sum by (ingress, exported_namespace) (
+                rate(nginx_ingress_controller_requests{status=~"5.."}[5m])
               )
-            ) > 2
+              /
+              sum by (ingress, exported_namespace) (
+                rate(nginx_ingress_controller_requests[5m])
+              )
+            ) > 0.20
+            and on (ingress, exported_namespace)
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests[5m])
+            ) > 1
         annotations:
-          summary: "Ingress p99 request latency is above 2s"
-          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} p99 latency is {{ $value | humanizeDuration
-            }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
+          summary: "Ingress 5xx error rate is critically high"
+          description: "More than 20% of requests handled by ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} have returned 5xx responses for 5 minutes while receiving active traffic. A significant portion of users are currently unable to complete requests, and retries may increase load on ingress controllers and backend services. Investigate backend endpoint availability, pod readiness, application errors, upstream timeout or connection failures, recent ingress changes, and controller saturation."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscritical5xxrate"
 
-      - alert: NginxIngressUpstreamErrors
-        expr: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1
+      - alert: NginxIngressBackend5xxResponsesHigh
+        expr: |
+          sum by (
+            host,
+            ingress,
+            exported_namespace,
+            exported_service
+          ) (
+            rate(
+              nginx_ingress_controller_requests{
+                status=~"5..",
+                exported_service!=""
+              }[5m]
+            )
+          ) > 1
         for: 5m
         labels:
           severity: warning
@@ -77,15 +165,156 @@ groups:
           signal: symptom
           category: ingress
           runbook: runbooks/ingress/nginx-ingress.md
-          query: rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1
+          query: |
+            sum by (
+              host,
+              ingress,
+              exported_namespace,
+              exported_service
+            ) (
+              rate(
+                nginx_ingress_controller_requests{
+                  status=~"5..",
+                  exported_service!=""
+                }[5m]
+              )
+            ) > 1
         annotations:
-          summary: "Ingress is forwarding 5xx responses from upstream"
-          description: "Ingress {{ $labels.ingress }} upstream {{ $labels.service }} is returning 5xx at {{ $value | humanize
-            }} req/s."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamerrors"
+          summary: "Ingress backend service is returning a high volume of 5xx responses"
+          description: "Ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} for host {{ $labels.host }} is returning 5xx responses at {{ $value | humanize }} requests per second while routing traffic to backend service {{ $labels.exported_namespace }}/{{ $labels.exported_service }}. The condition has remained above 1 request per second for 5 minutes and may cause failed API calls, unavailable pages, gateway errors, client retries, or request timeouts. The failures may originate from the backend application or may be generated by nginx-ingress because backend endpoints are unavailable, connections are refused, or upstream requests exceed configured timeouts."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressbackend5xxresponseshigh"
+
+      # -----------------------------------------------------------------------
+      # Latency
+      # -----------------------------------------------------------------------
+
+      - alert: NginxIngressHighLatency
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le, ingress, exported_namespace) (
+              rate(
+                nginx_ingress_controller_request_duration_seconds_bucket[5m]
+              )
+            )
+          ) > 2
+          and on (ingress, exported_namespace)
+          sum by (ingress, exported_namespace) (
+            rate(nginx_ingress_controller_requests[5m])
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            histogram_quantile(
+              0.99,
+              sum by (le, ingress, exported_namespace) (
+                rate(
+                  nginx_ingress_controller_request_duration_seconds_bucket[5m]
+                )
+              )
+            ) > 2
+            and on (ingress, exported_namespace)
+            sum by (ingress, exported_namespace) (
+              rate(nginx_ingress_controller_requests[5m])
+            ) > 1
+        annotations:
+          summary: "Ingress end-to-end p99 latency is above 2 seconds"
+          description: "The slowest 1% of requests handled by ingress {{ $labels.exported_namespace }}/{{ $labels.ingress }} are taking more than 2 seconds for 10 minutes while the ingress is receiving active traffic. Users may experience slow pages, delayed API responses, client timeouts, duplicate retries, and degraded interactive performance. This metric measures total ingress request time and can be increased by slow backend responses, ingress queueing or saturation, large responses, network latency, or slow clients."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighlatency"
+
+      - alert: NginxIngressUpstreamHighLatency
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (
+              le,
+              host
+            ) (
+              rate(
+                nginx_ingress_controller_response_duration_seconds_bucket{
+                  host!="_",
+                  status=~"2..|3.."
+                }[5m]
+              )
+            )
+          ) > 1.5
+          and on (
+            host
+          )
+          sum by (
+            host
+          ) (
+            rate(
+              nginx_ingress_controller_requests{
+                host!="_",
+                status=~"2..|3.."
+              }[5m]
+            )
+          ) > 1
+        for: 10m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: cause
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            histogram_quantile(
+              0.99,
+              sum by (
+                le,
+                host
+              ) (
+                rate(
+                  nginx_ingress_controller_response_duration_seconds_bucket{
+                    host!="_",
+                    status=~"2..|3.."
+                  }[5m]
+                )
+              )
+            ) > 1.5
+            and on (
+              host
+            )
+            sum by (
+              host
+            ) (
+              rate(
+                nginx_ingress_controller_requests{
+                  host!="_",
+                  status=~"2..|3.."
+                }[5m]
+              )
+            ) > 1
+        annotations:
+          summary: "Ingress upstream p99 latency is high for successful requests"
+          description: "The p99 upstream response time for successful requests to host {{ $labels.host }} has exceeded 1.5 seconds for 10 minutes while the host is receiving more than one successful request per second. Users may experience slow API responses, delayed page loads, client timeouts, and retries even though requests are still completing successfully. Investigate backend pod health, application latency, database and dependency performance, connection pools, endpoint distribution, and recent deployments."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressupstreamhighlatency"
+
+      # -----------------------------------------------------------------------
+      # TLS certificates
+      # -----------------------------------------------------------------------
 
       - alert: NginxIngressCertificateExpiringSoon
-        expr: nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14
+        expr: |
+          (
+            min by (host, secret_name, secret_namespace) (
+              nginx_ingress_controller_ssl_expire_time_seconds
+            ) - time()
+          ) < 14 * 24 * 60 * 60
+          and
+          (
+            min by (host, secret_name, secret_namespace) (
+              nginx_ingress_controller_ssl_expire_time_seconds
+            ) - time()
+          ) > 0
         for: 1h
         labels:
           severity: warning
@@ -94,11 +323,48 @@ groups:
           signal: cause
           category: security
           runbook: runbooks/ingress/nginx-ingress.md
-          query: nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14
+          query: |
+            (
+              min by (host, secret_name, secret_namespace) (
+                nginx_ingress_controller_ssl_expire_time_seconds
+              ) - time()
+            ) < 14 * 24 * 60 * 60
+            and
+            (
+              min by (host, secret_name, secret_namespace) (
+                nginx_ingress_controller_ssl_expire_time_seconds
+              ) - time()
+            ) > 0
         annotations:
           summary: "Ingress TLS certificate expires within 14 days"
-          description: "Ingress {{ $labels.host }} TLS certificate expires in {{ $value | humanizeDuration }}."
+          description: "The TLS certificate serving host {{ $labels.host }} expires in {{ $value | humanizeDuration }}. The certificate is stored in Secret {{ $labels.secret_namespace }}/{{ $labels.secret_name }}. If it is not renewed and loaded before expiry, browsers, API clients, webhooks, mobile applications, and external integrations may reject HTTPS connections because certificate validation fails. Verify the certificate renewal controller, Certificate or Secret status, DNS challenge or issuer health, and that nginx-ingress has loaded the current certificate."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscertificateexpiringsoon"
+
+      - alert: NginxIngressCertificateExpired
+        expr: |
+          min by (host, secret_name, secret_namespace) (
+            nginx_ingress_controller_ssl_expire_time_seconds
+          ) - time() <= 0
+        for: 5m
+        labels:
+          severity: critical
+          priority: P0
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: security
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            min by (host, secret_name, secret_namespace) (
+              nginx_ingress_controller_ssl_expire_time_seconds
+            ) - time() <= 0
+        annotations:
+          summary: "Ingress TLS certificate has expired"
+          description: "The TLS certificate serving host {{ $labels.host }} has expired. The certificate is stored in Secret {{ $labels.secret_namespace }}/{{ $labels.secret_name }}. HTTPS clients that validate certificates may immediately reject connections, making the affected website, API, webhook, or external integration unavailable or unsafe to access. Confirm that the referenced TLS Secret contains a valid renewed certificate, investigate certificate issuance or renewal failures, and verify that nginx-ingress has successfully reloaded the updated configuration."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresscertificateexpired"
+
+      # -----------------------------------------------------------------------
+      # Configuration and routing
+      # -----------------------------------------------------------------------
 
       - alert: NginxIngressConfigReloadFailed
         expr: nginx_ingress_controller_config_last_reload_successful == 0
@@ -113,11 +379,34 @@ groups:
           query: nginx_ingress_controller_config_last_reload_successful == 0
         annotations:
           summary: "nginx-ingress configuration reload has failed"
-          description: "Last nginx-ingress config reload on {{ $labels.controller_pod }} failed — running on stale config."
+          description: "The most recent nginx configuration reload failed on controller {{ $labels.namespace }}/{{ $labels.controller_pod }}. The controller may continue serving traffic using its previous configuration, but newly created or updated Ingress resources, routes, backends, annotations, and TLS certificates may not be active. This can cause new hosts to return the default backend, routing changes to be ignored, removed routes to remain active, or renewed certificates not to be served."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressconfigreloadfailed"
 
+      - alert: NginxIngressOrphanIngress
+        expr: nginx_ingress_controller_orphan_ingress == 1
+        for: 5m
+        labels:
+          severity: warning
+          priority: P2
+          tech_stack: nginx-ingress
+          signal: cause
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: nginx_ingress_controller_orphan_ingress == 1
+        annotations:
+          summary: "Ingress has no valid backend service or endpoint"
+          description: "Ingress {{ $labels.namespace }}/{{ $labels.ingress }} is reported as orphaned with type {{ $labels.type }}. The referenced Service may not exist or may have no usable endpoints, so requests matching this ingress can return 503 responses and will not reach an application pod. Verify the backend Service name and port, EndpointSlice contents, pod readiness, namespace references, selectors, and whether the workload has available replicas."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressorphaningress"
+
+      # -----------------------------------------------------------------------
+      # Connection saturation
+      # -----------------------------------------------------------------------
+
       - alert: NginxIngressHighConnections
-        expr: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
+        expr: |
+          nginx_ingress_controller_nginx_process_connections{
+            state="active"
+          } > 5000
         for: 10m
         labels:
           severity: warning
@@ -128,6 +417,56 @@ groups:
           runbook: runbooks/ingress/nginx-ingress.md
           query: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
         annotations:
-          summary: "nginx-ingress has a very high active connection count"
-          description: "nginx-ingress {{ $labels.controller_pod }} has {{ $value }} active connections."
+          summary: "nginx-ingress active connection count is high"
+          description: "Controller {{ $labels.controller_pod }} in namespace {{ $labels.controller_namespace }} has more than 5,000 active connections for 10 minutes. Sustained connection pressure can exhaust worker connection capacity, consume memory and file descriptors, increase request queueing, and eventually cause refused or timed-out client connections. Investigate traffic growth, long-lived or slow connections, websocket usage, slow backends, keepalive configuration, worker capacity, controller resource limits, and whether additional replicas are required."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingresshighconnections"
+
+      - alert: NginxIngressConnectionsDropped
+        expr: |
+          (
+            sum by (controller_pod, controller_namespace) (
+              rate(
+                nginx_ingress_controller_nginx_process_connections_total{
+                  state="accepted"
+                }[5m]
+              )
+            )
+            -
+            sum by (controller_pod, controller_namespace) (
+              rate(
+                nginx_ingress_controller_nginx_process_connections_total{
+                  state="handled"
+                }[5m]
+              )
+            )
+          ) > 0
+        for: 5m
+        labels:
+          severity: warning
+          priority: P1
+          tech_stack: nginx-ingress
+          signal: symptom
+          category: ingress
+          runbook: runbooks/ingress/nginx-ingress.md
+          query: |
+            (
+              sum by (controller_pod, controller_namespace) (
+                rate(
+                  nginx_ingress_controller_nginx_process_connections_total{
+                    state="accepted"
+                  }[5m]
+                )
+              )
+              -
+              sum by (controller_pod, controller_namespace) (
+                rate(
+                  nginx_ingress_controller_nginx_process_connections_total{
+                    state="handled"
+                  }[5m]
+                )
+              )
+            ) > 0
+        annotations:
+          summary: "nginx-ingress is not handling all accepted connections"
+          description: "Controller {{ $labels.controller_pod }} in namespace {{ $labels.controller_namespace }} is accepting more connections than it successfully handles. Clients may experience connection resets, refused connections, intermittent request failures, or timeouts before an HTTP response is produced. This commonly indicates exhausted worker connections, file-descriptor limits, controller CPU or memory saturation, an excessive number of long-lived connections, or insufficient ingress replicas."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/nginx-ingress.md#nginxingressconnectionsdropped"
