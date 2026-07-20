@@ -15,6 +15,7 @@ groups:
           )
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: nginx-ingress
@@ -39,6 +40,7 @@ groups:
           } == 0
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -75,6 +77,7 @@ groups:
           ) > 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -117,6 +120,7 @@ groups:
           ) > 1
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: nginx-ingress
@@ -159,6 +163,7 @@ groups:
           ) > 1
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -204,6 +209,7 @@ groups:
           ) > 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -259,6 +265,7 @@ groups:
           ) > 1
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -317,6 +324,7 @@ groups:
           ) > 0
         for: 1h
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -347,6 +355,7 @@ groups:
           ) - time() <= 0
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: nginx-ingress
@@ -370,6 +379,7 @@ groups:
         expr: nginx_ingress_controller_config_last_reload_successful == 0
         for: 5m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: nginx-ingress
@@ -386,6 +396,7 @@ groups:
         expr: nginx_ingress_controller_orphan_ingress == 1
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -409,6 +420,7 @@ groups:
           } > 5000
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: nginx-ingress
@@ -442,6 +454,7 @@ groups:
           ) > 0
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P1
           tech_stack: nginx-ingress
