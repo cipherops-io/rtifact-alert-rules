@@ -1,0 +1,878 @@
+tech_stack: nginx-ingress
+version: "2.0"
+description: >-
+  Runbook for the Kubernetes ingress-nginx controller alerts, grounded in the
+  nginx_ingress_controller_* metrics the controller exports. Each assessment names
+  WHICH object fired — the Ingress (by `ingress` + `exported_namespace`), the routed
+  backend (`exported_service` / `host`), the controller replica (`controller_pod`),
+  or the TLS host (`host`) — classifies the failure (backend application error vs
+  connection refused vs no-endpoint vs ingress saturation; end-to-end vs upstream
+  latency; expiring vs expired cert; a bad config reload vs a controller outage)
+  instead of generic "check the pod / restart the controller" guidance.
+  SCOPING (validated live on cluster dev3-apps1): the controller runs in the
+  cert-manager namespace here, so the `namespace` label on controller series is the
+  CONTROLLER's namespace (NOT the backend's) — the backend is `exported_namespace` /
+  `exported_service`. Request/latency alerts scope by {ingress="$ingress",
+  exported_namespace="$exported_namespace"} (the alert carries both); backend-volume
+  and upstream-latency alerts add {host="$host", exported_service="$exported_service"};
+  controller alerts (down / reload / connections) use `by (controller_pod)`
+  attribution so the firing replica is named even when the entity token differs, and
+  the ip:port `instance` is surfaced via by(instance) (it is NOT a literal selector —
+  the coord sanitiser strips `:`). IMPORTANT FLEET CAVEATS (validated live): (1) the
+  TLS metrics nginx_ingress_controller_ssl_expire_time_seconds /
+  nginx_ingress_controller_ssl_certificate_info carry `host` + `identifier` +
+  `issuer_common_name` + `serial_number` but NO secret_namespace / secret_name label,
+  so a cert alert names the HOST (and issuer), and mapping it back to the exact
+  Kubernetes Secret / cert-manager Certificate is a deferred logs/kubectl drill-down —
+  say so rather than inventing a Secret name. (2) This fleet runs a SINGLE controller
+  replica, so `up`/connection queries by(controller_pod) name the one pod; a real
+  multi-replica install lists them all (partial vs full outage). (3) The 5xx-rate and
+  latency metrics are per-Ingress request histograms — a bare cluster aggregate strips
+  the ingress/host label, so every primary query keeps `by (ingress|host|status)` to
+  carry the object name into the RCA.
+
+match_keywords:
+  - nginx
+  - nginx-ingress
+  - ingress-nginx
+  - ingress controller
+  - ingress
+  - 5xx
+  - upstream
+  - certificate
+  - config reload
+  - orphan ingress
+  - connections
+
+categories:
+  - INGRESS
+  - INFRASTRUCTURE
+  - NETWORKING
+
+common_alerts:
+  # ============================================================ CONTROLLER AVAILABILITY
+  - name: "NginxIngressDown"
+    patterns:
+      [
+        "NginxIngressDown",
+        "NginxIngressControllerReplicaDown",
+        "nginx ingress down",
+        "ingress controller unreachable",
+        "controller replica down",
+      ]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm how many controller targets exist and how many are healthy (full vs partial outage)"
+        description: >-
+          This entry serves NginxIngressDown (absent(up{ingress-nginx}==1) for >5m — NO healthy
+          controller target for 5 minutes, all HTTP/HTTPS ingress at risk, P0) and
+          NginxIngressControllerReplicaDown (a specific replica up==0 for >5m while others may still
+          serve, P1). targets_total counts discovered controller scrape targets; targets_healthy is how
+          many are up; up_by_replica lists each replica's up state by controller_pod+instance.
+          Interpret: targets_total==0 => NOTHING discovered — either the controller Deployment is gone
+          or Prometheus service-discovery / job-label is broken (go to step 2's metric-existence check).
+          targets_total>0 and targets_healthy==0 => all discovered replicas are unreachable (true full
+          outage — NginxIngressDown). targets_healthy < targets_total => PARTIAL outage
+          (NginxIngressControllerReplicaDown): name the replica(s) whose up==0 from up_by_replica; the
+          others still route traffic. targets_healthy==targets_total (all 1) => the alert likely already
+          recovered. NOTE: this alert is based on Prometheus SCRAPE availability, so it does not by
+          itself prove customer traffic is failing — confirm impact in step 2.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Discovered vs healthy controller scrape targets and each replica's up state (names which replica is down)."
+            params:
+              queries:
+                - name: targets_total
+                  query: 'count(up{job=~".*(nginx.*ingress|ingress.*nginx).*"}) or vector(0)'
+                - name: targets_healthy
+                  query: 'sum(up{job=~".*(nginx.*ingress|ingress.*nginx).*"}) or vector(0)'
+                - name: up_by_replica
+                  query: 'max by (controller_pod, instance) (up{job=~".*(nginx.*ingress|ingress.*nginx).*"})'
+                - name: recently_up_30m
+                  query: 'max_over_time(sum(up{job=~".*(nginx.*ingress|ingress.*nginx).*"})[30m:])'
+      - step: 2
+        title: "Decide between a discovery/scrape gap, a stopped controller process, and a real outage"
+        description: >-
+          Separate 'the controller is gone' from 'Prometheus can't scrape it'. build_info_count /
+          num_procs_count check whether the controller's OWN metrics still exist (independent of the
+          scrape `up`); request_rate is live request throughput; the pod-state queries name a
+          crashed/OOMed/pending controller pod (KSM, in the controller's namespace $controller_namespace,
+          which is cert-manager in this fleet). Interpret: build_info & process metrics BOTH absent =>
+          the controller pods/metrics are truly gone (deployment scaled to 0, evicted, or node loss) —
+          the outage is real, not a scrape blip. build_info present but up==0 => a scrape/discovery/
+          job-label mismatch or the metrics endpoint/Service is unreachable while the process runs
+          (fix Prometheus target / Service, not the controller). process metrics disappeared just before
+          up dropped => the controller PROCESS stopped (crash/OOM). request_rate collapsing to 0 at the
+          same moment => genuine traffic-serving outage; request_rate continuing => stale/duplicate
+          scrape rather than a real down. pod_last_terminated=OOMKilled/Error or pod_waiting=
+          CrashLoopBackOff => the concrete cause; name the pod + reason. HONEST GAP: if proactive log
+          access is unavailable, say the crash line needs the controller pod logs.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Whether the controller's own metrics still exist, live request throughput, and KSM pod-state of the controller pods (real outage vs scrape gap; names a crashed/OOMed pod)."
+            params:
+              queries:
+                - name: build_info_count
+                  query: 'count(nginx_ingress_controller_build_info) or vector(0)'
+                - name: num_procs_count
+                  query: 'count(nginx_ingress_controller_nginx_process_num_procs) or vector(0)'
+                - name: request_rate
+                  query: 'sum(rate(nginx_ingress_controller_requests[5m])) or vector(0)'
+                - name: controller_pod_restarts_30m
+                  query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$controller_namespace",pod=~".*ingress.*nginx.*|.*nginx.*ingress.*"}[30m]))'
+                - name: controller_pod_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$controller_namespace",pod=~".*ingress.*nginx.*|.*nginx.*ingress.*",reason=~"OOMKilled|Error|ContainerCannotRun|DeadlineExceeded"} == 1'
+                - name: controller_pod_waiting
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$controller_namespace",pod=~".*ingress.*nginx.*|.*nginx.*ingress.*",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError"} == 1'
+                - name: controller_pod_notready
+                  query: 'kube_pod_status_ready{namespace="$controller_namespace",pod=~".*ingress.*nginx.*|.*nginx.*ingress.*",condition="true"} == 0'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Controller pod state / restarts / OOM / scheduling events in the controller namespace."
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller pod logs filtered for panic/fatal/OOM/bind/'address already in use'/shutdown/config-load signatures."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "recover_ingress_controller"
+        description: "Primary fix once step 2 names the cause: recover the controller. Crash/OOM => raise its memory/CPU or fix the bad config/image and restart the ingress-nginx-controller deployment; node loss/pending => reschedule (check node readiness, taints, PDB); scaled to 0 => scale it back up. If build_info exists but up==0, the controller is RUNNING and the fault is the Prometheus scrape/Service — fix the target/metrics endpoint, do NOT restart the controller."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "restore_scrape_or_discovery"
+        description: "When metrics exist but up==0 (scrape gap): fix Prometheus service-discovery / the job-label match / the controller metrics Service or port — the ingress may be serving traffic fine while only monitoring is blind. No controller change needed."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/networking on-call IMMEDIATELY for NginxIngressDown (all ingress at risk — P0). NginxIngressControllerReplicaDown is degraded-capacity (surviving replicas still route) — urgent but not a full outage; escalate faster if it is the last healthy replica."
+    follow_up:
+      - "Confirm up returns to 1 for every controller target and request_rate recovers to baseline."
+      - "If the controller OOMs/crashes repeatedly, right-size it and review worker-processes/connections; if a scrape gap recurred, fix the ServiceMonitor/target so monitoring isn't blind during real outages."
+
+  # ============================================================ 5xx ERROR RATE
+  - name: "NginxIngress5xxRate"
+    patterns:
+      [
+        "NginxIngressHigh5xxRate",
+        "NginxIngressCritical5xxRate",
+        "nginx ingress 5xx rate",
+        "ingress error rate high",
+        "5xx error percentage",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Recompute the 5xx ratio for the alerting Ingress, name it, and gauge absolute impact"
+        description: >-
+          This entry serves NginxIngressHigh5xxRate (>5% 5xx for 10m with >1 req/s, Warning) and
+          NginxIngressCritical5xxRate (>20%, Critical) — note WHICH threshold fired to weight urgency.
+          error_pct_by_ingress is the 5xx share for the alerting Ingress (scoped to its own ingress+
+          exported_namespace — the ONLY object to name); total_rps is its request volume; failed_rps is
+          its 5xx volume; ingresses_over_5pct is a cluster-wide COUNT of ingresses above 5% 5xx
+          (blast-radius scalar — a number, NOT a list of names). Interpret: high error_pct with high
+          total_rps => major user-facing impact (many real failures). high error_pct with low total_rps
+          => a severe RATIO but small absolute blast (a low-traffic route) — real but lower urgency.
+          ingresses_over_5pct ~ 1 => a backend-specific problem (step 2/3); ingresses_over_5pct large =>
+          a controller-wide or shared-platform issue (saturation, config, or an upstream dependency all
+          backends share). ALWAYS report against the alert's OWN ingress ($exported_namespace/$ingress),
+          never rename onto another ingress.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "The alerting Ingress's 5xx ratio, its request and failure rates, and a cluster-wide count of ingresses over 5% 5xx (blast-radius scalar)."
+            params:
+              queries:
+                - name: error_pct_by_ingress
+                  unit: "%"
+                  query: '100 * sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m])) / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                - name: total_rps
+                  query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                - name: failed_rps
+                  query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
+                - name: ingresses_over_5pct
+                  query: 'count(100 * sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 5) or vector(0)'
+      - step: 2
+        title: "Split the 5xx by exact status code and by backend service/host (which code, which backend)"
+        description: >-
+          The exact 5xx code names the failure mode. status_split breaks the alerting ingress's 5xx by
+          status; backend_split attributes 5xx by host + exported_service (which backend is failing).
+          Interpret the dominant code: 500 => the backend APPLICATION is erroring (or an internal NGINX
+          error) — chase the backend service's own health/logs. 502 => bad gateway: the upstream
+          refused the connection, returned an invalid response, or closed prematurely (backend down /
+          wrong Service port / crash). 503 => service unavailable: no healthy backend endpoints or the
+          backend/ingress is overloaded (correlate with orphan-ingress and connections). 504 => gateway
+          timeout: the upstream is too slow (backend/dependency latency — correlate step 3). backend_split
+          showing ONE exported_service => backend-specific; showing ALL services behind the ingress =>
+          an ingress-config or controller issue. Name the winning code and backend.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "5xx broken down by exact status code, and by backend host/service, for the alerting Ingress."
+            params:
+              queries:
+                - name: status_split
+                  query: 'sum by (status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
+                - name: backend_split
+                  query: 'sum by (host, exported_service, status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
+      - step: 3
+        title: "Correlate with upstream latency, ingress config, and controller pressure; read the upstream errors"
+        description: >-
+          Decide whether the 5xx is backend degradation, a broken backend endpoint, or ingress
+          saturation. upstream_p99_s is the backend response p99 for this ingress; orphan_state flags a
+          missing/unresolvable backend (drives 503); reload_ok is the controller config-reload health
+          (a failed reload can serve stale/broken routing); ctrl_conn_active / ctrl_cpu are controller
+          saturation. Interpret: upstream_p99_s high alongside 504 => backend timeout is the cause (the
+          backend is too slow). orphan_state==1 with 503 => the Ingress has no usable backend endpoints
+          (handle as NginxIngressOrphanIngress — fix the Service/endpoints). reload_ok==0 => a bad
+          config reload may be routing wrong (handle as NginxIngressConfigReloadFailed). ctrl_conn_active
+          very high / ctrl_cpu saturated with 502/503 across many ingresses => the CONTROLLER is
+          saturated, not one backend. All controller signals normal and one backend erroring => a pure
+          backend-application failure. The controller logs carry the concrete upstream error ('connect()
+          failed', 'no live upstreams', 'upstream prematurely closed', 'upstream timed out') — cite it.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Upstream latency for the ingress, orphan/backend-endpoint state, config-reload health, and controller connection/CPU pressure (backend vs config vs saturation)."
+            params:
+              queries:
+                - name: upstream_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, host) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: orphan_state
+                  query: 'max by (ingress, exported_namespace, type) (nginx_ingress_controller_orphan_ingress{ingress="$ingress",exported_namespace="$exported_namespace"} == 1)'
+                - name: reload_ok
+                  query: 'min(nginx_ingress_controller_config_last_reload_successful) or vector(1)'
+                - name: ctrl_conn_active
+                  query: 'sum by (controller_pod) (nginx_ingress_controller_nginx_process_connections{state="active"})'
+                - name: ctrl_cpu_cores
+                  unit: "cores"
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_cpu_seconds_total[5m]))'
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for 'upstream timed out'/'connect() failed'/'no live upstreams'/'connection refused'/'prematurely closed'/502/503/504 signatures for the affected host/ingress."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — the fix is almost always in the BACKEND, not the ingress
+      - action: "fix_failing_backend"
+        description: "Primary path when step 2/3 names a backend (500/502 on one exported_service, or 504 with high upstream latency): fix the backend workload — recover crashed/OOMed pods, correct the Service port/selector, or address the slow dependency. This is the owning service team's fix in $exported_namespace, not an ingress operation."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_ingress_or_capacity"
+        description: "When step 3 shows orphan_state==1 (503, no endpoints) => restore the backend Service/endpoints (NginxIngressOrphanIngress); reload_ok==0 => fix the bad Ingress config (NginxIngressConfigReloadFailed); controller saturated across many ingresses => scale the controller / raise worker-connections."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning backend/service team for a single-backend 5xx (the usual case). Platform/ingress on-call when many ingresses are affected together (controller saturation / shared dependency / bad config) or when NginxIngressCritical5xxRate (>20%) fired."
+    follow_up:
+      - "Confirm the 5xx ratio for the ingress drops back under threshold after the backend/config fix."
+      - "If 502/503 recurs from backend restarts, add readiness gating / connection draining so rollouts don't drop upstream connections."
+
+  # ============================================================ BACKEND 5xx VOLUME
+  - name: "NginxIngressBackend5xxResponsesHigh"
+    patterns:
+      [
+        "NginxIngressBackend5xxResponsesHigh",
+        "NginxIngressUpstreamErrors",
+        "backend 5xx responses high",
+        "upstream returning 5xx",
+        "ingress backend errors",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the backend's 5xx volume AND ratio, and name the backend (host/service)"
+        description: >-
+          NginxIngressBackend5xxResponsesHigh is an ABSOLUTE-volume alert: a backend is serving >1 5xx
+          response/second for 5m (not a percentage). backend_5xx_rps is the alerting backend's 5xx rate
+          (scoped to its host+ingress+exported_namespace+exported_service); backend_error_pct is the
+          same backend's 5xx SHARE; backend_total_rps is its request volume. Interpret: cross-read volume
+          vs ratio — high 5xx_rps AND high error_pct => the backend is broadly failing (real outage of
+          that service). high 5xx_rps but LOW error_pct => a high-traffic backend with a small failing
+          fraction (a bad endpoint/path or a subset of pods), still >1 rps of real user errors. Name the
+          exported_service + host so the RCA points at the concrete backend, not the ingress in general.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "The alerting backend's absolute 5xx rate, its 5xx share, and its total request rate (host/service scoped)."
+            params:
+              queries:
+                - name: backend_5xx_rps
+                  query: 'sum by (host, exported_service) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m]))'
+                - name: backend_error_pct
+                  unit: "%"
+                  query: '100 * sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m]))'
+                - name: backend_total_rps
+                  query: 'sum by (host, exported_service) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m]))'
+      - step: 2
+        title: "Classify the failure: status code, connect vs response latency, and orphan state"
+        description: >-
+          status_split names the dominant 5xx code for the backend; connect_p99_s is how long NGINX
+          takes to ESTABLISH a connection to the backend; response_p99_s is how long the backend takes to
+          RESPOND once connected; orphan_state flags a missing/unresolvable backend. Interpret: 500
+          dominant => the backend application is returning errors (its own bug/exception). 502 with high
+          connect_p99_s or 'connection refused' in logs => the backend isn't accepting connections
+          (down, wrong port, not listening). 502 with 'prematurely closed'/'reset' => the backend
+          crashes/closes mid-response (instability). 503 with orphan_state==1 => no usable endpoints
+          (Service/endpoint gap — cross-link NginxIngressOrphanIngress). 504 with high response_p99_s =>
+          the backend is too slow (application/DB/dependency). connect_p99_s high but response normal =>
+          a network/connection-pool/acceptance problem rather than slow processing. Name code + which
+          latency leg.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "5xx by status code, connection-establishment vs response p99 latency, and orphan state for the backend."
+            params:
+              queries:
+                - name: status_split
+                  query: 'sum by (status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m]))'
+                - name: connect_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_connect_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m])))'
+                - name: response_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m])))'
+                - name: orphan_state
+                  query: 'max by (ingress, exported_namespace, type) (nginx_ingress_controller_orphan_ingress{ingress="$ingress",exported_namespace="$exported_namespace"} == 1)'
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for the backend's host/service and 'connection refused'/'upstream timed out'/'no live upstreams'/'prematurely closed'/'reset by peer' signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — the fix is in the backend workload
+      - action: "fix_backend_service"
+        description: "Primary fix per step 2: 500 => fix the backend application error; 502 connection refused => recover the backend pods / correct the Service port; 502 premature close => stabilise the crashing backend; 503 orphan => restore endpoints; 504 => address backend/dependency slowness. Owning service team's fix in $exported_namespace, not an ingress change."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for $exported_service. Escalate to platform if multiple backends behind the same ingress/controller degrade together."
+    follow_up:
+      - "Confirm the backend's 5xx rate returns below 1 req/s after the fix."
+      - "If 502s came from a rollout, add readiness probes / connection draining so deploys don't drop upstream connections."
+
+  # ============================================================ LATENCY
+  - name: "NginxIngressHighLatency"
+    patterns:
+      [
+        "NginxIngressHighLatency",
+        "NginxIngressUpstreamHighLatency",
+        "ingress high latency",
+        "upstream high latency",
+        "request latency above threshold",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the latency percentiles for the alerting object and whether it is tail-only or broad"
+        description: >-
+          This entry serves NginxIngressHighLatency (end-to-end p99 request duration >2s for 10m, scoped
+          by ingress+exported_namespace — includes client, NGINX queueing, connect, backend, and response
+          transfer) and NginxIngressUpstreamHighLatency (upstream response p99 >1.5s for 2xx/3xx for 10m,
+          scoped by host — successful-but-slow backend responses). e2e_p50_s / e2e_p95_s / e2e_p99_s are
+          the end-to-end request percentiles for the ingress; upstream_p99_s is the upstream response p99
+          for the host (successful requests only); req_rps is request volume. Interpret: only p99 high
+          while p50/p95 normal => a TAIL-latency problem (a slow subset of routes/backends/clients).
+          p50, p95 AND p99 all high => BROAD degradation (the backend or ingress is slow for everyone).
+          req_rps rising just before latency => load-driven (capacity/connection-pool saturation). Report
+          the numbers against the alert's OWN object (ingress for end-to-end, host for upstream).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "End-to-end p50/p95/p99 for the ingress, upstream p99 for the host, and request volume (tail vs broad; load-driven?)."
+            params:
+              queries:
+                - name: e2e_p50_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.50, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: e2e_p95_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.95, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: e2e_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: upstream_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, host) (rate(nginx_ingress_controller_response_duration_seconds_bucket{host="$host",status=~"2..|3.."}[5m])))'
+                - name: req_rps
+                  query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+      - step: 2
+        title: "Split latency into its phases (connect vs header vs response) to localise the slow leg"
+        description: >-
+          A request's time is connect (establish TCP to backend) + header (backend time-to-first-byte) +
+          response (backend send + transfer). connect_p99_s / header_p99_s / response_p99_s are those
+          legs for the ingress; the alerting host's upstream_p99_s is above. Interpret: connect_p99_s
+          high => network / backend connection-acceptance / connection-pool problem (backend slow to
+          accept). header_p99_s high => the backend is slow to START responding (app/DB dependency
+          latency before first byte). response_p99_s high => the backend is slow to FINISH (large
+          payloads or slow streaming). All upstream legs normal but end-to-end p99 high => the delay is
+          OUTSIDE the backend — slow clients, response transfer, or NGINX queueing/saturation (check
+          connections/CPU in step 3). Name the dominant leg with its number.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Connect, header (time-to-first-byte) and response p99 latency legs for the ingress (which phase is slow)."
+            params:
+              queries:
+                - name: connect_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_connect_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: header_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_header_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: response_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                - name: slow_backends
+                  query: 'topk(5, histogram_quantile(0.99, sum by (le, exported_service, host) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))))'
+      - step: 3
+        title: "Rule in/out ingress saturation and check whether the slowness is turning into errors"
+        description: >-
+          If the upstream legs are clean, the delay is in the ingress itself or the client. ctrl_conn_active
+          / ctrl_conn_waiting are the controller's active/waiting connections; ctrl_cpu is its CPU; resp_size_avg
+          is the mean response size; error_pct tracks whether slow requests are starting to fail.
+          Interpret: ctrl_conn_active/waiting very high with high ctrl_cpu => the controller is saturated
+          and QUEUEING requests (scale replicas / raise worker-connections). resp_size_avg large =>
+          big payloads dominate transfer time (a slow-transfer problem, not backend compute). error_pct
+          rising alongside latency => the degradation is progressing toward timeouts/5xx (cross-link the
+          5xx entry) — raise urgency. All controller signals normal and upstream normal => slow clients /
+          keep-alive / network egress outside the cluster. Name the conclusion.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Controller connection/CPU saturation, mean response size, and whether the latency is turning into 5xx."
+            params:
+              queries:
+                - name: ctrl_conn_active
+                  query: 'sum by (controller_pod) (nginx_ingress_controller_nginx_process_connections{state="active"})'
+                - name: ctrl_conn_waiting
+                  query: 'sum by (controller_pod) (nginx_ingress_controller_nginx_process_connections{state="waiting"})'
+                - name: ctrl_cpu_cores
+                  unit: "cores"
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_cpu_seconds_total[5m]))'
+                - name: resp_size_avg_bytes
+                  unit: "bytes"
+                  query: 'sum(rate(nginx_ingress_controller_response_size_sum{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])) / sum(rate(nginx_ingress_controller_response_size_count{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                - name: error_pct
+                  unit: "%"
+                  query: '100 * sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for 'upstream timed out'/'upstream response time'/slow-upstream signatures for the affected host/ingress."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — mostly backend or capacity work
+      - action: "fix_slow_backend"
+        description: "Primary path when step 2 names an upstream leg (connect/header/response) as slow: address the backend — the slow dependency/DB, connection-pool sizing, or a resource-starved backend pod in $exported_namespace. Owning service team's fix."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_ingress_saturation"
+        description: "When step 3 shows the controller saturated (high active/waiting connections + CPU) and upstream is clean: scale the ingress-nginx controller replicas or raise worker-connections/worker-processes; for large-payload transfer, consider response compression/caching. Ingress-capacity work, not a backend fix."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning backend team when an upstream leg is slow (the common case); platform/ingress team when the controller is saturated or many hosts slow together."
+    follow_up:
+      - "Confirm p99 returns under threshold after the backend/capacity fix."
+      - "If latency repeatedly precedes 5xx, add backend autoscaling/timeout tuning before it becomes an outage."
+
+  # ============================================================ TLS CERTIFICATE
+  - name: "NginxIngressCertificateExpiringSoon"
+    patterns:
+      [
+        "NginxIngressCertificateExpiringSoon",
+        "NginxIngressCertificateExpired",
+        "ingress certificate expiring",
+        "ingress certificate expired",
+        "tls certificate expiry",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Compute the certificate's remaining lifetime for the host and confirm expiring vs expired"
+        description: >-
+          This entry serves NginxIngressCertificateExpiringSoon (cert expires in <14 days but has NOT
+          expired, Warning) and NginxIngressCertificateExpired (expiry timestamp is in the PAST — TLS
+          handshakes are failing NOW, Critical). cert_days_left is (expiry - now)/86400 for the alerting
+          host; cert_expiry_by_replica lists the expiry each controller replica has LOADED for the host;
+          cert_identity surfaces the issuer/serial the controllers are serving. Interpret: cert_days_left
+          negative => ALREADY EXPIRED (NginxIngressCertificateExpired — browsers/clients reject the cert;
+          urgent). cert_days_left between 0 and 14 => expiring soon (renew before outage). cert_expiry_by_
+          replica showing DIFFERENT timestamps across replicas => a partial/inconsistent reload (some
+          controllers loaded a renewed cert, others didn't) — the renewal exists but hasn't propagated.
+          IMPORTANT SCHEMA NOTE: the SSL metrics carry the HOST + issuer + serial, but NOT the Kubernetes
+          Secret/Certificate name — name the HOST and issuer here; identifying the exact Secret /
+          cert-manager Certificate to renew is a kubectl/cert-manager drill-down (step 3), so say so
+          rather than inventing a Secret name.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Remaining lifetime for the host's cert, the expiry each replica has loaded (consistency), and the cert issuer/serial identity."
+            params:
+              queries:
+                - name: cert_days_left
+                  unit: "days"
+                  query: '(min by (host) (nginx_ingress_controller_ssl_expire_time_seconds{host="$host"}) - time()) / 86400'
+                - name: cert_expiry_by_replica
+                  query: 'max by (host, controller_pod) (nginx_ingress_controller_ssl_expire_time_seconds{host="$host"})'
+                - name: cert_identity
+                  query: 'max by (host, issuer_common_name, serial_number) (nginx_ingress_controller_ssl_certificate_info{host="$host"})'
+                - name: certs_expiring_14d
+                  query: 'count((min by (host) (nginx_ingress_controller_ssl_expire_time_seconds) - time()) / 86400 < 14) or vector(0)'
+      - step: 2
+        title: "Check whether a renewed cert simply hasn't been loaded (reload health + reload age)"
+        description: >-
+          Distinguish 'no renewed cert exists' from 'renewed cert exists but NGINX is still serving the
+          old one'. reload_ok is the controller config-reload health; reload_age_s is how long since the
+          last successful reload (a large value means a renewed Secret may not have been picked up);
+          cert_info_present confirms the controller still has a cert loaded for the host at all.
+          Interpret: reload_ok==0 => the controller FAILED to load new config/cert — a renewed cert in
+          the Secret won't be served until reload succeeds (cross-link NginxIngressConfigReloadFailed).
+          reload_age_s very large while a renewal was expected => the controller hasn't reloaded since the
+          Secret changed (force a reload / check the cert-manager → Secret → ingress path). reload_ok==1
+          and reload recent but still expiring => there genuinely is no renewed cert yet (renewal system
+          hasn't produced one — step 3). cert_info_present empty => the host/cert reference may be wrong
+          (Ingress points at a missing/incorrect Secret).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Config-reload health, time since last successful reload, and whether a cert is loaded for the host (renewed-but-not-loaded vs not-renewed)."
+            params:
+              queries:
+                - name: reload_ok
+                  query: 'min(nginx_ingress_controller_config_last_reload_successful) or vector(1)'
+                - name: reload_age_s
+                  unit: "s"
+                  query: 'time() - max(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds)'
+                - name: cert_info_present
+                  query: 'count(nginx_ingress_controller_ssl_certificate_info{host="$host"}) or vector(0)'
+      - step: 3
+        title: "Look at the renewal system (cert-manager) for the host — is renewal failing or unmanaged?"
+        description: >-
+          The controller only serves the cert; renewal is cert-manager's (or a manual rotation's) job.
+          Read the cert-manager Certificate/Order/Challenge state and logs for this host/Secret.
+          Interpret the evidence: a cert-manager challenge/issuer/order error => renewal is FAILING
+          (ACME challenge blocked, issuer misconfigured, rate-limited) — fix the challenge/issuer. No
+          cert-manager activity for the host at all => the cert may be UNMANAGED (static Secret) or the
+          Certificate resource is missing — renewal was never triggered; rotate the Secret manually or
+          create the Certificate. Renewed successfully but the ingress still shows old expiry => a
+          reload/wrong-Secret problem (step 2). HONEST GAP: the SSL metric doesn't carry the Secret name,
+          so name the HOST and use the cert-manager Certificate/Secret for that host — surfacing the exact
+          Secret is a kubectl drill-down; say so if logs are unavailable.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "cert-manager Certificate/Order/Challenge state and events for the alerting host (renewal health)."
+          - tool_id: "tool.read_logs"
+            description: "cert-manager (and ingress-nginx) logs filtered for the host and renew/challenge/issuer/order/'certificate'/'private key' signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — cert renewal / rotation, not a k8s workload restart
+      - action: "renew_or_rotate_certificate"
+        description: "Primary fix: get a valid cert served for the host. Expired/expiring with a cert-manager failure => fix the failing Challenge/Issuer (DNS/HTTP-01 solver, rate limit, issuer config) so renewal completes; unmanaged/static cert => rotate the Secret with a fresh certificate. For NginxIngressCertificateExpired treat as urgent — TLS is failing now."
+        tool_id: ""
+        requires_approval: true
+      - action: "force_reload_or_fix_secret_ref"
+        description: "When step 2 shows a renewed cert exists but the ingress serves the old one: force a controller reload (or fix the failed reload), and verify the Ingress references the correct TLS Secret for the host. No cert change needed — it is a propagation/reference problem."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/security team. NginxIngressCertificateExpired is user-facing NOW (TLS errors) — escalate immediately; ExpiringSoon is preventive (renew before the deadline)."
+    follow_up:
+      - "Confirm ssl_expire_time_seconds for the host moves to a future date and every replica loads the same (renewed) cert."
+      - "If renewal failed silently, add cert-expiry + cert-manager-failure alerting so the next rotation doesn't reach the wire."
+
+  # ============================================================ CONFIG RELOAD
+  - name: "NginxIngressConfigReloadFailed"
+    patterns:
+      [
+        "NginxIngressConfigReloadFailed",
+        "nginx ingress config reload failed",
+        "configuration reload failed",
+        "running on stale config",
+        "invalid ingress configuration",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm which controller(s) failed to reload and whether it is isolated or fleet-wide"
+        description: >-
+          NginxIngressConfigReloadFailed fires when nginx_ingress_controller_config_last_reload_successful
+          == 0 for >5m — the LAST config reload failed, so the controller is serving STALE config and new
+          Ingress changes are not taking effect (the previously-good config usually still serves existing
+          traffic). reload_ok_by_pod reports each controller replica's reload health (0 = failed);
+          failed_pods counts how many replicas failed; reload_age_s is how long since the last SUCCESSFUL
+          reload. Interpret: ALL replicas at 0 (failed_pods == replica count) => a SHARED invalid config —
+          a single bad Ingress/annotation broke everyone's reload (most common). ONE replica at 0 while
+          others are 1 => a pod-local problem (that replica's resource/process/drift), not the shared
+          config. reload_age_s large => the stale window is long — the more config has changed since,
+          the more new Ingresses are silently not applied. Name the failing pod(s).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-replica reload health, how many replicas failed, and how long since the last good reload (shared bad config vs pod-local)."
+            params:
+              queries:
+                - name: reload_ok_by_pod
+                  query: 'min by (controller_pod) (nginx_ingress_controller_config_last_reload_successful)'
+                - name: failed_pods
+                  query: 'count(nginx_ingress_controller_config_last_reload_successful == 0) or vector(0)'
+                - name: reload_age_s
+                  unit: "s"
+                  query: 'time() - max(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds)'
+      - step: 2
+        title: "Check config-hash consistency and whether a recent change/oversize triggered the failure"
+        description: >-
+          config_hash_variants counts DISTINCT config hashes across replicas; success_metric /
+          check_success are the controller's self-check health; admission_render_ingresses /
+          admission_render_duration_s reflect how large/complex the generated config is. Interpret:
+          multiple distinct config hashes => replicas are out of sync (some applied the new config, some
+          rejected it) — a config drift/rollout mid-flight. a single shared hash with all reloads failed
+          => a common invalid config the whole fleet rejected. a hash that changed right before the
+          failures => a RECENT Ingress/annotation edit caused it (find the last-changed Ingress).
+          admission_render_ingresses / _duration spiking => an oversized or very complex config
+          (huge number of Ingresses or an expensive annotation) is failing to render. check_success/
+          success at 0 => the controller's own validation is failing. The concrete cause (nginx: [emerg],
+          'configuration test failed', unknown directive, duplicate, bad certificate) is in the reload
+          logs — read them and cite the exact line.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Config-hash consistency across replicas, controller self-check health, and admission/render size (recent change vs oversize vs shared-invalid)."
+            params:
+              queries:
+                - name: config_hash_variants
+                  query: 'count(count by (config_hash) (nginx_ingress_controller_config_hash)) or vector(0)'
+                - name: check_success
+                  query: 'min(nginx_ingress_controller_check_success) or vector(1)'
+                - name: success_metric
+                  query: 'min(nginx_ingress_controller_success) or vector(1)'
+                - name: admission_render_ingresses
+                  query: 'max(nginx_ingress_controller_admission_render_ingresses)'
+                - name: admission_render_duration_s
+                  unit: "s"
+                  query: 'max(nginx_ingress_controller_admission_render_duration)'
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for reload/'nginx: [emerg]'/'configuration test failed'/invalid/duplicate/'unknown directive'/certificate/host signatures (the exact rejected directive)."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — the fix is reverting/repairing the offending Ingress, not restarting the controller
+      - action: "revert_bad_ingress_change"
+        description: "Primary fix: the reload rejected a config change. Find the most recently modified Ingress/annotation (or the bad TLS Secret) named in the logs and revert/correct it — a syntax/unknown-directive error => fix the annotation; a certificate/private-key error => fix the referenced TLS Secret. Restarting the controller does NOT help (it will re-reject the same invalid config); repairing the source config lets the reload succeed."
+        tool_id: ""
+        requires_approval: true
+      - action: "reduce_config_size"
+        description: "When step 2 shows admission render size/duration spiking (oversized/complex config): split or simplify the Ingress set / annotations, or raise controller resources so the render completes. Applies only to the oversize-config branch."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/ingress on-call. Impact is deferred (stale config still serves) but rising — every new Ingress/route/cert change is silently not applied until the reload succeeds; escalate faster if a pending change is urgent."
+    follow_up:
+      - "Confirm config_last_reload_successful returns to 1 on every replica and the config hash converges after the fix."
+      - "Add admission-webhook validation (dry-run) on Ingress changes so an invalid config is rejected at apply time instead of breaking the live reload."
+
+  # ============================================================ ORPHAN INGRESS
+  - name: "NginxIngressOrphanIngress"
+    patterns:
+      [
+        "NginxIngressOrphanIngress",
+        "ingress has no usable backend",
+        "orphan ingress",
+        "no usable backend target",
+        "ingress backend unresolved",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the orphan state, name the Ingress, and read the orphan TYPE (no-service vs no-endpoint)"
+        description: >-
+          NginxIngressOrphanIngress fires when nginx_ingress_controller_orphan_ingress == 1 — the
+          controller considers the Ingress orphaned because its backend cannot be resolved or used.
+          orphan_state is the alerting Ingress's orphan metric with its `type` label
+          (scoped to its exported_namespace+ingress — this is the ONLY object to name);
+          orphan_persistence is its avg over 30m (continuously orphaned vs flapping); orphan_total is a
+          cluster-wide COUNT of orphaned Ingresses (blast-radius context only — a number, NOT the
+          subject; do NOT rename the RCA onto some other orphaned Ingress). Interpret the TYPE:
+          type="no-service" => the backend SERVICE referenced by the Ingress
+          does not exist / cannot be resolved (wrong Service name/namespace, or the Service was deleted).
+          type="no-endpoint" => the Service EXISTS but has NO usable endpoints right now (no ready pods
+          behind it — the workload is down/scaled-to-0/failing readiness). orphan_persistence == 1 =>
+          continuously orphaned (a static misconfiguration or a fully-down backend); between 0 and 1 =>
+          FLAPPING (backend endpoints/readiness are unstable — pods cycling). orphan_total large => a
+          broader backend/namespace problem (many Ingresses orphaned at once), but STILL report against
+          the alert's OWN ingress ($exported_namespace/$ingress) — orphan_total is only a count, NEVER
+          the subject; do NOT rename the RCA onto some other orphaned Ingress.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "The alerting Ingress's orphan state + type, its persistence over 30m, and a cluster-wide COUNT of orphaned Ingresses (blast-radius scalar — not a named list)."
+            params:
+              queries:
+                - name: orphan_state
+                  query: 'max by (exported_namespace, ingress, type) (nginx_ingress_controller_orphan_ingress{exported_namespace="$exported_namespace",ingress="$ingress"} == 1)'
+                - name: orphan_persistence
+                  query: 'avg_over_time(max by (exported_namespace, ingress) (nginx_ingress_controller_orphan_ingress{exported_namespace="$exported_namespace",ingress="$ingress"})[30m:])'
+                - name: orphan_total
+                  query: 'count(max by (exported_namespace, ingress) (nginx_ingress_controller_orphan_ingress == 1)) or vector(0)'
+      - step: 2
+        title: "Measure current user impact — traffic to the Ingress and its 503 rate"
+        description: >-
+          Decide whether this is actively hurting users or a latent misconfiguration. ingress_rps is the
+          request rate to the Ingress; ingress_503_rps is its 503 rate (the orphan symptom clients see);
+          status_split shows the full status distribution. Interpret: ingress_rps > 0 with rising
+          ingress_503_rps => users ARE currently impacted (requests hit the orphaned Ingress and get 503
+          'no healthy upstream') — treat as active. ingress_rps ~ 0 => the Ingress is orphaned but taking
+          little/no traffic — a real config gap but limited immediate blast (fix before it takes traffic).
+          status_split still showing 2xx => the Service partially recovered / some endpoints exist. This
+          separates 'page now' from 'fix in hours'.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Traffic to the orphaned Ingress, its 503 rate, and full status split (current user impact)."
+            params:
+              queries:
+                - name: ingress_rps
+                  query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress"}[5m]))'
+                - name: ingress_503_rps
+                  query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress",status="503"}[5m]))'
+                - name: status_split
+                  query: 'sum by (status) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress"}[5m]))'
+      - step: 3
+        title: "Name the failing backend workload in the Ingress's namespace (KSM) and check config-reload"
+        description: >-
+          The orphan metric says the backend is unusable but not WHY — pull the real workload state from
+          the backend namespace ($exported_namespace) to name it. backend_notready_pods /
+          backend_notrunning_pods name pods that exist but aren't Ready/Running; backend_crashloop_pods
+          names pods stuck CrashLoopBackOff/ImagePull; unavailable_deployments names deployments below
+          desired replicas; reload_ok flags whether a failed config reload left the route inactive.
+          Interpret: type=no-endpoint + backend_notready/crashloop pods => the backend WORKLOAD is down/
+          failing readiness (fix the pods — this is the direct cause). type=no-service + nothing in the
+          namespace matching => the Ingress references a Service that doesn't exist (fix the Ingress
+          backend Service name/port). reload_ok==0 => a new backend/route was configured but never
+          activated because the reload failed (cross-link NginxIngressConfigReloadFailed). unavailable_
+          deployments => scaled-to-0 or unschedulable backend. CAVEAT: these are namespace-scoped, so if
+          the namespace hosts several workloads, correlate the failing one with the Ingress's backend
+          Service. HONEST GAP: the exact Service→EndpointSlice binding is a kubectl drill-down; name the
+          namespace, type, and the failing workload, and point there.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Backend workload health in the Ingress's namespace (KSM) — not-ready / crash-looping / unavailable pods and deployments behind the orphaned Ingress, plus config-reload health."
+            params:
+              queries:
+                - name: backend_notready_pods
+                  query: 'kube_pod_status_ready{namespace="$exported_namespace",condition="true"} == 0'
+                - name: backend_notrunning_pods
+                  query: 'kube_pod_status_phase{namespace="$exported_namespace",phase=~"Failed|Pending|Unknown"} == 1'
+                - name: backend_crashloop_pods
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$exported_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError"} == 1'
+                - name: unavailable_deployments
+                  query: 'kube_deployment_status_replicas_unavailable{namespace="$exported_namespace"} > 0'
+                - name: reload_ok
+                  query: 'min(nginx_ingress_controller_config_last_reload_successful) or vector(1)'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Backend workload pod state / readiness / events in the Ingress's namespace ($exported_namespace)."
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for the ingress/namespace and 'service .* not found'/'no active endpoint'/'no endpoints'/orphan/backend signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — restore the backend Service/endpoints, not an ingress-controller op
+      - action: "restore_backend_service_or_endpoints"
+        description: "Primary fix by type: type=no-endpoint => recover the backend workload so it has Ready endpoints (fix crashing pods, scale up from 0, fix readiness probes) in $exported_namespace; type=no-service => correct the Ingress's backend Service name/port or recreate the missing Service. Owning service team's fix."
+        tool_id: ""
+        requires_approval: true
+      - action: "activate_pending_config"
+        description: "When step 3 shows reload_ok==0: a newly-added backend/route wasn't activated because the config reload failed — fix that first (NginxIngressConfigReloadFailed), then the Ingress resolves its backend."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for the backend workload/Service. Escalate to platform if many Ingresses are orphaned together (namespace/cluster-wide backend or endpoint-controller problem)."
+    follow_up:
+      - "Confirm orphan_ingress returns to 0 for the Ingress and its 503 rate clears after the backend/Service is restored."
+      - "If the backend flaps (orphan_persistence between 0 and 1), stabilise its readiness/replicas so endpoints stop disappearing."
+
+  # ============================================================ CONNECTIONS
+  - name: "NginxIngressHighConnections"
+    patterns:
+      [
+        "NginxIngressHighConnections",
+        "NginxIngressConnectionsDropped",
+        "nginx ingress high connections",
+        "connections dropped",
+        "worker connections exhausted",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the connection state on the alerting controller and whether connections are being DROPPED"
+        description: >-
+          This entry serves NginxIngressHighConnections (>5,000 ACTIVE connections on a controller for
+          10m — high connections can be legitimate for WebSocket/long-lived traffic, so this needs
+          classification, not an automatic alarm) and NginxIngressConnectionsDropped (accepted-connection
+          rate > handled-connection rate — NGINX accepted connections it could not assign/process).
+          conns_by_state breaks the controller's connections into active/reading/writing/waiting;
+          dropped_rate is accepted_rate − handled_rate (>0 means connections are being dropped);
+          accepted_rate / handled_rate are the two legs. Interpret: dropped_rate > 0 =>
+          NginxIngressConnectionsDropped is real — the controller can't keep up with incoming connections
+          (worker/FD/capacity limit — step 2). active very high with dropped_rate ~ 0 =>
+          NginxIngressHighConnections without loss yet (sustained load, possibly legitimate long-lived
+          connections — classify in step 2/3). waiting (keep-alive idle) high => many idle keep-alives
+          (usually benign). reading high => slow clients / large uploads; writing high => slow response
+          transfer. Name the controller_pod and the dominant state.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Connection counts by state on the controller, the dropped-connection rate (accepted−handled), and the accepted/handled legs (is loss happening?)."
+            params:
+              queries:
+                - name: conns_by_state
+                  query: 'sum by (controller_pod, state) (nginx_ingress_controller_nginx_process_connections)'
+                - name: dropped_rate
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="accepted"}[5m])) - sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="handled"}[5m]))'
+                - name: accepted_rate
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="accepted"}[5m]))'
+                - name: handled_rate
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="handled"}[5m]))'
+      - step: 2
+        title: "Check controller resource pressure and restarts (saturation vs restart-drop vs legitimate load)"
+        description: >-
+          ctrl_cpu_cores / ctrl_mem_bytes are the controller's CPU and resident memory; num_procs is its
+          worker-process count; restarts_30m is whether the controller process restarted recently;
+          reqs_per_active is requests/sec per active connection (a keep-alive vs churn signal). Interpret:
+          dropped_rate>0 with high ctrl_cpu / memory => the controller is RESOURCE-SATURATED (worker/FD
+          exhaustion — raise worker-connections/limits or scale replicas). restarts_30m > 0 with dropped
+          connections and NORMAL active count => the drops happened during a controller RESTART (connections
+          dropped on process cycle), not steady-state saturation — a transient. reqs_per_active LOW (few
+          requests per active connection) => connections are long-lived (WebSocket/keepalive/slow clients)
+          — high active count is EXPECTED, a capacity note not a fault. reqs_per_active high with high
+          active => genuine high request throughput (legitimate growth; watch capacity). Name the cause.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Controller CPU/memory, worker-process count, recent restarts, and requests-per-active-connection (saturation vs restart vs legitimate long-lived load)."
+            params:
+              queries:
+                - name: ctrl_cpu_cores
+                  unit: "cores"
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_cpu_seconds_total[5m]))'
+                - name: ctrl_mem_bytes
+                  unit: "bytes"
+                  query: 'max by (controller_pod) (nginx_ingress_controller_nginx_process_resident_memory_bytes)'
+                - name: num_procs
+                  query: 'max by (controller_pod) (nginx_ingress_controller_nginx_process_num_procs)'
+                - name: restarts_30m
+                  query: 'sum by (controller_pod) (changes(nginx_ingress_controller_nginx_process_oldest_start_time_seconds[30m]))'
+                - name: reqs_per_active
+                  query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_requests_total[5m])) / sum by (controller_pod) (nginx_ingress_controller_nginx_process_connections{state="active"})'
+      - step: 3
+        title: "Check downstream impact: is the connection pressure causing latency or 5xx?"
+        description: >-
+          High/dropped connections only matter if they hurt requests. request_p99_s is the controller-wide
+          request p99; error_pct is the controller-wide 5xx share; upstream_waiting is waiting-state
+          connections (backends holding connections open). Interpret: request_p99_s rising and/or error_pct
+          rising alongside the connection pressure => the saturation IS degrading users (raise capacity
+          urgently). upstream_waiting high with high active => SLOW BACKENDS are holding connections open,
+          inflating the active count (fix the slow backend rather than the ingress — cross-link the
+          latency entry). request_p99_s and error_pct both normal => the high/dropped connections are NOT
+          currently user-impacting (legitimate long-lived load or a brief restart) — record as a capacity
+          watch, not an incident. NOTE: dropped connections can occur BEFORE an HTTP request is recorded,
+          so clean HTTP error metrics do not rule out real connection loss — weight step 1's dropped_rate.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Controller-wide request p99, 5xx share, and waiting connections (is the connection pressure actually hurting requests / are backends holding connections?)."
+            params:
+              queries:
+                - name: request_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))'
+                - name: error_pct
+                  unit: "%"
+                  query: '100 * sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests[5m]))'
+                - name: upstream_waiting
+                  query: 'sum by (controller_pod) (nginx_ingress_controller_nginx_process_connections{state="waiting"})'
+          - tool_id: "tool.read_logs"
+            description: "ingress-nginx controller logs filtered for 'worker_connections are not enough'/'too many open files'/'resource temporarily unavailable'/accept4/'connection reset'/'failed to accept' signatures."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "scale_or_tune_ingress_controller"
+        description: "Primary fix when step 2/3 shows saturation with impact (dropped connections + high CPU/FD, rising latency/5xx): raise worker-connections / max-worker-open-files (or the pod's FD ulimit), and/or scale the ingress-nginx controller replicas to spread the connection load. Confirm accepted≈handled and latency/5xx recover."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+      - action: "address_slow_backend_or_accept_load"
+        description: "When step 3 shows waiting connections high from SLOW backends: fix the backend latency (the connections free up on their own) rather than scaling the ingress. When reqs_per_active is low and there is no loss/impact: the high connection count is legitimate long-lived traffic — no action beyond a capacity note."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/ingress on-call when connections are being dropped WITH user impact (latency/5xx). A high but non-dropping, non-impacting connection count is a capacity watch — no page."
+    follow_up:
+      - "Confirm accepted and handled connection rates converge (no drops) and active connections return to a sustainable level."
+      - "If connection limits are hit under normal peak, right-size worker-connections and controller replicas as a capacity change, not a one-off."
