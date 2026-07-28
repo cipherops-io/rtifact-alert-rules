@@ -9,7 +9,8 @@ on:
 jobs:
   lint:
     name: lint (promtool + yamllint)
-    runs-on: ubuntu-latest
+    runs-on:
+      group: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Install promtool
@@ -26,7 +27,8 @@ jobs:
 
   test:
     name: unit tests (promtool test rules)
-    runs-on: ubuntu-latest
+    runs-on:
+      group: self-hosted
     steps:
       - uses: actions/checkout@v4
       - name: Install promtool
@@ -40,7 +42,8 @@ jobs:
 
   validate-labels:
     name: label-contract validator
-    runs-on: ubuntu-latest
+    runs-on:
+      group: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -51,7 +54,8 @@ jobs:
 
   catalog-fresh:
     name: catalog is up to date
-    runs-on: ubuntu-latest
+    runs-on:
+      group: self-hosted
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
