@@ -187,9 +187,8 @@ common_alerts:
           locks while doing nothing (classic leak). Then read the postgres container logs
           for the smoking gun: statement/lock-timeout warnings, "canceling statement due to
           ...", deadlock reports, or app disconnect/abort lines that tie the metric story to
-          a specific query or client. The exact pid/SQL itself needs one pg_stat_activity
-          query against the pod (deferred until a safe SQL diagnostic tool exists) — say so
-          honestly rather than guessing the query text.
+          a specific query or client. Step 6 names the exact pid/SQL from a live
+          pg_stat_activity read — do NOT guess the query text here; defer to step 6 for it.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "WAL byte/record write rate and WAL buffer-full rate on the alerting pod."
@@ -204,13 +203,47 @@ common_alerts:
             description: "Postgres container logs filtered for lock/statement-timeout/deadlock/cancel/abort signatures around the transaction window."
             params:
               tail_lines: 200
+      - step: 6
+        title: "Name the exact query, pid and client that owns the transaction (live pg_stat_activity read)"
+        description: >-
+          This is the only step that can name the culprit: it reads pg_stat_activity
+          live on $pod through the tenant tunnel (read-only session, 5s statement
+          timeout). Report the pid, the SQL, and the owning client VERBATIM from
+          this step — never paraphrase or invent query text, and never take the SQL
+          from a metric (no cnpg_* metric carries query text).
+          Interpret: no backends returned => the transaction cleared between the alert
+          firing and this read; state that it self-resolved, cite the metric age from
+          step 1, and stop — do NOT name a culprit. state="active" => the returned SQL
+          IS the running query and IS the root cause; quote it, name its pid, and
+          attribute impact to it. state="idle in transaction" => the returned SQL is
+          the LAST statement the session executed BEFORE it went idle, NOT a running
+          query — say so in exactly those terms; the defect is the missing
+          COMMIT/ROLLBACK in the client identified by application_name + client_addr
+          (that pair, not the database, is what the escalation should name), and the
+          SQL is evidence of WHICH code path leaked the transaction. blocked_by
+          non-empty on any row => lock contention is confirmed and real; name the
+          blocking pid(s) as the cause of the blocked backends from step 3.
+          Note: query literals are normalised to "?" by design (the text is stored and
+          sent to an LLM) — report the shape of the query, and do not claim to know the
+          specific parameter values. If this step failed or was unavailable (tunnel
+          down, RBAC missing, pod gone), say explicitly that the exact query could not
+          be read and fall back to the metric-only classification from step 2.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live pg_stat_activity on the alerting pod: pid, state, transaction/query age, wait event, blocking pids, owning client and the SQL text."
+            params:
+              engine: "postgres"
+              query_id: "long_transactions"
+              container: "postgres"
+              min_duration_seconds: 60
+              limit: 5
     remediation: # suggestion-only — forge.* are never auto-executed; CNPG backends must be cleared via psql, not k8s
       - action: "cancel_long_running_query"
-        description: "ONLY when step 2 shows state=active AND step 3/4 prove impact (waiting backends, commit-rate drop, or deadlocks). Cancel the offending query (non-destructive, keeps the connection): connect to $pod and run SELECT pg_cancel_backend(<pid>) for the pid from pg_stat_activity ordered by xact_start. Identify the pid via SQL — metrics cannot name it."
+        description: "ONLY when step 2 shows state=active AND step 3/4 prove impact (waiting backends, commit-rate drop, or deadlocks). Cancel the offending query (non-destructive, keeps the connection): connect to $pod and run SELECT pg_cancel_backend(<pid>) using the pid step 6 reported — quote that pid in the action, do not tell the operator to go find it."
         tool_id: ""
         requires_approval: true
       - action: "terminate_idle_in_transaction_backend"
-        description: "ONLY when step 2 shows state=idle in transaction AND backend_xmin_age/replication_lag is high (autovacuum blocked) or backends are waiting. After confirming the owning application/client, terminate the stale session on $pod: SELECT pg_terminate_backend(<pid>). Fix the app afterwards (missing COMMIT/ROLLBACK or a leaked pooled connection) so it does not recur."
+        description: "ONLY when step 2 shows state=idle in transaction AND backend_xmin_age/replication_lag is high (autovacuum blocked) or backends are waiting. Terminate the stale session on $pod with SELECT pg_terminate_backend(<pid>) for the pid step 6 reported, and name the owning application_name/client_addr it identified so the app team can find the leak. Fix the app afterwards (missing COMMIT/ROLLBACK or a leaked pooled connection) so it does not recur."
         tool_id: ""
         requires_approval: true
       - action: "remediate_application_session_handling"
@@ -219,7 +252,7 @@ common_alerts:
         requires_approval: true
     escalation: "Owning application/database team (the long transaction is almost always application-driven). Escalate to the on-call DBA / platform team when waiting backends + commit-rate drop, deadlocks, replication lag, or high xmin age show cluster-wide impact (autovacuum blocked / replica RPO at risk)."
     follow_up:
-      - "Once a safe SQL diagnostic tool is wired, run pg_stat_activity (pid, state, xact_start age, wait_event, query) ordered by xact_start, and pg_blocking_pids() if waiting_backends > 0, to name the exact query/pid/blocker — metrics alone cannot."
+      - "Step 6 reads pg_stat_activity live (pid, state, ages, wait_event, pg_blocking_pids, query). Remaining gap: client_addr is an IP — mapping it back to the owning pod/workload still needs a reverse lookup, so escalate with application_name + client_addr rather than a service name."
       - "If long transactions recur, add idle_in_transaction_session_timeout + statement_timeout guards and review the application's transaction scoping / connection-pool lifetime."
 
   - name: "CNPGClusterDown"
