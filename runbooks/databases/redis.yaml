@@ -1021,6 +1021,32 @@ common_alerts:
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
                   query: 'topk(5, sum by (service.name, server.address) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
+      - step: 3
+        title: "Name WHICH client is holding the connections (live CLIENT LIST + real limits)"
+        description: >-
+          conn_usage_pct says the pool is near maxclients but not WHO holds it. This step
+          reads CLIENT LIST and the live CONFIG on $pod through the tunnel.
+          Interpret: clients_by_ip concentrated on one IP (redis_client_concentration signal)
+          => that workload is the leak/misconfiguration source — name the IP and its client
+          name in both the RCA and the escalation; the fix belongs to that service's pool
+          settings, not to Redis. most_idle_clients showing connections idle for most of
+          their lifetime => pooled connections opened and never reused (a pool sized far
+          above need, or missing connection reuse) — the classic leak signature. Spread
+          evenly across many IPs => genuine growth in client count; the fix is raising
+          maxclients or reducing per-pod pool size fleet-wide. Use the CONFIG maxclients
+          value as the authoritative limit and note it if it differs from the metric.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live CLIENT LIST: connections grouped by client IP, plus the most-idle connections."
+            params:
+              engine: "redis"
+              query_id: "clients"
+              limit: 10
+          - tool_id: "tool.query_db_activity"
+            description: "Live CONFIG GET for the authoritative maxclients/timeout and memory policy."
+            params:
+              engine: "redis"
+              query_id: "config"
     remediation: # suggestion-only — fix the client/pool; raising maxclients defers the problem
       - action: "fix_client_pooling_or_leak"
         description: "Primary fix: the cause is almost always client-side — add/right-size connection pooling, fix a connection leak (connections opened per request and never closed/reused), or cap the per-service pool so the sum cannot exhaust maxclients. Identify the offending service from step 2 and fix it rather than raising the limit."
@@ -1199,6 +1225,26 @@ common_alerts:
                 - name: redis_client_ops_per_service
                   unit: "ops/s"
                   query: 'topk(5, sum by (service.name, server.address, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
+      - step: 3
+        title: "Name WHICH clients are blocked and on what (live CLIENT LIST)"
+        description: >-
+          The exporter gives only a blocked_clients COUNT. This step reads CLIENT LIST
+          live on $pod through the tunnel and names the blocked connections.
+          Interpret: blocked_clients present => report each one's client name/addr, the
+          blocking command (BLPOP/BRPOP/XREAD/BZPOPMIN) and its age_s. A LARGE age_s on a
+          blocking pop is usually NORMAL — that is an idle consumer waiting for work, not a
+          fault; say so rather than escalating it. The real problem is blocked clients
+          combined with a growing queue or with slow commands from step 2, i.e. consumers
+          waiting while the producer or the server is stalled. blocked_client_count high but
+          all from one client name/IP => a single consumer group is over-subscribed; name it.
+          Empty => the blocking cleared between the alert and this read; say so.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live CLIENT LIST: per-connection command, age, idle time and address, with blocked clients extracted."
+            params:
+              engine: "redis"
+              query_id: "clients"
+              limit: 10
     remediation: # suggestion-only
       - action: "address_consumer_or_downstream_slowness"
         description: "When step 2 shows blocked clients rising with slow commands or a dropped processing rate: the consumers are stuck — investigate the downstream dependency they call after popping work, a poison message, or far too few producers for the waiters. Scale/fix the consumers or unblock the dependency."
@@ -1303,9 +1349,42 @@ common_alerts:
                 - name: obi_ops_by_operation
                   unit: "ops/s"
                   query: 'topk(5, sum by (service.name, db.operation.name) (rate({__name__="db.client.operation.duration_count",db.system.name="redis",server.address=~"$service.*"}[5m])))'
+      - step: 3
+        title: "Read the ACTUAL slow commands from the server's slowlog (names the command, key and client)"
+        description: >-
+          This step reads SLOWLOG live on $pod through the tunnel — it is the only
+          source of the exact command, its key and the client that issued it (no
+          exporter metric carries any of them). Report `slowest` and
+          `repeated_commands` VERBATIM; never invent or paraphrase a command, and
+          never infer one from the OBI operation names alone.
+          Interpret: entries present => name the worst command, its key, its
+          duration_ms and its client_addr, then map that command to the known
+          expensive shapes (KEYS/SMEMBERS/HGETALL/broad ZRANGEBYSCORE/Lua) and
+          recommend the specific fix for THAT command. repeated_commands with a
+          high count => the same command shape is firing repeatedly (a hot loop or
+          poll), which is more actionable than a single outlier — lead with it.
+          slow_commands_by_client_ip concentrated on one IP => attribute the load to
+          the workload at that IP and name it in the escalation. redis_slowlog_monitoring_only
+          => EVERY slow entry was monitoring traffic (typically the exporter's own
+          `INFO ALL` scrape, which is genuinely slow on Dragonfly): say plainly that
+          no slow APPLICATION command was found and that the alert reflects
+          monitoring overhead — do NOT blame an application. Empty slowlog => the
+          entries aged out of the buffer; say so and rely on step 1/2 metrics.
+          Note: argument VALUES are redacted to "?" by design (slowlog carries raw
+          payloads); the command and its first key are preserved, so describe the
+          command shape and key, and do not claim to know the values.
+          If the step failed (no redis-cli in the container, AUTH required, pod
+          gone), say the exact command could not be read and fall back to metrics.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live SLOWLOG GET on the alerting Redis/Dragonfly pod: command, key, duration, and the client that issued it."
+            params:
+              engine: "redis"
+              query_id: "slowlog"
+              limit: 10
     remediation: # suggestion-only
       - action: "optimize_slow_commands"
-        description: "Use SLOWLOG GET to read the exact offending commands, then fix them: replace KEYS with SCAN, avoid large HGETALL/SMEMBERS/ZRANGE on big collections (paginate), break up big keys, and review long Lua scripts. The OBI operation breakdown points at which service/operation to start with."
+        description: "Fix the exact commands step 3 named (quote them in the action — command, key and client IP): replace KEYS with SCAN, avoid large HGETALL/SMEMBERS/ZRANGE on big collections (paginate), break up big keys, and review long Lua scripts. Start with the highest-count entry in repeated_commands, not the single slowest outlier."
         tool_id: ""
         requires_approval: true
       - action: "relieve_load_or_shard"
@@ -1316,6 +1395,7 @@ common_alerts:
     follow_up:
       - "Confirm new slowlog entries stop accruing and avg command duration / OBI p95 return to baseline after the command fixes."
       - "Add a guard against the worst command patterns (e.g. forbid KEYS in app code) so the slowlog doesn't regrow."
+      - "Step 3 now reads SLOWLOG live. Remaining gap: client_addr is an IP — mapping it to the owning pod/workload needs a reverse lookup, so escalate with the IP plus the client name when the app sets one via CLIENT SETNAME."
 
   # ============================================================ CPU
   - name: "RedisCPUSaturation"
@@ -1400,6 +1480,36 @@ common_alerts:
                 - name: obi_op_p95_ms
                   unit: "ms"
                   query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
+      - step: 3
+        title: "Attribute the CPU to specific commands (per-command stats + slowlog, read live)"
+        description: >-
+          Metrics prove CPU is saturated but cannot say WHICH commands consume it.
+          This step reads INFO commandstats and SLOWLOG live on $pod through the tunnel.
+          Report the named commands VERBATIM.
+          Interpret: top_by_total_time names the command consuming the most cumulative
+          server time — that is where the CPU actually goes; if it is a high-volume cheap
+          command (GET/SET with a small usec_per_call), the cause is VOLUME and the fix is
+          capacity/caching/pipelining, not command optimisation. top_by_usec_per_call names
+          the individually expensive commands (KEYS, big HGETALL/ZRANGE, Lua) — if one of
+          these also has meaningful call volume, THAT is the optimisation target and the fix
+          is a code change, not more CPU. The two lists disagreeing is the key diagnostic:
+          expensive-per-call + low volume = a specific bad query path; cheap-per-call + huge
+          volume = genuine load. Cross-check against the slowlog entries for the exact keys
+          and clients. If commandstats is unavailable on this build, say so and lean on the
+          slowlog plus the OBI operation breakdown.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live INFO commandstats: per-command calls, usec_per_call and cumulative time."
+            params:
+              engine: "redis"
+              query_id: "commandstats"
+              limit: 5
+          - tool_id: "tool.query_db_activity"
+            description: "Live SLOWLOG GET for the exact expensive commands and their keys/clients."
+            params:
+              engine: "redis"
+              query_id: "slowlog"
+              limit: 10
     remediation: # suggestion-only
       - action: "optimize_or_shard_for_cpu"
         description: "When step 1 shows expensive commands (high avg duration / slowlog): optimise them (SCAN over KEYS, paginate big-collection reads, trim Lua) per the slowlog. When it shows a genuine traffic spike: add read replicas for read-heavy load or shard the keyspace — Redis cannot use more than one core for the command loop, so vertical CPU alone won't help."
