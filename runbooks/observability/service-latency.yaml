@@ -46,35 +46,59 @@ common_alerts:
           1h ago => load-driven latency, scaling is on the table. If
           slowest_pod_p99_ms (labels name the pod) is far above inbound_p99_ms, a
           single bad pod is the outlier — target THAT pod (restart/profile it), not
-          the whole deployment. If inbound p99 is normal, the alert window has
-          passed or the anomaly was internal-only (locks/GC) — weight the log
-          evidence in step 4 higher.
+          the whole deployment; the per-pod p99 panel shows whether that pod has been
+          the outlier for the whole window or only since a specific moment. If inbound
+          p99 is normal, the alert window has passed or the anomaly was internal-only
+          (locks/GC) — weight the log evidence in step 4 higher. inbound_failed_pct is
+          guarded to return 0 when there are no failed requests, so 0 means "measured,
+          none" — only a MISSING value means this service has no eBPF coverage.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Inbound (server-side) p50/p95/p99, request rate now vs 1h ago, and worst-pod p99 from OBI service-graph histograms."
+            description: "Inbound (server-side) p50/p95/p99, request rate now vs 1h ago, per-pod p99, and failed-request ratio from OBI service-graph histograms."
             params:
               queries:
                 - name: inbound_p99_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.99, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  panel: true
+                  panel_title: "Inbound p99 (eBPF)"
+                  panel_id: "svc-inbound-p99"
                 - name: inbound_p95_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  panel: true
+                  panel_title: "Inbound p95 (eBPF)"
+                  panel_id: "svc-inbound-p95"
                 - name: inbound_p50_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.50, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
                 - name: inbound_req_per_s
                   unit: "req/s"
                   query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                  panel: true
+                  panel_title: "Inbound Request Rate (eBPF)"
+                  panel_id: "svc-inbound-req-rate"
                 - name: inbound_req_per_s_1h_ago
                   unit: "req/s"
                   query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m] offset 1h))'
                 - name: slowest_pod_p99_ms
                   unit: "ms"
                   query: 'topk(1, histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m]))))*1000'
+                - name: inbound_p99_by_pod_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  panel: true
+                  panel_title: "Inbound p99 by Pod"
+                  panel_id: "svc-inbound-p99-by-pod"
+                # `or vector(0)` on the numerator: a service with zero failed requests has NO
+                # traces_service_graph_request_failed_total series at all, and an unguarded
+                # division then returns no data — indistinguishable from "not instrumented".
                 - name: inbound_failed_pct
                   unit: "%"
-                  query: '100*sum(rate(traces_service_graph_request_failed_total{server="$service",client="incoming"}[5m]))/sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                  query: '100 * (sum(rate(traces_service_graph_request_failed_total{server="$service",client="incoming"}[5m])) or vector(0)) / sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                  panel: true
+                  panel_title: "Failed Request %"
+                  panel_id: "svc-inbound-failed-pct"
       - step: 2
         title: "Attribute the latency to a downstream dependency (outbound edges)"
         description: >-
@@ -88,55 +112,105 @@ common_alerts:
           dependency failures even when top-level HTTP error rate is 0 — mention the
           retry amplification. busiest_dependency_req_per_s spiking vs steady inbound
           traffic => fan-out/retry storm toward that dependency. If all outbound
-          edges are fast, the delay is INSIDE $service — go to step 3.
+          edges are fast, the delay is INSIDE $service — go to step 3. The two per-edge
+          panels (dependency p99 / request rate, one series per downstream `server`) show
+          WHEN each edge degraded — use them to say whether the dependency slowed BEFORE
+          the inbound p99 rose (dependency-driven) or at the same moment (shared cause,
+          e.g. the node or network), instead of only comparing current values.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Slowest/busiest outbound edges, per-edge failure ratio, and total failed edge traffic from OBI service-graph client histograms."
+            description: "Slowest/busiest outbound edges, per-edge p99 and request rate as one series each, per-edge failure ratio, and total failed edge traffic from OBI service-graph client histograms."
             params:
               queries:
                 - name: slowest_dependency_p99_ms
                   unit: "ms"
                   query: 'topk(1, histogram_quantile(0.99, sum by (le, server) (rate(traces_service_graph_request_client_bucket{client="$service"}[5m]))))*1000'
+                - name: dependency_p99_by_edge_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.99, sum by (le, server) (rate(traces_service_graph_request_client_bucket{client="$service"}[5m])))*1000'
+                  panel: true
+                  panel_title: "Dependency p99 by Edge"
+                  panel_id: "svc-dependency-p99-by-edge"
                 - name: busiest_dependency_req_per_s
                   unit: "req/s"
                   query: 'topk(1, sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                - name: dependency_req_per_s_by_edge
+                  unit: "req/s"
+                  query: 'sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m]))'
+                  panel: true
+                  panel_title: "Dependency Request Rate by Edge"
+                  panel_id: "svc-dependency-req-rate-by-edge"
                 - name: dependency_edge_count
                   query: 'count(sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
                 - name: worst_edge_failed_pct
                   unit: "%"
-                  query: 'topk(1, 100*sum by (server) (rate(traces_service_graph_request_failed_total{client="$service"}[5m]))/sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
+                  query: 'topk(1, 100 * (sum by (server) (rate(traces_service_graph_request_failed_total{client="$service"}[5m])) or sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])) * 0) / sum by (server) (rate(traces_service_graph_request_total{client="$service"}[5m])))'
                 - name: failed_edge_req_per_s
                   unit: "req/s"
                   query: 'sum(rate(traces_service_graph_request_failed_total{client="$service"}[5m]))'
       - step: 3
-        title: "Pinpoint the internal bottleneck span and supporting OTel signals"
+        title: "Pinpoint the internal bottleneck route and supporting OTel signals"
         description: >-
-          Span metrics attribute time to a specific route/operation inside $service —
-          the labels on slowest_span_p99_ms name it (span.name="..."). Interpret:
-          one span p99 far above the rest => that operation is the bottleneck; pair
-          it with the step-2 edge (e.g. a /tts route that calls an LLM proxy). Spans
-          pinned at the histogram ceiling (e.g. exactly 10000ms) mean the real
-          latency EXCEEDS the top bucket — report ">= value", not "= value".
-          http_server_p99_ms / db_p99_ms / dns_p95_ms may be n/a when those OBI
-          families are stale for this workload — do NOT invent them; the
-          service-graph numbers from steps 1-2 are the primary evidence.
+          Attribute the latency to a specific ROUTE inside $service. slowest_route_p95_ms
+          names it (http.route="..."), and route_p95_by_route / route_req_per_s_by_route
+          graph every route separately. IMPORTANT: read the route names before concluding —
+          if the only routes are probes/scrape endpoints (/health, /ready, /metrics,
+          /actuator/*), then this service's real traffic is NOT OTel-HTTP-instrumented and
+          the route breakdown says nothing about user latency; say so and fall back to the
+          service-graph evidence from steps 1-2. Interpret: one real route's p95 far above
+          the rest => that operation is the bottleneck; pair it with the step-2 edge (e.g. a
+          /tts route that calls an LLM proxy). Values pinned at a histogram bucket edge (e.g.
+          exactly 4.75ms or 10000ms) mean the true latency lies inside/above that bucket —
+          report "~value" or ">= value", not an exact figure. requests_by_status_code and
+          error_rate_pct separate "slow" from "failing": a rising 5xx line alongside the
+          latency means requests are erroring out (often after a timeout), not just queuing.
+          db_p99_ms attributes time to a database client (db.system.name names which).
+          OBI SPAN metrics are deliberately NOT used here: in this fleet OBI emits
+          traces_spanmetrics_* with span.name="AGGREGATED" (no per-operation split), so
+          per-route attribution comes from the OTel http.server.* family only.
+          http_server_p99_ms / db_p99_ms / dns_p95_ms may be n/a when a workload is not
+          OTel-instrumented — do NOT invent them; the service-graph numbers from steps 1-2
+          are the primary evidence.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Slowest span p99 + its call rate, OTel HTTP server p99, DB operation p99, and DNS lookup p95."
+            description: "Slowest and busiest HTTP route (+ per-route breakdown), OTel HTTP server p99, request mix by status code, error ratio, DB operation p99, and DNS lookup p95."
             params:
               queries:
-                - name: slowest_span_p99_ms
+                - name: slowest_route_p95_ms
                   unit: "ms"
-                  query: 'topk(1, histogram_quantile(0.99, sum by (le, span.name) (rate(traces_span_metrics_duration_bucket{service.name="$service"}[5m]))))*1000'
-                - name: slowest_span_calls_per_s
-                  unit: "calls/s"
-                  query: 'topk(1, sum by (span.name) (rate(traces_span_metrics_calls_total{service.name="$service"}[5m])))'
+                  query: 'topk(1, histogram_quantile(0.95, sum by (le, http.route) (rate({__name__="http.server.request.duration_bucket",service.name="$service"}[10m])))*1000)'
+                - name: route_p95_by_route_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, http.route) (rate({__name__="http.server.request.duration_bucket",service.name="$service"}[10m])))*1000)'
+                  panel: true
+                  panel_title: "p95 by Route"
+                  panel_id: "svc-p95-by-route"
+                - name: busiest_route_req_per_s
+                  unit: "req/s"
+                  query: 'topk(1, sum by (http.route) (rate({__name__="http.server.request.duration_count",service.name="$service"}[10m])))'
                 - name: http_server_p99_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.99, sum by (le) (rate({__name__="http.server.request.duration_bucket",service.name="$service"}[10m])))*1000'
+                - name: requests_by_status_code
+                  unit: "req/s"
+                  query: 'sum by (http.response.status_code) (rate({__name__="http.server.request.duration_count",service.name="$service"}[10m]))'
+                  panel: true
+                  panel_title: "Requests by Status Code"
+                  panel_id: "svc-requests-by-status"
+                # Guarded numerator — a service with no 4xx/5xx has no such series, and an
+                # unguarded ratio would return no data instead of a truthful 0%.
+                - name: error_rate_pct
+                  unit: "%"
+                  query: '100 * (sum(rate({__name__="http.server.request.duration_count",service.name="$service",http.response.status_code=~"[45].."}[10m])) or vector(0)) / sum(rate({__name__="http.server.request.duration_count",service.name="$service"}[10m]))'
+                  panel: true
+                  panel_title: "Error Rate %"
+                  panel_id: "svc-error-rate-pct"
                 - name: db_p99_ms
                   unit: "ms"
                   query: 'topk(1, histogram_quantile(0.99, sum by (le, db.system.name) (rate({__name__="db.client.operation.duration_bucket",service.name="$service"}[10m]))))*1000'
+                  panel: true
+                  panel_title: "DB Client p99"
+                  panel_id: "svc-db-p99"
                 - name: dns_p95_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.95, sum by (le) (rate({__name__="dns.lookup.duration_bucket",service.name="$service"}[10m])))*1000'
@@ -179,4 +253,5 @@ common_alerts:
     escalation: "Owning service team with the named span/dependency; platform SRE if the slow edge is shared infrastructure (LLM proxy, storage, DNS) impacting multiple callers."
     follow_up:
       - "If the slow edge is an external endpoint (SaaS/LLM), file the latency evidence with the provider or add client-side timeouts/circuit breaking instead of restarting the caller."
-      - "If a span is pinned at the histogram ceiling, raise the OBI top bucket or add explicit tracing on that route to see the true tail."
+      - "If a route's p95 is pinned at a histogram bucket edge, raise the histogram bucket resolution or add explicit tracing on that route to see the true tail."
+      - "If step 3 found only probe/scrape routes (/health, /ready, /metrics, /actuator/*), the service lacks OTel HTTP instrumentation on its real traffic — per-route attribution stays unavailable until it is added, and OBI span metrics cannot substitute (span.name is AGGREGATED)."

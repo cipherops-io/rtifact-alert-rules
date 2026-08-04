@@ -27,6 +27,50 @@ categories:
   - DATA
   - DATABASE
 
+# ── Shared UI graph panels (`panel: true`) ────────────────────────────────────
+# forge promotes any query flagged `panel: true` into an alert-specific live graph
+# alongside the default hardware/OTel cards. These two anchors hold the panels that
+# are useful across CNPG entries; per-alert panels are flagged inline on the queries
+# that already back each step's interpretation.
+#
+# infra_panels: the CLUSTER-WIDE per-pod CPU/memory view (pod=~"$service-[0-9]+",
+# i.e. every instance of this CNPG cluster). It deliberately does NOT override the
+# default "CPU"/"Memory" cards — those already resolve for a CNPG alert because the
+# alert carries the DB pod's own namespace/pod (unlike the Redis exporter case) — it
+# ADDS the primary-vs-replica comparison that forge omits for exact-pod alerts.
+infra_panels: &infra_panels
+  - name: cluster_cpu_by_pod
+    unit: "%"
+    query: 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD"}[5m])) * 100'
+    panel: true
+    panel_title: "CPU by Pod"
+    panel_id: "cnpg-cpu-by-pod"
+  - name: cluster_mem_by_pod
+    unit: "MiB"
+    query: 'sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024'
+    panel: true
+    panel_title: "Memory by Pod"
+    panel_id: "cnpg-mem-by-pod"
+
+# storage_panels: the disk-fill signals for the WAL/retention alerts. A CNPG pod's
+# PVC is named exactly like the pod ($service-<ordinal>), and there is no separate
+# WAL volume in this fleet — pg_wal shares the data volume, so "volume used %" IS
+# the WAL disk-fill risk. worst_* forms use topk(1)/max by so the offending volume
+# or pod is NAMED in the result labels instead of being an anonymous number.
+storage_panels: &storage_panels
+  - name: worst_data_volume_used_pct
+    unit: "%"
+    query: 'topk(1, 100 * max by (persistentvolumeclaim) (kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim=~"$service-[0-9]+"}) / max by (persistentvolumeclaim) (kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim=~"$service-[0-9]+"}))'
+    panel: true
+    panel_title: "Data Volume Used %"
+    panel_id: "cnpg-data-volume-used-pct"
+  - name: worst_pg_wal_dir_bytes
+    unit: "B"
+    query: 'topk(1, max by (pod) (cnpg_collector_pg_wal{namespace="$namespace",pod=~"$service-[0-9]+",value="size"}))'
+    panel: true
+    panel_title: "pg_wal Directory Size"
+    panel_id: "cnpg-pg-wal-dir-bytes"
+
 common_alerts:
   - name: "CNPGClusterLongRunningTransactionWarning"
     patterns:
@@ -61,12 +105,19 @@ common_alerts:
           as live. collector healthy + tx_age_seconds > 300 => proceed to classify.
         tool_calls:
           - tool_id: "tool.query_metrics"
+            description: "Cluster-wide per-pod CPU and memory for every instance of this CNPG cluster (primary vs replicas)."
+            params:
+              queries: *infra_panels
+          - tool_id: "tool.query_metrics"
             description: "Current max non-idle transaction age on the alerting pod plus CNPG collector health/freshness."
             params:
               queries:
                 - name: tx_age_seconds
                   unit: "s"
                   query: 'max(cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state!="idle"})'
+                  panel: true
+                  panel_title: "Max Transaction Age"
+                  panel_id: "cnpg-tx-age"
                 - name: collector_up
                   query: 'min(cnpg_collector_up{namespace="$namespace",pod="$pod"})'
                 - name: collector_last_error
@@ -99,6 +150,9 @@ common_alerts:
                 - name: longest_tx_state
                   unit: "s"
                   query: 'topk(1, max by (state) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state!="idle"}))'
+                  panel: true
+                  panel_title: "Transaction Age by State"
+                  panel_id: "cnpg-tx-age-by-state"
                 - name: tx_age_active_s
                   unit: "s"
                   query: 'max(cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod="$pod",state="active"})'
@@ -133,6 +187,9 @@ common_alerts:
                   query: 'count(max by (pod) (cnpg_backends_max_tx_duration_seconds{namespace="$namespace",pod=~"$service-[0-9]+",state!="idle"}) > 300) or vector(0)'
                 - name: waiting_backends
                   query: 'sum(cnpg_backends_waiting_total{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Waiting Backends"
+                  panel_id: "cnpg-waiting-backends"
                 - name: active_backends
                   query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="active"})'
                 - name: idle_in_txn_backends
@@ -161,11 +218,20 @@ common_alerts:
                 - name: commit_rate_per_s
                   unit: "tx/s"
                   query: 'sum(rate(cnpg_pg_stat_database_xact_commit{namespace="$namespace",pod="$pod"}[5m]))'
+                  panel: true
+                  panel_title: "Commit Rate"
+                  panel_id: "cnpg-commit-rate"
                 - name: rollback_rate_per_s
                   unit: "tx/s"
                   query: 'sum(rate(cnpg_pg_stat_database_xact_rollback{namespace="$namespace",pod="$pod"}[5m]))'
+                  panel: true
+                  panel_title: "Rollback Rate"
+                  panel_id: "cnpg-rollback-rate"
                 - name: deadlocks_30m
                   query: 'sum(increase(cnpg_pg_stat_database_deadlocks{namespace="$namespace",pod="$pod"}[30m]))'
+                  panel: true
+                  panel_title: "Deadlocks (30m)"
+                  panel_id: "cnpg-deadlocks-30m"
                 - name: temp_bytes_per_s
                   unit: "B/s"
                   query: 'sum(rate(cnpg_pg_stat_database_temp_bytes{namespace="$namespace",pod="$pod"}[5m]))'
@@ -283,19 +349,36 @@ common_alerts:
           collector stopped updating), so treat every other cnpg_* value below as
           LAST-KNOWN, not live, and lower confidence accordingly. collector_last_error > 0
           => the collector is running but failing its collection (connection refused /
-          auth / timeout to local PG) rather than being absent.
+          auth / timeout to local PG) rather than being absent. collector_up_by_pod is the
+          same signal broken out per instance (one series per pod, 1=up / 0=down) — use it
+          to say WHICH pods are affected, not just how many.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Alerting pod's collector state, count of down collectors across the cluster, metric freshness, and last collection error."
+            description: "Cluster-wide per-pod CPU and memory for every instance of this CNPG cluster (a bounced or resource-starved pod shows here)."
+            params:
+              queries: *infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Alerting pod's collector state, per-pod collector state across the cluster, count of down collectors, metric freshness, and last collection error."
             params:
               queries:
                 - name: collector_up_pod
                   query: 'min(cnpg_collector_up{namespace="$namespace",pod="$pod"})'
+                - name: collector_up_by_pod
+                  query: 'min by (pod) (cnpg_collector_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Collector Up by Pod"
+                  panel_id: "cnpg-collector-up-by-pod"
                 - name: collectors_down_in_cluster
                   query: 'count(cnpg_collector_up{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) or vector(0)'
+                  panel: true
+                  panel_title: "Collectors Down in Cluster"
+                  panel_id: "cnpg-collectors-down"
                 - name: metric_staleness_seconds
                   unit: "s"
                   query: 'max(time() - cnpg_last_update_timestamp{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Metric Staleness"
+                  panel_id: "cnpg-metric-staleness"
                 - name: collector_last_error
                   query: 'max(cnpg_collector_last_collection_error{namespace="$namespace",pod="$pod"})'
       - step: 2
@@ -320,6 +403,9 @@ common_alerts:
                 - name: seconds_since_pg_start
                   unit: "s"
                   query: 'time() - max(cnpg_pg_postmaster_start_time{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Postgres Uptime"
+                  panel_id: "cnpg-pg-uptime"
                 - name: in_recovery
                   query: 'max(cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"})'
                 - name: wal_receiver_up
@@ -382,9 +468,15 @@ common_alerts:
           high => the replica is slow to RECEIVE/persist WAL — network between primary and
           replica, or slow replica disk. All three near zero while replication_lag is high =>
           the lag metric is byte-based / the replica just reconnected; re-check after the window.
+          replication_lag_by_pod is the same lag broken out per instance (one series per pod)
+          — read it to compare replicas rather than reporting only the worst.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Worst replica lag, the laggiest replica's name, and replay/write/flush lag components across the cluster."
+            description: "Cluster-wide per-pod CPU and memory — replay is single-threaded, so a CPU/IO-pressured replica shows up here."
+            params:
+              queries: *infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Worst replica lag, the laggiest replica's name, per-pod lag, and replay/write/flush lag components across the cluster."
             params:
               queries:
                 - name: max_replication_lag_s
@@ -393,9 +485,18 @@ common_alerts:
                 - name: laggiest_replica_s
                   unit: "s"
                   query: 'topk(1, max by (pod) (cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"}))'
+                - name: replication_lag_by_pod
+                  unit: "s"
+                  query: 'max by (pod) (cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Replication Lag by Pod"
+                  panel_id: "cnpg-replication-lag-by-pod"
                 - name: replay_lag_s
                   unit: "s"
                   query: 'max(cnpg_pg_stat_replication_replay_lag_seconds{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Replay Lag"
+                  panel_id: "cnpg-replay-lag"
                 - name: write_lag_s
                   unit: "s"
                   query: 'max(cnpg_pg_stat_replication_write_lag_seconds{namespace="$namespace",pod=~"$service-[0-9]+"})'
@@ -423,6 +524,9 @@ common_alerts:
                   query: 'sum(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
                 - name: streaming_replicas
                   query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Streaming Replicas"
+                  panel_id: "cnpg-streaming-replicas"
       - step: 3
         title: "Check whether the primary is simply outpacing the replica, and slot WAL retention"
         description: >-
@@ -442,9 +546,15 @@ common_alerts:
                 - name: wal_generation_bytes_per_s
                   unit: "B/s"
                   query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+                  panel: true
+                  panel_title: "WAL Generation Rate"
+                  panel_id: "cnpg-wal-generation-rate"
                 - name: max_slot_retained_bytes
                   unit: "B"
                   query: 'max(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Max WAL Retained by Slot"
+                  panel_id: "cnpg-max-slot-retained-bytes"
                 - name: archive_failures_30m
                   query: 'sum(increase(cnpg_pg_stat_archiver_failed_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
     remediation: # suggestion-only — investigate the replica; never restart the primary (forces failover)
@@ -483,19 +593,42 @@ common_alerts:
           quota exceeded). Both rising => INTERMITTENT failures (transient network / throttling /
           occasional large segment). secs_since_last_archival large and growing => no segment has
           archived successfully recently (the practical "how long broken" number). secs_since_last_failure
-          small => it is failing right now, not a stale historical blip.
+          small => it is failing right now, not a stale historical blip. The storage panels
+          alongside these (data-volume used % and pg_wal directory size) are the disk-fill
+          clock — read them in step 2 rather than guessing how urgent the backlog is.
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst data-volume utilisation and pg_wal directory size across the cluster (pg_wal shares the data volume — this is the disk-fill risk)."
+            params:
+              queries: *storage_panels
+          # Cluster-level CNPG alerts arrive with no pod/container, so forge's default
+          # CPU/Memory cards fall back to container="<app_name>" (cnpg-<cluster>) which
+          # never matches the real container ("postgres") and render blank. These
+          # $service-scoped per-pod panels override the blank by-pod cards.
+          - tool_id: "tool.query_metrics"
+            description: "Cluster-wide per-pod CPU and memory for every instance of this CNPG cluster."
+            params:
+              queries: *infra_panels
           - tool_id: "tool.query_metrics"
             description: "Archive failure vs success counts over 30m, and seconds since last successful archival / last failure (cluster-wide)."
             params:
               queries:
                 - name: archive_failures_30m
                   query: 'sum(increase(cnpg_pg_stat_archiver_failed_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Archive Failures (30m)"
+                  panel_id: "cnpg-archive-failures-30m"
                 - name: archive_successes_30m
                   query: 'sum(increase(cnpg_pg_stat_archiver_archived_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Archive Successes (30m)"
+                  panel_id: "cnpg-archive-successes-30m"
                 - name: secs_since_last_archival
                   unit: "s"
                   query: 'min(cnpg_pg_stat_archiver_seconds_since_last_archival{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Time Since Last Archival"
+                  panel_id: "cnpg-secs-since-archival"
                 - name: secs_since_last_failure
                   unit: "s"
                   query: 'min(cnpg_pg_stat_archiver_seconds_since_last_failure{namespace="$namespace",pod=~"$service-[0-9]+"})'
@@ -509,6 +642,10 @@ common_alerts:
           building — disk-fill risk is real and time-bound; escalate. wal_generation_bytes_per_s
           high while archiving fails => the backlog will grow fast — urgent. Low generation + small
           backlog => failing but not yet an imminent disk threat (still fix it; PITR is degraded).
+          Ground the urgency in the storage panels from step 1: worst_data_volume_used_pct near
+          100% (or worst_pg_wal_dir_bytes climbing steadily) => the write outage is close and the
+          escalation is time-critical; plenty of free space => degraded PITR, not an imminent
+          outage. Quote the actual utilisation rather than describing the risk in the abstract.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Count of WAL segments pending archive (status=ready) and the cluster WAL generation rate."
@@ -516,9 +653,15 @@ common_alerts:
               queries:
                 - name: wal_files_pending_archive
                   query: 'max(cnpg_collector_pg_wal_archive_status{namespace="$namespace",pod=~"$service-[0-9]+",value="ready"})'
+                  panel: true
+                  panel_title: "WAL Segments Pending Archive"
+                  panel_id: "cnpg-wal-pending-archive"
                 - name: wal_generation_bytes_per_s
                   unit: "B/s"
                   query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+                  panel: true
+                  panel_title: "WAL Generation Rate"
+                  panel_id: "cnpg-wal-generation-rate"
       - step: 3
         title: "Assess recoverability — backup freshness (guarded for not-configured)"
         description: >-
@@ -582,17 +725,35 @@ common_alerts:
           inactive_slot_count > 0 AND max_slot_retained_bytes high/growing => a genuine dead slot is
           pinning WAL — the real, P1 problem (disk-fill risk). inactive_slot_count > 0 AND
           max_slot_retained_bytes ~0 => benign inactive HA slots; do not over-escalate. Name the
-          offending slot from worst_slot_retained_bytes.
+          offending slot from worst_slot_retained_bytes, and quote worst_data_volume_used_pct /
+          worst_pg_wal_dir_bytes for how close the retained WAL actually is to filling the volume
+          (pg_wal shares the data volume here) instead of asserting a generic disk-fill risk.
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst data-volume utilisation and pg_wal directory size across the cluster — how much room the retained WAL still has."
+            params:
+              queries: *storage_panels
+          # See the note in CNPGClusterWALArchiveFailing: cluster-level alerts carry no
+          # pod/container, so the default CPU/Memory cards resolve to nothing.
+          - tool_id: "tool.query_metrics"
+            description: "Cluster-wide per-pod CPU and memory for every instance of this CNPG cluster."
+            params:
+              queries: *infra_panels
           - tool_id: "tool.query_metrics"
             description: "Count of inactive slots, the single worst slot by retained WAL (surfaces slot_name), and max retained bytes across the cluster."
             params:
               queries:
                 - name: inactive_slot_count
                   query: 'count(cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) or vector(0)'
+                  panel: true
+                  panel_title: "Inactive Replication Slots"
+                  panel_id: "cnpg-inactive-slots"
                 - name: worst_slot_retained_bytes
                   unit: "B"
                   query: 'topk(1, max by (slot_name) (cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"}))'
+                  panel: true
+                  panel_title: "WAL Retained by Slot"
+                  panel_id: "cnpg-slot-retained-bytes"
                 - name: max_slot_retained_bytes
                   unit: "B"
                   query: 'max(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"})'
@@ -614,11 +775,17 @@ common_alerts:
               queries:
                 - name: streaming_replicas
                   query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  panel: true
+                  panel_title: "Streaming Replicas"
+                  panel_id: "cnpg-streaming-replicas"
                 - name: replicas_with_receiver_up
                   query: 'sum(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
                 - name: wal_generation_bytes_per_s
                   unit: "B/s"
                   query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
+                  panel: true
+                  panel_title: "WAL Generation Rate"
+                  panel_id: "cnpg-wal-generation-rate"
                 - name: replication_lag_s
                   unit: "s"
                   query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
@@ -661,18 +828,31 @@ common_alerts:
           write connections) before generalising.
         tool_calls:
           - tool_id: "tool.query_metrics"
+            description: "Cluster-wide per-pod CPU and memory — each PostgreSQL connection costs work_mem-scaled RAM, so connection pressure shows as memory growth here."
+            params:
+              queries: *infra_panels
+          - tool_id: "tool.query_metrics"
             description: "Connection utilisation %, total backends, configured max_connections, and waiting backends on the alerting pod."
             params:
               queries:
                 - name: conn_usage_pct
                   unit: "%"
                   query: '100 * sum by (pod) (cnpg_backends_total{namespace="$namespace",pod="$pod"}) / on(pod) max by (pod) (cnpg_pg_settings_setting{namespace="$namespace",pod="$pod",name="max_connections"})'
+                  panel: true
+                  panel_title: "Connection Utilization %"
+                  panel_id: "cnpg-conn-usage-pct"
                 - name: total_backends
                   query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Total Backends"
+                  panel_id: "cnpg-total-backends"
                 - name: max_connections
                   query: 'max(cnpg_pg_settings_setting{namespace="$namespace",pod="$pod",name="max_connections"})'
                 - name: waiting_backends
                   query: 'sum(cnpg_backends_waiting_total{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Waiting Backends"
+                  panel_id: "cnpg-waiting-backends"
       - step: 2
         title: "Classify the connections — idle pool, real workload, or a session/transaction leak"
         description: >-
@@ -684,11 +864,19 @@ common_alerts:
           higher limit. idle_in_txn_backends elevated => a session/transaction LEAK (BEGIN without
           COMMIT, or leaked pooled connections) — the same failure mode as the long-transaction
           alert; longest_tx_state corroborates which state dominates. This classification is the RCA.
+          backends_by_state graphs all three at once (one series per state) — read it to say how
+          the mix has MOVED over the window (a steadily growing idle-in-transaction line is a leak;
+          a step change in idle is a pool resize/deploy), not just the instantaneous split.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Backend counts by state (active / idle / idle-in-transaction) and the dominant non-idle transaction state on the alerting pod."
+            description: "Backend counts by state (active / idle / idle-in-transaction), the per-state breakdown as one series each, and the dominant non-idle transaction state on the alerting pod."
             params:
               queries:
+                - name: backends_by_state
+                  query: 'sum by (state) (cnpg_backends_total{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Backends by State"
+                  panel_id: "cnpg-backends-by-state"
                 - name: active_backends
                   query: 'sum(cnpg_backends_total{namespace="$namespace",pod="$pod",state="active"}) or vector(0)'
                 - name: idle_backends
@@ -716,9 +904,15 @@ common_alerts:
                 - name: commit_rate_per_s
                   unit: "tx/s"
                   query: 'sum(rate(cnpg_pg_stat_database_xact_commit{namespace="$namespace",pod="$pod"}[5m]))'
+                  panel: true
+                  panel_title: "Commit Rate"
+                  panel_id: "cnpg-commit-rate"
                 - name: rollback_rate_per_s
                   unit: "tx/s"
                   query: 'sum(rate(cnpg_pg_stat_database_xact_rollback{namespace="$namespace",pod="$pod"}[5m]))'
+                  panel: true
+                  panel_title: "Rollback Rate"
+                  panel_id: "cnpg-rollback-rate"
     remediation: # suggestion-only — config / app-side fixes, gated
       - action: "add_or_rightsize_connection_pooler"
         description: "Primary fix when step 2 shows mostly-idle connections: front PostgreSQL with a PgBouncer Pooler CR (or right-size the app's existing pool) so a few server connections are multiplexed. Far cheaper and safer than raising max_connections."
