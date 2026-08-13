@@ -1,0 +1,390 @@
+# Unit tests for rules/metrics/databases/clickhouse.yml (clickhouse-operator.rules group)
+#
+# Run with:
+#   promtool test rules tests/databases/clickhouse_test.yaml
+#
+# Format reference:
+#   https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
+#
+# NOTE ON EVAL TIMES: each positive case is evaluated at exactly the width of the
+# rule's range selector (t=15m for [15m], t=30m for [30m], t=60m for [1h]) with
+# samples starting at t=0. That puts the first and last sample exactly on the
+# window boundaries, so increase() does no extrapolation and $value is an exact
+# integer. Evaluating at other times yields fractional values that make the
+# expected annotations unreadable.
+
+rule_files:
+  - ../../rules/metrics/databases/clickhouse.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ============================================================
+  # ClickHouseOperatorMetricsAbsent: positive — the operator's own
+  # metrics never appear, so absent() holds past the 10m grace.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'up{job="clickhouse-operator"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ClickHouseOperatorMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: absent(clickhouse_operator_chi)
+            exp_annotations:
+              summary: "clickhouse-operator is exporting no metrics"
+              description: "No clickhouse_operator_chi series has been scraped for 10 minutes. Either the clickhouse-operator deployment is down or its metrics endpoint is unreachable. While this is firing, every other ClickHouse operator alert is blind: reconcile failures, aborted reconciles, and host restarts will go undetected, and CHI spec changes may not be applied to the cluster at all."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatormetricsabsent"
+
+  # ============================================================
+  # ClickHouseOperatorMetricsAbsent: negative — the operator is
+  # exporting normally.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi{namespace="clickhouse",chi="prod3"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ClickHouseOperatorMetricsAbsent
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileErrors: positive — one host
+  # reconcile error inside the 15m window.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_errors{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseOperatorHostReconcileErrors
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: increase(clickhouse_operator_host_reconciles_errors[15m]) > 0
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "clickhouse-operator is failing to reconcile a ClickHouse host"
+              description: "clickhouse-operator recorded 1 host reconcile error(s) in the last 15m for CHI prod3 in namespace clickhouse. The desired StatefulSet/ConfigMap/service state is not being applied to at least one host, so recent CHI changes (image, settings, resources, topology) may be partially or entirely unapplied while the cluster still reports as running."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrors"
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileErrors: negative — the counter
+  # exists but has never incremented.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_errors{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseOperatorHostReconcileErrors
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileErrorsSustained: positive —
+  # 6 errors in the hour, at or above the >= 5 threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_errors{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2 3 4 5 6+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostReconcileErrorsSustained
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: critical
+              priority: P1
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "clickhouse-operator cannot converge a ClickHouse host"
+              description: "clickhouse-operator recorded 6 host reconcile errors in the last hour for CHI prod3 in namespace clickhouse — it is retrying and failing, not making progress. The cluster is stuck between its current and desired state; a rolling upgrade may be halted midway, leaving hosts on mixed configurations or mixed versions."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrorssustained"
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileErrorsSustained: negative —
+  # 4 errors in the hour stays under the threshold (the transient
+  # ClickHouseOperatorHostReconcileErrors warning covers this).
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_errors{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2 3 4+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostReconcileErrorsSustained
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorCHIReconcileAborted: positive — one aborted
+  # CHI reconcile.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi_reconciles_aborted{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseOperatorCHIReconcileAborted
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "A ClickHouseInstallation reconcile was aborted"
+              description: "1 CHI reconcile(s) were aborted in the last 15m for CHI prod3 in namespace clickhouse. An aborted reconcile never reaches completion, so the CHI spec on the cluster is not what is committed in Git/the CRD. Common causes: the CHI was edited again mid-reconcile, the operator restarted, or a host became unreachable partway through the rollout."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcileaborted"
+
+  # ============================================================
+  # ClickHouseOperatorCHIReconcileAborted: negative — no aborts.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi_reconciles_aborted{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseOperatorCHIReconcileAborted
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorCHIReconcileStuck: positive — a reconcile
+  # started and never completed or aborted.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi_reconciles_started{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_completed{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_aborted{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorCHIReconcileStuck
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: |
+                sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))
+                - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))
+                - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))
+                > 0
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "A ClickHouseInstallation reconcile started but never finished"
+              description: "1 CHI reconcile(s) for prod3 in namespace clickhouse started in the last hour and have neither completed nor aborted — the rollout is hung. Hosts may be sitting partially updated, and subsequent CHI edits will queue behind this one. A healthy reconcile finishes in seconds to a few minutes; anything pending for over 15 minutes is stuck."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcilestuck"
+
+  # ============================================================
+  # ClickHouseOperatorCHIReconcileStuck: negative — the reconcile
+  # that started also completed.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi_reconciles_started{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_completed{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_aborted{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorCHIReconcileStuck
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorCHIReconcileStuck: negative — the reconcile
+  # aborted rather than hanging (ClickHouseOperatorCHIReconcileAborted
+  # owns that case; this rule must not double-fire on it).
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_chi_reconciles_started{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_completed{namespace="clickhouse",chi="prod3"}'
+        values: '0+0x60'
+      - series: 'clickhouse_operator_chi_reconciles_aborted{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorCHIReconcileStuck
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileSlow: positive — one reconcile
+  # took 900s, averaging above the 600s threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_timings_sum{namespace="clickhouse",chi="prod3"}'
+        values: '0 900+0x60'
+      - series: 'clickhouse_operator_host_reconciles_timings_count{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostReconcileSlow
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P3
+              tech_stack: clickhouse
+              signal: cause
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: |
+                increase(clickhouse_operator_host_reconciles_timings_sum[1h])
+                / increase(clickhouse_operator_host_reconciles_timings_count[1h])
+                > 600
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "clickhouse-operator host reconciles are taking too long"
+              description: "Host reconciles for CHI prod3 in namespace clickhouse are averaging 15m 0s over the last hour (threshold 10m). Slow reconciles stretch rolling upgrades far beyond their maintenance window and usually mean hosts are slow to become ready — long ClickHouse startup, replica resync after restart, image pull delays, or pods stuck Pending on scheduling/PVC binding."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileslow"
+
+  # ============================================================
+  # ClickHouseOperatorHostReconcileSlow: negative — a 300s
+  # reconcile is well under the threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_timings_sum{namespace="clickhouse",chi="prod3"}'
+        values: '0 300+0x60'
+      - series: 'clickhouse_operator_host_reconciles_timings_count{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostReconcileSlow
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorHostRestartsHigh: positive — 3 restarts in
+  # the hour, above the > 2 rolling-upgrade allowance.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_restarts{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2 3+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostRestartsHigh
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "clickhouse-operator is repeatedly restarting a ClickHouse host"
+              description: "clickhouse-operator restarted hosts of CHI prod3 in namespace clickhouse 3 times in the last hour — more than a planned rolling upgrade would need. Every restart drops in-flight queries, breaks client connections, and forces the replica to resync on startup. Repeated restarts point at a crash-looping ClickHouse container, a failing readiness probe, or a reconcile loop that keeps deciding the host needs to be recreated."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostrestartshigh"
+
+  # ============================================================
+  # ClickHouseOperatorHostRestartsHigh: negative — 2 restarts is
+  # a normal rolling upgrade and must stay quiet.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_host_reconciles_restarts{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2+0x60'
+    alert_rule_test:
+      - eval_time: 60m
+        alertname: ClickHouseOperatorHostRestartsHigh
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseOperatorPodsDisappearing: positive — 2 deletes but
+  # only 1 add, so the cluster is a pod short.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_pod_delete_events{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2+0x30'
+      - series: 'clickhouse_operator_pod_add_events{namespace="clickhouse",chi="prod3"}'
+        values: '0 1+0x31'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClickHouseOperatorPodsDisappearing
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: clickhouse
+              signal: symptom
+              category: data
+              runbook: runbooks/databases/clickhouse.md
+              query: |
+                sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))
+                - sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))
+                > 0
+              chi: "prod3"
+              namespace: "clickhouse"
+            exp_annotations:
+              summary: "ClickHouse pods are being deleted and not coming back"
+              description: "CHI prod3 in namespace clickhouse saw 1 more pod delete than pod add event(s) over the last 30m — the cluster is losing hosts rather than cycling them. During a healthy rolling restart deletes and adds balance out within minutes. A sustained deficit means pods are being evicted, descheduled, or failing to be recreated, which reduces replica count and query capacity."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorpodsdisappearing"
+
+  # ============================================================
+  # ClickHouseOperatorPodsDisappearing: negative — a rolling
+  # restart, where every delete is matched by an add.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'clickhouse_operator_pod_delete_events{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2+0x30'
+      - series: 'clickhouse_operator_pod_add_events{namespace="clickhouse",chi="prod3"}'
+        values: '0 1 2+0x30'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClickHouseOperatorPodsDisappearing
+        exp_alerts: []

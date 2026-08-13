@@ -27,9 +27,14 @@ fi
 
 first=1
 while IFS= read -r -d '' f; do
-    rel="${f#$RULES_DIR/}"            # e.g. databases/cnpg.yaml
-    category="${rel%%/*}"              # e.g. databases
-    stem=$(basename "$f" .yaml)        # e.g. cnpg
+    # Layout is rules/<source_type>/<category>/<stack>.yml, e.g.
+    # rules/metrics/databases/cnpg.yml -> source_type=metrics, category=databases.
+    rel="${f#$RULES_DIR/}"             # e.g. metrics/databases/cnpg.yml
+    source_type="${rel%%/*}"           # e.g. metrics
+    category="$(basename "$(dirname "$f")")"   # e.g. databases
+    stem="$(basename "$f")"
+    stem="${stem%.yml}"
+    stem="${stem%.yaml}"               # e.g. cnpg
     name="rtifact-${category}-${stem}-alerts"
 
     if [[ $first -eq 0 ]]; then
@@ -48,8 +53,11 @@ metadata:
     release: ${RELEASE}
     rtifact.io/category: ${category}
     rtifact.io/stack: ${stem}
+    rtifact.io/source-type: ${source_type}
 spec:
 EOF
 
-    sed 's/^/  /' "$f"
-done < <(find "$RULES_DIR" -type f -name '*.yaml' -print0 | sort -z)
+    # awk (not sed) so a rule file with no trailing newline still ends with one —
+    # otherwise the next document's "---" separator is glued onto its last line.
+    awk '{ print "  " $0 }' "$f"
+done < <(find "$RULES_DIR" -type f \( -name '*.yaml' -o -name '*.yml' \) -print0 | sort -z)

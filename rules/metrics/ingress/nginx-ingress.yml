@@ -21,7 +21,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             absent(
               up{
@@ -46,7 +46,7 @@ groups:
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             up{
               job=~".*(nginx.*ingress|ingress.*nginx).*"
@@ -83,7 +83,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             (
               sum by (ingress, exported_namespace) (
@@ -126,7 +126,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             (
               sum by (ingress, exported_namespace) (
@@ -169,7 +169,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             sum by (
               host,
@@ -215,7 +215,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             histogram_quantile(
               0.99,
@@ -271,7 +271,7 @@ groups:
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             histogram_quantile(
               0.99,
@@ -330,7 +330,7 @@ groups:
           tech_stack: nginx-ingress
           signal: cause
           category: security
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             (
               min by (host, secret_name, secret_namespace) (
@@ -361,7 +361,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: security
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             min by (host, secret_name, secret_namespace) (
               nginx_ingress_controller_ssl_expire_time_seconds
@@ -385,7 +385,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: nginx_ingress_controller_config_last_reload_successful == 0
         annotations:
           summary: "nginx-ingress configuration reload has failed"
@@ -413,7 +413,7 @@ groups:
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             max by (
               controller_class,
@@ -448,7 +448,7 @@ groups:
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: nginx_ingress_controller_nginx_process_connections{state="active"} > 5000
         annotations:
           summary: "nginx-ingress active connection count is high"
@@ -482,7 +482,7 @@ groups:
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
-          runbook: runbooks/ingress/nginx-ingress.md
+          runbook: runbooks/ingress/nginx-ingress.yaml
           query: |
             (
               sum by (controller_pod, controller_namespace) (

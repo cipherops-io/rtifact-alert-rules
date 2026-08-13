@@ -1,11 +1,11 @@
-# Unit tests for rules/messaging/kafka.yaml
+# Unit tests for rules/metrics/messaging/kafka.yml
 # Kafka alerts are based on the prometheus-kafka-exporter (danielqsj/kafka_exporter)
 # metric family: kafka_brokers, kafka_offline_partitions, kafka_under_replicated_partitions,
 # kafka_topic_partition_{leader,in_sync_replica,replicas,under_replicated_partition,
 # leader_is_preferred,current_offset}, kafka_consumergroup_{lag,lag_sum,members,current_offset},
 # kafka_exporter_build_info.
 rule_files:
-  - ../../rules/messaging/kafka.yaml
+  - ../../rules/metrics/messaging/kafka.yml
 
 evaluation_interval: 1m
 

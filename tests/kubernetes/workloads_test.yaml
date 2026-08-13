@@ -1,6 +1,6 @@
-# Unit tests for rules/kubernetes/workloads.yaml
+# Unit tests for rules/metrics/kubernetes/workloads.yml
 rule_files:
-  - ../../rules/kubernetes/workloads.yaml
+  - ../../rules/metrics/kubernetes/workloads.yml
 
 evaluation_interval: 1m
 

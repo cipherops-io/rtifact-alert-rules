@@ -1,164 +1,102 @@
 groups:
-  - name: clickhouse.rules
+  - name: clickhouse-operator.rules
     interval: 30s
     rules:
-      - alert: ClickHouseDown
-        expr: up{job=~"clickhouse.*"} == 0
-        for: 1m
-        labels:
-          severity: critical
-          priority: P1
-          tech_stack: clickhouse
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: up{job=~"clickhouse.*"} == 0
-        annotations:
-          summary: "ClickHouse instance is down"
-          description: "ClickHouse instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedown"
+      # ==========================================================================
+      # These rules cover the Altinity clickhouse-operator CONTROL PLANE only.
+      # The operator exports clickhouse_operator_* metrics describing whether it
+      # can converge ClickHouseInstallation (CHI) objects onto the cluster.
+      # ==========================================================================
 
-      - alert: ClickHouseHighMemoryUsage
-        expr: ClickHouseMetrics_MemoryTracking / ClickHouseAsyncMetrics_CGroupMemLimit > 0.80
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_MemoryTracking / ClickHouseAsyncMetrics_CGroupMemLimit > 0.80
-        annotations:
-          summary: "ClickHouse memory usage is high"
-          description: "ClickHouse memory usage is {{ $value | humanizePercentage }} of cgroup memory limit on {{ $labels.instance
-            }}. OOM kill risk is elevated."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousehighmemoryusage"
-
-      - alert: ClickHouseReplicationQueueHigh
-        expr: ClickHouseMetrics_ReplicatedChecks > 100
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_ReplicatedChecks > 100
-        annotations:
-          summary: "ClickHouse replication queue has a high number of pending checks"
-          description: "ClickHouse replication queue has {{ $value }} pending checks — replication is lagging."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationqueuehigh"
-
-      - alert: ClickHouseZooKeeperSessionLost
-        expr: ClickHouseMetrics_ZooKeeperSession == 0
-        for: 1m
-        labels:
-          severity: critical
-          priority: P1
-          tech_stack: clickhouse
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_ZooKeeperSession == 0
-        annotations:
-          summary: "ClickHouse lost its ZooKeeper session"
-          description: "ClickHouse lost ZooKeeper session on {{ $labels.instance }} — distributed operations are unavailable."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousezookeepersessionlost"
-
-      - alert: ClickHousePartsExplosion
-        expr: ClickHouseMetrics_Parts > 300
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_Parts > 300
-        annotations:
-          summary: "ClickHouse MergeTree part count is explosively high"
-          description: "ClickHouse has {{ $value }} active parts — MergeTree part explosion. Merges cannot keep up with inserts."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousepartsexplosion"
-
-      - alert: ClickHouseLongRunningMutation
-        expr: ClickHouseMetrics_Mutations > 0
-        for: 30m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_Mutations > 0
-        annotations:
-          summary: "ClickHouse has long-running mutations"
-          description: "ClickHouse has {{ $value }} running mutations for more than 30 minutes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouselongrunningmutation"
-
-      - alert: ClickHouseQueryThreadsHigh
-        expr: ClickHouseMetrics_QueryThread > 50
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_QueryThread > 50
-        annotations:
-          summary: "ClickHouse query thread count is high"
-          description: "ClickHouse has {{ $value }} active query threads on {{ $labels.instance }} — query queue may be saturated."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousequerythreadshigh"
-
-      - alert: ClickHouseInsertDelayHigh
-        expr: ClickHouseAsyncMetrics_ReplicaDelay > 300
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseAsyncMetrics_ReplicaDelay > 300
-        annotations:
-          summary: "ClickHouse replica delay is high"
-          description: "ClickHouse replica delay is {{ $value | humanize }}s on {{ $labels.instance }} — inserts and replication
-            are backpressuring."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseinsertdelayhigh"
-
-      - alert: ClickHouseDiskUsageHigh
-        expr: |
-          (ClickHouseAsyncMetrics_DiskTotal_default - ClickHouseAsyncMetrics_DiskAvailable_default)
-          / ClickHouseAsyncMetrics_DiskTotal_default > 0.80
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: clickhouse
-          signal: cause
-          category: storage
-          runbook: runbooks/databases/clickhouse.md
-          query: |
-            (ClickHouseAsyncMetrics_DiskTotal_default - ClickHouseAsyncMetrics_DiskAvailable_default)
-            / ClickHouseAsyncMetrics_DiskTotal_default > 0.80
-        annotations:
-          summary: "ClickHouse disk usage is high"
-          description: "ClickHouse disk usage is {{ $value | humanizePercentage }} on {{ $labels.instance }}. Plan capacity
-            expansion or enable tiered storage."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskusagehigh"
-
-      - alert: ClickHouseMergesDelayed
-        expr: |
-          ClickHouseMetrics_BackgroundMergesAndMutationsPoolTask
-          / ClickHouseAsyncMetrics_BackgroundMergesAndMutationsPoolSize > 0.90
+      - alert: ClickHouseOperatorMetricsAbsent
+        expr: absent(clickhouse_operator_chi)
         for: 10m
         labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: clickhouse
+          signal: cause
+          category: data
+          runbook: runbooks/databases/clickhouse.md
+          query: absent(clickhouse_operator_chi)
+        annotations:
+          summary: "clickhouse-operator is exporting no metrics"
+          description: "No clickhouse_operator_chi series has been scraped for 10 minutes. Either the clickhouse-operator
+            deployment is down or its metrics endpoint is unreachable. While this is firing, every other ClickHouse operator
+            alert is blind: reconcile failures, aborted reconciles, and host restarts will go undetected, and CHI spec
+            changes may not be applied to the cluster at all."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatormetricsabsent"
+
+      - alert: ClickHouseOperatorHostReconcileErrors
+        expr: increase(clickhouse_operator_host_reconciles_errors[15m]) > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: clickhouse
+          signal: cause
+          category: data
+          runbook: runbooks/databases/clickhouse.md
+          query: increase(clickhouse_operator_host_reconciles_errors[15m]) > 0
+        annotations:
+          summary: "clickhouse-operator is failing to reconcile a ClickHouse host"
+          description: "clickhouse-operator recorded {{ $value | humanize }} host reconcile error(s) in the last 15m for
+            CHI {{ $labels.chi }} in namespace {{ $labels.namespace }}. The desired StatefulSet/ConfigMap/service state is
+            not being applied to at least one host, so recent CHI changes (image, settings, resources, topology) may be
+            partially or entirely unapplied while the cluster still reports as running."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrors"
+
+      - alert: ClickHouseOperatorHostReconcileErrorsSustained
+        expr: increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: clickhouse
+          signal: cause
+          category: data
+          runbook: runbooks/databases/clickhouse.md
+          query: increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5
+        annotations:
+          summary: "clickhouse-operator cannot converge a ClickHouse host"
+          description: "clickhouse-operator recorded {{ $value | humanize }} host reconcile errors in the last hour for CHI
+            {{ $labels.chi }} in namespace {{ $labels.namespace }} — it is retrying and failing, not making progress. The
+            cluster is stuck between its current and desired state; a rolling upgrade may be halted midway, leaving hosts
+            on mixed configurations or mixed versions."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrorssustained"
+
+      - alert: ClickHouseOperatorCHIReconcileAborted
+        expr: increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: clickhouse
+          signal: cause
+          category: data
+          runbook: runbooks/databases/clickhouse.md
+          query: increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0
+        annotations:
+          summary: "A ClickHouseInstallation reconcile was aborted"
+          description: "{{ $value | humanize }} CHI reconcile(s) were aborted in the last 15m for CHI {{ $labels.chi }} in
+            namespace {{ $labels.namespace }}. An aborted reconcile never reaches completion, so the CHI spec on the cluster
+            is not what is committed in Git/the CRD. Common causes: the CHI was edited again mid-reconcile, the operator
+            restarted, or a host became unreachable partway through the rollout."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcileaborted"
+
+      - alert: ClickHouseOperatorCHIReconcileStuck
+        expr: |
+          sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))
+          - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))
+          - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))
+          > 0
+        for: 15m
+        labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: clickhouse
@@ -166,59 +104,87 @@ groups:
           category: data
           runbook: runbooks/databases/clickhouse.md
           query: |
-            ClickHouseMetrics_BackgroundMergesAndMutationsPoolTask
-            / ClickHouseAsyncMetrics_BackgroundMergesAndMutationsPoolSize > 0.90
+            sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))
+            - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))
+            - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))
+            > 0
         annotations:
-          summary: "ClickHouse background merge pool is nearly full"
-          description: "ClickHouse background merge and mutation pool is {{ $value | humanizePercentage }} utilized on {{
-            $labels.instance }} — merges are delayed."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemergesdelayed"
+          summary: "A ClickHouseInstallation reconcile started but never finished"
+          description: "{{ $value | humanize }} CHI reconcile(s) for {{ $labels.chi }} in namespace {{ $labels.namespace }}
+            started in the last hour and have neither completed nor aborted — the rollout is hung. Hosts may be sitting
+            partially updated, and subsequent CHI edits will queue behind this one. A healthy reconcile finishes in seconds
+            to a few minutes; anything pending for over 15 minutes is stuck."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcilestuck"
 
-      - alert: ClickHouseDetachedPartsHigh
-        expr: ClickHouseAsyncMetrics_NumberOfDetachedParts > 10
-        for: 10m
+      - alert: ClickHouseOperatorHostReconcileSlow
+        expr: |
+          increase(clickhouse_operator_host_reconciles_timings_sum[1h])
+          / increase(clickhouse_operator_host_reconciles_timings_count[1h])
+          > 600
+        for: 15m
         labels:
+          sourceType: metric
           severity: warning
           priority: P3
           tech_stack: clickhouse
           signal: cause
           category: data
           runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseAsyncMetrics_NumberOfDetachedParts > 10
+          query: |
+            increase(clickhouse_operator_host_reconciles_timings_sum[1h])
+            / increase(clickhouse_operator_host_reconciles_timings_count[1h])
+            > 600
         annotations:
-          summary: "ClickHouse has a high number of detached parts"
-          description: "ClickHouse has {{ $value }} detached parts — orphaned data that should be investigated or dropped."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedetachedpartshigh"
+          summary: "clickhouse-operator host reconciles are taking too long"
+          description: "Host reconciles for CHI {{ $labels.chi }} in namespace {{ $labels.namespace }} are averaging
+            {{ $value | humanizeDuration }} over the last hour (threshold 10m). Slow reconciles stretch rolling upgrades far
+            beyond their maintenance window and usually mean hosts are slow to become ready — long ClickHouse startup,
+            replica resync after restart, image pull delays, or pods stuck Pending on scheduling/PVC binding."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileslow"
 
-      - alert: ClickHouseDistributedSendFailed
-        expr: rate(ClickHouseProfileEvents_DistributedSyncInsertionTimeoutExceeded[5m]) > 0
+      - alert: ClickHouseOperatorHostRestartsHigh
+        expr: increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: clickhouse
           signal: symptom
           category: data
           runbook: runbooks/databases/clickhouse.md
-          query: rate(ClickHouseProfileEvents_DistributedSyncInsertionTimeoutExceeded[5m]) > 0
+          query: increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2
         annotations:
-          summary: "ClickHouse distributed insert sync timeouts are occurring"
-          description: "ClickHouse distributed sync insertion timeout rate is {{ $value | humanize }}/s on {{ $labels.instance
-            }}. Remote shards may be unavailable or overloaded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedsendfailed"
+          summary: "clickhouse-operator is repeatedly restarting a ClickHouse host"
+          description: "clickhouse-operator restarted hosts of CHI {{ $labels.chi }} in namespace {{ $labels.namespace }}
+            {{ $value | humanize }} times in the last hour — more than a planned rolling upgrade would need. Every restart
+            drops in-flight queries, breaks client connections, and forces the replica to resync on startup. Repeated
+            restarts point at a crash-looping ClickHouse container, a failing readiness probe, or a reconcile loop that
+            keeps deciding the host needs to be recreated."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostrestartshigh"
 
-      - alert: ClickHouseKeeperConnectionLost
-        expr: ClickHouseMetrics_KeeperAliveConnections == 0
-        for: 1m
+      - alert: ClickHouseOperatorPodsDisappearing
+        expr: |
+          sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))
+          - sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))
+          > 0
+        for: 10m
         labels:
-          severity: critical
-          priority: P1
+          sourceType: metric
+          severity: warning
+          priority: P2
           tech_stack: clickhouse
           signal: symptom
           category: data
           runbook: runbooks/databases/clickhouse.md
-          query: ClickHouseMetrics_KeeperAliveConnections == 0
+          query: |
+            sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))
+            - sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))
+            > 0
         annotations:
-          summary: "ClickHouse Keeper has no alive connections"
-          description: "ClickHouse Keeper has no alive connections — distributed operations unavailable."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperconnectionlost"
+          summary: "ClickHouse pods are being deleted and not coming back"
+          description: "CHI {{ $labels.chi }} in namespace {{ $labels.namespace }} saw {{ $value | humanize }} more pod
+            delete than pod add event(s) over the last 30m — the cluster is losing hosts rather than cycling them. During a
+            healthy rolling restart deletes and adds balance out within minutes. A sustained deficit means pods are being
+            evicted, descheduled, or failing to be recreated, which reduces replica count and query capacity."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorpodsdisappearing"

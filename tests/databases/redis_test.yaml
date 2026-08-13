@@ -1,6 +1,6 @@
-# Unit tests for rules/databases/redis.yaml
+# Unit tests for rules/metrics/databases/redis.yml
 rule_files:
-  - ../../rules/databases/redis.yaml
+  - ../../rules/metrics/databases/redis.yml
 
 evaluation_interval: 1m
 
