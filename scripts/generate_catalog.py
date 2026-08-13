@@ -27,6 +27,11 @@ RUNBOOKS_DIR = REPO_ROOT / "runbooks"
 EXPR_TRUNC = 80
 
 
+def rule_files() -> list[Path]:
+    """Every rule file under rules/, both .yaml and .yml."""
+    return sorted(RULES_DIR.rglob("*.yaml")) + sorted(RULES_DIR.rglob("*.yml"))
+
+
 def truncate(s: str, n: int) -> str:
     s = " ".join(s.split())  # collapse whitespace
     if len(s) <= n:
@@ -44,7 +49,7 @@ def main() -> int:
         return 2
 
     by_category: dict[str, list[Path]] = {}
-    for f in sorted(RULES_DIR.rglob("*.yaml")):
+    for f in rule_files():
         cat = f.parent.name
         by_category.setdefault(cat, []).append(f)
 
@@ -108,7 +113,7 @@ def main() -> int:
     # the repo over HTTP (no directory listing) discover runbook files from
     # the ](runbooks/...) links in this catalog, so every runbook must appear.
     linked = set()
-    for f in sorted(RULES_DIR.rglob("*.yaml")):
+    for f in rule_files():
         try:
             with f.open() as fh:
                 doc = yaml.safe_load(fh)

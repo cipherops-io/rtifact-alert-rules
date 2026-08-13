@@ -11,7 +11,7 @@ Every alert in `rtifact-alert-rules` must carry the same set of labels and annot
 | `tech_stack` | controlled enum (see below) | Which technology this alert belongs to. Used for grouping and team-based routing. |
 | `signal` | `symptom`, `cause`, `slo-burn` | SRE distinction. Symptom alerts = "user is suffering". Cause alerts = "we expect a problem soon". SLO-burn = error-budget burn-rate alerts. |
 | `category` | see enum in `scripts/validate_labels.py` | High-level grouping for routing (workload, data, network, control-plane, etc.) |
-| `runbook` | `runbooks/<category>/<stack>.md` | Path to the runbook for this stack, in this repo. |
+| `runbook` | `runbooks/<category>/<stack>.{md,yaml}` | Path to the runbook for this stack, in this repo. Markdown runbooks are for humans; `.yaml` runbooks carry machine-readable diagnostic steps. |
 
 ## Required annotations
 
