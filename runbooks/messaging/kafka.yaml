@@ -76,10 +76,16 @@ common_alerts:
               queries:
                 - name: exporter_up
                   query: 'max(up{job=~".*kafka.*exporter.*"}) or vector(0)'
+                  panel: true
+                  panel_title: "Exporter Up"
+                  panel_id: "kafka-exporter-up"
                 - name: build_info_present
                   query: 'count(kafka_exporter_build_info) or vector(0)'
                 - name: brokers_visible
                   query: 'max(kafka_brokers) or vector(0)'
+                  panel: true
+                  panel_title: "Brokers Visible"
+                  panel_id: "kafka-brokers-visible"
                 - name: build_info_absent_10m
                   query: 'absent_over_time(kafka_exporter_build_info[10m]) or vector(0)'
       - step: 2
@@ -104,8 +110,14 @@ common_alerts:
               queries:
                 - name: topic_series_visible
                   query: 'count(kafka_topic_partition_leader) or vector(0)'
+                  panel: true
+                  panel_title: "Topic Series Scraped"
+                  panel_id: "kafka-topic-series"
                 - name: group_series_visible
                   query: 'count(kafka_consumergroup_lag) or vector(0)'
+                  panel: true
+                  panel_title: "Consumer-Group Series Scraped"
+                  panel_id: "kafka-group-series"
           - tool_id: "tool.read_logs"
             description: "Kafka exporter pod logs filtered for connection/SASL/TLS/broker/OOM/exit signatures."
             params:
@@ -158,10 +170,19 @@ common_alerts:
               queries:
                 - name: offline_partitions
                   query: 'sum(kafka_offline_partitions) or vector(0)'
+                  panel: true
+                  panel_title: "Offline Partitions"
+                  panel_id: "kafka-offline-partitions"
                 - name: brokers
                   query: 'max(kafka_brokers) or vector(0)'
+                  panel: true
+                  panel_title: "Brokers Online"
+                  panel_id: "kafka-brokers-online"
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Broker Count Changes (30m)"
+                  panel_id: "kafka-broker-changes-30m"
       - step: 2
         title: "Name WHICH topics/partitions are leaderless and how concentrated it is"
         description: >-
@@ -182,6 +203,9 @@ common_alerts:
               queries:
                 - name: topic_leaderless
                   query: 'sum by (topic) (kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
+                  panel: true
+                  panel_title: "Leaderless Partitions (topic)"
+                  panel_id: "kafka-topic-leaderless"
                 - name: leaderless_total
                   query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
                 - name: worst_topics_leaderless
@@ -210,6 +234,9 @@ common_alerts:
               queries:
                 - name: under_replicated
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                  panel: true
+                  panel_title: "Under-Replicated Partitions"
+                  panel_id: "kafka-urp"
                 - name: isr_below_replicas
                   query: 'count(kafka_topic_partition_in_sync_replica < on(topic,partition) kafka_topic_partition_replicas) or vector(0)'
                 - name: app_consumer_throughput
@@ -266,12 +293,24 @@ common_alerts:
               queries:
                 - name: topic_urp_partitions
                   query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                  panel: true
+                  panel_title: "Under-Replicated Partitions (topic)"
+                  panel_id: "kafka-topic-urp"
                 - name: topic_missing_replicas_max
                   query: 'max by (topic) (clamp_min(kafka_topic_partition_replicas{topic="$topic"} - on(topic,partition) kafka_topic_partition_in_sync_replica{topic="$topic"}, 0)) or vector(0)'
+                  panel: true
+                  panel_title: "Missing Replicas (topic)"
+                  panel_id: "kafka-topic-missing-replicas"
                 - name: urp_total
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                  panel: true
+                  panel_title: "Cluster Under-Replicated Total"
+                  panel_id: "kafka-urp-total"
                 - name: urp_topic_count
                   query: 'count(sum by (topic) (kafka_topic_partition_under_replicated_partition) > 0) or vector(0)'
+                  panel: true
+                  panel_title: "Affected Topic Count"
+                  panel_id: "kafka-urp-topic-count"
       - step: 2
         title: "Find the cause: lost broker vs lagging replica, and whether it is worsening"
         description: >-
@@ -296,6 +335,9 @@ common_alerts:
                   query: 'max(clamp_min(kafka_topic_partition_replicas - on(topic,partition) kafka_topic_partition_in_sync_replica, 0)) or vector(0)'
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Broker Count Changes (30m)"
+                  panel_id: "kafka-broker-changes-30m"
                 - name: offline_partitions
                   query: 'sum(kafka_offline_partitions) or vector(0)'
     remediation: # suggestion-only — replication recovers when the broker/replica is healthy
@@ -357,14 +399,26 @@ common_alerts:
               queries:
                 - name: target_topic_min_isr
                   query: 'min by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"})'
+                  panel: true
+                  panel_title: "Min ISR (topic)"
+                  panel_id: "kafka-topic-min-isr"
                 - name: target_topic_min_replicas
                   query: 'min by (topic) (kafka_topic_partition_replicas{topic="$topic"})'
+                  panel: true
+                  panel_title: "Configured Replicas (topic)"
+                  panel_id: "kafka-topic-min-replicas"
                 - name: target_topic_isr_below_replicas
                   query: 'count by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"} < on(topic,partition) kafka_topic_partition_replicas{topic="$topic"}) or vector(0)'
+                  panel: true
+                  panel_title: "Partitions With ISR < Replicas"
+                  panel_id: "kafka-topic-isr-below-replicas"
                 - name: isr_below_replicas
                   query: 'count(kafka_topic_partition_in_sync_replica < on(topic,partition) kafka_topic_partition_replicas) or vector(0)'
                 - name: cluster_isr_below_3_total
                   query: 'count(kafka_topic_partition_in_sync_replica < 3) or vector(0)'
+                  panel: true
+                  panel_title: "Cluster Partitions With ISR < 3"
+                  panel_id: "kafka-cluster-isr-below-3"
       - step: 2
         title: "If it is a real loss, find the broker/replica cause and the durability risk"
         description: >-
@@ -438,8 +492,14 @@ common_alerts:
               queries:
                 - name: target_partition_leader
                   query: 'min by (topic, partition) (kafka_topic_partition_leader{topic="$topic",partition="$partition"})'
+                  panel: true
+                  panel_title: "Partition Leader Present"
+                  panel_id: "kafka-partition-leader"
                 - name: leaderless_total
                   query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
+                  panel: true
+                  panel_title: "Cluster Leaderless Partitions"
+                  panel_id: "kafka-leaderless-total"
                 - name: worst_topics_leaderless
                   query: 'topk(3, sum by (topic) (kafka_topic_partition_leader == bool -1))'
       - step: 2
@@ -463,10 +523,16 @@ common_alerts:
               queries:
                 - name: target_isr
                   query: 'min by (topic, partition) (kafka_topic_partition_in_sync_replica{topic="$topic",partition="$partition"})'
+                  panel: true
+                  panel_title: "Partition ISR"
+                  panel_id: "kafka-partition-isr"
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
                 - name: target_leader_flaps_30m
                   query: 'max by (topic, partition) (changes(kafka_topic_partition_leader{topic="$topic",partition="$partition"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Leader Flaps (30m)"
+                  panel_id: "kafka-leader-flaps-30m"
     remediation: # suggestion-only
       - action: "restore_broker_for_leader_election"
         description: "Primary fix: restore the broker that left (broker_changes_30m > 0) or the broker holding the partition's only in-sync replica, so a valid leader can be elected. Recovering the in-sync replica avoids data loss."
@@ -512,8 +578,14 @@ common_alerts:
                 - name: imbalance_pct
                   unit: "%"
                   query: '100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(kafka_topic_partition_leader_is_preferred)'
+                  panel: true
+                  panel_title: "Preferred-Leader Imbalance %"
+                  panel_id: "kafka-imbalance-pct"
                 - name: not_preferred_total
                   query: 'sum(kafka_topic_partition_leader_is_preferred == bool 0) or vector(0)'
+                  panel: true
+                  panel_title: "Partitions Off Preferred Leader"
+                  panel_id: "kafka-not-preferred-total"
                 - name: worst_topics_imbalance
                   query: 'topk(3, sum by (topic) (kafka_topic_partition_leader_is_preferred == bool 0))'
       - step: 2
@@ -534,6 +606,9 @@ common_alerts:
               queries:
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Broker Count Changes (30m)"
+                  panel_id: "kafka-broker-changes-30m"
                 - name: under_replicated
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
                 - name: offline_partitions
@@ -580,8 +655,14 @@ common_alerts:
               queries:
                 - name: group_lag_total
                   query: 'sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum by (consumergroup) (kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                  panel: true
+                  panel_title: "Consumer Group Lag"
+                  panel_id: "kafka-group-lag-total"
                 - name: lag_by_topic
                   query: 'topk(3, sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Lag by Topic"
+                  panel_id: "kafka-lag-by-topic"
                 - name: worst_partition_lag
                   query: 'topk(3, kafka_consumergroup_lag{consumergroup="$consumergroup"})'
                 - name: group_members
@@ -607,11 +688,20 @@ common_alerts:
                 - name: producer_rate_by_topic
                   unit: "msg/s"
                   query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Producer Append Rate"
+                  panel_id: "kafka-producer-rate"
                 - name: consumer_progress_rate
                   unit: "msg/s"
                   query: 'sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300'
+                  panel: true
+                  panel_title: "Consumer Progress Rate"
+                  panel_id: "kafka-consumer-progress-rate"
                 - name: lag_growth_15m
                   query: 'sum by (consumergroup) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[15m]))'
+                  panel: true
+                  panel_title: "Lag Growth (15m)"
+                  panel_id: "kafka-lag-growth-15m"
       - step: 3
         title: "Is the consumer slow, or is Kafka itself degraded? OBI processing + cluster health"
         description: >-
@@ -686,10 +776,19 @@ common_alerts:
               queries:
                 - name: top_groups_by_lag
                   query: 'topk(5, kafka_consumergroup_lag_sum)'
+                  panel: true
+                  panel_title: "Top Consumer Groups by Lag"
+                  panel_id: "kafka-top-groups-by-lag"
                 - name: lagging_group_count
                   query: 'count(kafka_consumergroup_lag_sum > 0) or vector(0)'
+                  panel: true
+                  panel_title: "Lagging Group Count"
+                  panel_id: "kafka-lagging-group-count"
                 - name: lag_by_group_topic
                   query: 'topk(5, sum by (consumergroup, topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Lag by Group/Topic"
+                  panel_id: "kafka-lag-by-group-topic"
       - step: 2
         title: "Find the common cause — dead consumer fleet, Kafka health, or a producer surge"
         description: >-
@@ -709,6 +808,9 @@ common_alerts:
               queries:
                 - name: groups_without_members
                   query: 'count((kafka_consumergroup_members == 0) and (kafka_consumergroup_lag_sum > 0)) or vector(0)'
+                  panel: true
+                  panel_title: "Groups Without Members"
+                  panel_id: "kafka-groups-without-members"
                 - name: offline_partitions
                   query: 'sum(kafka_offline_partitions) or vector(0)'
                 - name: under_replicated
@@ -716,6 +818,9 @@ common_alerts:
                 - name: top_producer_topics
                   unit: "msg/s"
                   query: 'topk(5, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Top Producer Topics"
+                  panel_id: "kafka-top-producer-topics"
                 - name: app_processing_throughput
                   unit: "msg/s"
                   query: 'topk(5, sum by (service.name) (rate({__name__="messaging.process.duration_count",messaging.system="kafka"}[5m])))'
@@ -759,8 +864,14 @@ common_alerts:
               queries:
                 - name: lag_growth_by_group
                   query: 'topk(3, sum by (consumergroup, topic) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[10m])))'
+                  panel: true
+                  panel_title: "Lag Growth by Group"
+                  panel_id: "kafka-lag-growth-by-group"
                 - name: lag_growth_by_partition
                   query: 'topk(3, delta(kafka_consumergroup_lag[10m]))'
+                  panel: true
+                  panel_title: "Lag Growth by Partition"
+                  panel_id: "kafka-lag-growth-by-partition"
                 - name: group_members
                   query: 'topk(3, kafka_consumergroup_members)'
       - step: 2
@@ -782,9 +893,15 @@ common_alerts:
                 - name: producer_rate_by_topic
                   unit: "msg/s"
                   query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Producer Append Rate"
+                  panel_id: "kafka-producer-rate"
                 - name: consumer_progress_rate
                   unit: "msg/s"
                   query: 'topk(3, sum by (consumergroup) (clamp_min(delta(kafka_consumergroup_current_offset{consumergroup="$consumergroup"}[5m]), 0)) / 300)'
+                  panel: true
+                  panel_title: "Consumer Progress Rate"
+                  panel_id: "kafka-consumer-progress-rate"
                 - name: app_processing_p95_ms
                   unit: "ms"
                   query: 'topk(3, histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.process.duration_bucket",messaging.system="kafka"}[5m]))) * 1000)'
@@ -830,13 +947,25 @@ common_alerts:
               queries:
                 - name: group_members
                   query: 'max by (consumergroup) (kafka_consumergroup_members{consumergroup="$consumergroup"}) or vector(0)'
+                  panel: true
+                  panel_title: "Group Members"
+                  panel_id: "kafka-group-members"
                 - name: group_lag_total
                   query: 'sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup="$consumergroup"}) or sum by (consumergroup) (kafka_consumergroup_lag{consumergroup="$consumergroup"})'
+                  panel: true
+                  panel_title: "Consumer Group Lag"
+                  panel_id: "kafka-group-lag-total"
                 - name: lag_growth_30m
                   query: 'sum by (consumergroup) (delta(kafka_consumergroup_lag{consumergroup="$consumergroup"}[30m]))'
+                  panel: true
+                  panel_title: "Lag Growth (30m)"
+                  panel_id: "kafka-lag-growth-30m"
                 - name: producer_rate_to_topics
                   unit: "msg/s"
                   query: 'topk(3, sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset[5m]), 0)) / 300 and on(topic) sum by (topic) (kafka_consumergroup_lag{consumergroup="$consumergroup"}))'
+                  panel: true
+                  panel_title: "Producer Append Rate"
+                  panel_id: "kafka-producer-rate"
       - step: 2
         title: "Confirm the consumer app is truly down (OBI) and classify why it left"
         description: >-
@@ -908,8 +1037,14 @@ common_alerts:
               queries:
                 - name: current_offset_delta_10m
                   query: 'sum by (topic) (delta(kafka_topic_partition_current_offset{topic="$topic"}[10m]))'
+                  panel: true
+                  panel_title: "Current Offset Δ (10m)"
+                  panel_id: "kafka-current-offset-delta"
                 - name: oldest_offset_delta_10m
                   query: 'sum by (topic) (delta(kafka_topic_partition_oldest_offset{topic="$topic"}[10m]))'
+                  panel: true
+                  panel_title: "Oldest Offset Δ (10m)"
+                  panel_id: "kafka-oldest-offset-delta"
                 - name: topics_with_decrease
                   query: 'count(sum by (topic) (delta(kafka_topic_partition_current_offset[10m])) < 0) or vector(0)'
       - step: 2
@@ -931,10 +1066,16 @@ common_alerts:
               queries:
                 - name: leader_changes_30m
                   query: 'max by (topic) (changes(kafka_topic_partition_leader{topic="$topic"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Leader Changes (30m)"
+                  panel_id: "kafka-leader-changes-30m"
                 - name: under_replicated
                   query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
                 - name: isr_min
                   query: 'min by (topic) (kafka_topic_partition_in_sync_replica{topic="$topic"}) or vector(0)'
+                  panel: true
+                  panel_title: "Min ISR (topic)"
+                  panel_id: "kafka-topic-min-isr"
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
     remediation: # suggestion-only — mostly investigative; offset rollback can mean data divergence
@@ -982,9 +1123,15 @@ common_alerts:
               queries:
                 - name: append_30m
                   query: 'sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[30m]), 0))'
+                  panel: true
+                  panel_title: "Messages Appended (30m)"
+                  panel_id: "kafka-topic-append-30m"
                 - name: append_rate
                   unit: "msg/s"
                   query: 'sum by (topic) (clamp_min(delta(kafka_topic_partition_current_offset{topic="$topic"}[5m]), 0)) / 300'
+                  panel: true
+                  panel_title: "Append Rate (topic)"
+                  panel_id: "kafka-topic-append-rate"
                 - name: producer_throughput
                   query: 'topk(3, sum by (service.name) (rate({__name__="messaging.client.operation.duration_count",messaging.system="kafka",messaging.destination.name="$topic"}[5m])))'
       - step: 2
@@ -1008,8 +1155,14 @@ common_alerts:
               queries:
                 - name: topic_leaderless
                   query: 'sum by (topic) (kafka_topic_partition_leader{topic="$topic"} == bool -1) or vector(0)'
+                  panel: true
+                  panel_title: "Leaderless Partitions (topic)"
+                  panel_id: "kafka-topic-leaderless"
                 - name: topic_under_replicated
                   query: 'sum by (topic) (kafka_topic_partition_under_replicated_partition{topic="$topic"}) or vector(0)'
+                  panel: true
+                  panel_title: "Under-Replicated Partitions (topic)"
+                  panel_id: "kafka-topic-urp"
                 - name: producer_client_p95_ms
                   unit: "ms"
                   query: 'histogram_quantile(0.95, sum by (le, service.name) (rate({__name__="messaging.client.operation.duration_bucket",messaging.system="kafka",messaging.destination.name="$topic"}[5m]))) * 1000'
@@ -1059,10 +1212,19 @@ common_alerts:
               queries:
                 - name: brokers
                   query: 'max(kafka_brokers) or vector(0)'
+                  panel: true
+                  panel_title: "Brokers Online"
+                  panel_id: "kafka-brokers-online"
                 - name: broker_delta_30m
                   query: 'sum(delta(kafka_brokers[30m]))'
+                  panel: true
+                  panel_title: "Broker Count Δ (30m)"
+                  panel_id: "kafka-broker-delta-30m"
                 - name: broker_changes_30m
                   query: 'max(changes(kafka_brokers[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Broker Count Changes (30m)"
+                  panel_id: "kafka-broker-changes-30m"
                 - name: broker_info_count
                   query: 'count(kafka_broker_info) or vector(0)'
       - step: 2
@@ -1086,8 +1248,14 @@ common_alerts:
               queries:
                 - name: offline_partitions
                   query: 'sum(kafka_offline_partitions) or vector(0)'
+                  panel: true
+                  panel_title: "Offline Partitions"
+                  panel_id: "kafka-offline-partitions"
                 - name: under_replicated
                   query: 'sum(kafka_under_replicated_partitions) or vector(0)'
+                  panel: true
+                  panel_title: "Under-Replicated Partitions"
+                  panel_id: "kafka-urp"
                 - name: leaderless_total
                   query: 'sum(kafka_topic_partition_leader == bool -1) or vector(0)'
                 - name: preferred_imbalance
