@@ -85,10 +85,19 @@ common_alerts:
               queries:
                 - name: targets_total
                   query: 'count(up{job=~".*(nginx.*ingress|ingress.*nginx).*"}) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Targets Total"
+                  panel_id: "nginx-targets-total"
                 - name: targets_healthy
                   query: 'sum(up{job=~".*(nginx.*ingress|ingress.*nginx).*"}) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Targets Healthy"
+                  panel_id: "nginx-targets-healthy"
                 - name: up_by_replica
                   query: 'max by (controller_pod, instance) (up{job=~".*(nginx.*ingress|ingress.*nginx).*"})'
+                  panel: true
+                  panel_title: "Up by Replica"
+                  panel_id: "nginx-up-by-replica"
                 - name: recently_up_30m
                   query: 'max_over_time(sum(up{job=~".*(nginx.*ingress|ingress.*nginx).*"})[30m:])'
       - step: 2
@@ -119,6 +128,9 @@ common_alerts:
                   query: 'count(nginx_ingress_controller_nginx_process_num_procs) or vector(0)'
                 - name: request_rate
                   query: 'sum(rate(nginx_ingress_controller_requests[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Request Rate"
+                  panel_id: "nginx-controller-request-rate"
                 - name: controller_pod_restarts_30m
                   query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$controller_namespace",pod=~".*ingress.*nginx.*|.*nginx.*ingress.*"}[30m]))'
                 - name: controller_pod_last_terminated
@@ -182,10 +194,19 @@ common_alerts:
                 - name: error_pct_by_ingress
                   unit: "%"
                   query: '100 * sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m])) / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                  panel: true
+                  panel_title: "5xx Error % (ingress)"
+                  panel_id: "nginx-error-pct-by-ingress"
                 - name: total_rps
                   query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                  panel: true
+                  panel_title: "Request Rate (ingress)"
+                  panel_id: "nginx-total-rps"
                 - name: failed_rps
                   query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
+                  panel: true
+                  panel_title: "5xx Rate (ingress)"
+                  panel_id: "nginx-failed-rps"
                 - name: ingresses_over_5pct
                   query: 'count(100 * sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) / sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests[5m])) > 5) or vector(0)'
       - step: 2
@@ -208,6 +229,9 @@ common_alerts:
               queries:
                 - name: status_split
                   query: 'sum by (status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
+                  panel: true
+                  panel_title: "Requests by Status"
+                  panel_id: "nginx-status-split"
                 - name: backend_split
                   query: 'sum by (host, exported_service, status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",status=~"5.."}[5m]))'
       - step: 3
@@ -233,6 +257,9 @@ common_alerts:
                 - name: upstream_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le, host) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                  panel: true
+                  panel_title: "Upstream p99"
+                  panel_id: "nginx-upstream-p99"
                 - name: orphan_state
                   query: 'max by (ingress, exported_namespace, type) (nginx_ingress_controller_orphan_ingress{ingress="$ingress",exported_namespace="$exported_namespace"} == 1)'
                 - name: reload_ok
@@ -290,11 +317,20 @@ common_alerts:
               queries:
                 - name: backend_5xx_rps
                   query: 'sum by (host, exported_service) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m]))'
+                  panel: true
+                  panel_title: "Backend 5xx Rate"
+                  panel_id: "nginx-backend-5xx-rps"
                 - name: backend_error_pct
                   unit: "%"
                   query: '100 * sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m]))'
+                  panel: true
+                  panel_title: "Backend Error %"
+                  panel_id: "nginx-backend-error-pct"
                 - name: backend_total_rps
                   query: 'sum by (host, exported_service) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m]))'
+                  panel: true
+                  panel_title: "Backend Request Rate"
+                  panel_id: "nginx-backend-total-rps"
       - step: 2
         title: "Classify the failure: status code, connect vs response latency, and orphan state"
         description: >-
@@ -316,12 +352,18 @@ common_alerts:
               queries:
                 - name: status_split
                   query: 'sum by (status) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service",status=~"5.."}[5m]))'
+                  panel: true
+                  panel_title: "Requests by Status"
+                  panel_id: "nginx-status-split"
                 - name: connect_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_connect_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m])))'
                 - name: response_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_response_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace",exported_service="$exported_service"}[5m])))'
+                  panel: true
+                  panel_title: "Upstream Response p99"
+                  panel_id: "nginx-response-p99"
                 - name: orphan_state
                   query: 'max by (ingress, exported_namespace, type) (nginx_ingress_controller_orphan_ingress{ingress="$ingress",exported_namespace="$exported_namespace"} == 1)'
           - tool_id: "tool.read_logs"
@@ -371,17 +413,32 @@ common_alerts:
                 - name: e2e_p50_s
                   unit: "s"
                   query: 'histogram_quantile(0.50, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                  panel: true
+                  panel_title: "End-to-End p50"
+                  panel_id: "nginx-e2e-p50"
                 - name: e2e_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                  panel: true
+                  panel_title: "End-to-End p95"
+                  panel_id: "nginx-e2e-p95"
                 - name: e2e_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le, ingress, exported_namespace) (rate(nginx_ingress_controller_request_duration_seconds_bucket{ingress="$ingress",exported_namespace="$exported_namespace"}[5m])))'
+                  panel: true
+                  panel_title: "End-to-End p99"
+                  panel_id: "nginx-e2e-p99"
                 - name: upstream_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le, host) (rate(nginx_ingress_controller_response_duration_seconds_bucket{host="$host",status=~"2..|3.."}[5m])))'
+                  panel: true
+                  panel_title: "Upstream p99"
+                  panel_id: "nginx-upstream-p99"
                 - name: req_rps
                   query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{ingress="$ingress",exported_namespace="$exported_namespace"}[5m]))'
+                  panel: true
+                  panel_title: "Request Rate (ingress)"
+                  panel_id: "nginx-total-rps"
       - step: 2
         title: "Split latency into its phases (connect vs header vs response) to localise the slow leg"
         description: >-
@@ -494,12 +551,18 @@ common_alerts:
                 - name: cert_days_left
                   unit: "days"
                   query: '(min by (host) (nginx_ingress_controller_ssl_expire_time_seconds{host="$host"}) - time()) / 86400'
+                  panel: true
+                  panel_title: "Certificate Days Left"
+                  panel_id: "nginx-cert-days-left"
                 - name: cert_expiry_by_replica
                   query: 'max by (host, controller_pod) (nginx_ingress_controller_ssl_expire_time_seconds{host="$host"})'
                 - name: cert_identity
                   query: 'max by (host, issuer_common_name, serial_number) (nginx_ingress_controller_ssl_certificate_info{host="$host"})'
                 - name: certs_expiring_14d
                   query: 'count((min by (host) (nginx_ingress_controller_ssl_expire_time_seconds) - time()) / 86400 < 14) or vector(0)'
+                  panel: true
+                  panel_title: "Certs Expiring < 14d (cluster)"
+                  panel_id: "nginx-certs-expiring-14d"
       - step: 2
         title: "Check whether a renewed cert simply hasn't been loaded (reload health + reload age)"
         description: >-
@@ -521,9 +584,15 @@ common_alerts:
               queries:
                 - name: reload_ok
                   query: 'min(nginx_ingress_controller_config_last_reload_successful) or vector(1)'
+                  panel: true
+                  panel_title: "Config Reload OK"
+                  panel_id: "nginx-reload-ok"
                 - name: reload_age_s
                   unit: "s"
                   query: 'time() - max(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds)'
+                  panel: true
+                  panel_title: "Time Since Config Reload"
+                  panel_id: "nginx-reload-age"
                 - name: cert_info_present
                   query: 'count(nginx_ingress_controller_ssl_certificate_info{host="$host"}) or vector(0)'
       - step: 3
@@ -592,11 +661,20 @@ common_alerts:
               queries:
                 - name: reload_ok_by_pod
                   query: 'min by (controller_pod) (nginx_ingress_controller_config_last_reload_successful)'
+                  panel: true
+                  panel_title: "Config Reload OK by Pod"
+                  panel_id: "nginx-reload-ok-by-pod"
                 - name: failed_pods
                   query: 'count(nginx_ingress_controller_config_last_reload_successful == 0) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Pods With Failed Reload"
+                  panel_id: "nginx-reload-failed-pods"
                 - name: reload_age_s
                   unit: "s"
                   query: 'time() - max(nginx_ingress_controller_config_last_reload_successful_timestamp_seconds)'
+                  panel: true
+                  panel_title: "Time Since Config Reload"
+                  panel_id: "nginx-reload-age"
       - step: 2
         title: "Check config-hash consistency and whether a recent change/oversize triggered the failure"
         description: >-
@@ -619,6 +697,9 @@ common_alerts:
               queries:
                 - name: config_hash_variants
                   query: 'count(count by (config_hash) (nginx_ingress_controller_config_hash)) or vector(0)'
+                  panel: true
+                  panel_title: "Distinct Config Hashes"
+                  panel_id: "nginx-config-hash-variants"
                 - name: check_success
                   query: 'min(nginx_ingress_controller_check_success) or vector(1)'
                 - name: success_metric
@@ -628,6 +709,9 @@ common_alerts:
                 - name: admission_render_duration_s
                   unit: "s"
                   query: 'max(nginx_ingress_controller_admission_render_duration)'
+                  panel: true
+                  panel_title: "Admission Render Duration"
+                  panel_id: "nginx-admission-render-duration"
           - tool_id: "tool.read_logs"
             description: "ingress-nginx controller logs filtered for reload/'nginx: [emerg]'/'configuration test failed'/invalid/duplicate/'unknown directive'/certificate/host signatures (the exact rejected directive)."
             params:
@@ -686,8 +770,14 @@ common_alerts:
                   query: 'max by (exported_namespace, ingress, type) (nginx_ingress_controller_orphan_ingress{exported_namespace="$exported_namespace",ingress="$ingress"} == 1)'
                 - name: orphan_persistence
                   query: 'avg_over_time(max by (exported_namespace, ingress) (nginx_ingress_controller_orphan_ingress{exported_namespace="$exported_namespace",ingress="$ingress"})[30m:])'
+                  panel: true
+                  panel_title: "Orphan State Persistence"
+                  panel_id: "nginx-orphan-persistence"
                 - name: orphan_total
                   query: 'count(max by (exported_namespace, ingress) (nginx_ingress_controller_orphan_ingress == 1)) or vector(0)'
+                  panel: true
+                  panel_title: "Orphaned Ingresses (cluster)"
+                  panel_id: "nginx-orphan-total"
       - step: 2
         title: "Measure current user impact — traffic to the Ingress and its 503 rate"
         description: >-
@@ -706,10 +796,16 @@ common_alerts:
               queries:
                 - name: ingress_rps
                   query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress"}[5m]))'
+                  panel: true
+                  panel_title: "Request Rate (ingress)"
+                  panel_id: "nginx-total-rps"
                 - name: ingress_503_rps
                   query: 'sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress",status="503"}[5m]))'
                 - name: status_split
                   query: 'sum by (status) (rate(nginx_ingress_controller_requests{exported_namespace="$exported_namespace",ingress="$ingress"}[5m]))'
+                  panel: true
+                  panel_title: "Requests by Status"
+                  panel_id: "nginx-status-split"
       - step: 3
         title: "Name the failing backend workload in the Ingress's namespace (KSM) and check config-reload"
         description: >-
@@ -797,10 +893,19 @@ common_alerts:
               queries:
                 - name: conns_by_state
                   query: 'sum by (controller_pod, state) (nginx_ingress_controller_nginx_process_connections)'
+                  panel: true
+                  panel_title: "Connections by State"
+                  panel_id: "nginx-conns-by-state"
                 - name: dropped_rate
                   query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="accepted"}[5m])) - sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="handled"}[5m]))'
+                  panel: true
+                  panel_title: "Connections Dropped/s"
+                  panel_id: "nginx-dropped-rate"
                 - name: accepted_rate
                   query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="accepted"}[5m]))'
+                  panel: true
+                  panel_title: "Connections Accepted/s"
+                  panel_id: "nginx-accepted-rate"
                 - name: handled_rate
                   query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_connections_total{state="handled"}[5m]))'
       - step: 2
@@ -824,6 +929,9 @@ common_alerts:
                 - name: ctrl_cpu_cores
                   unit: "cores"
                   query: 'sum by (controller_pod) (rate(nginx_ingress_controller_nginx_process_cpu_seconds_total[5m]))'
+                  panel: true
+                  panel_title: "Controller CPU (cores)"
+                  panel_id: "nginx-ctrl-cpu-cores"
                 - name: ctrl_mem_bytes
                   unit: "bytes"
                   query: 'max by (controller_pod) (nginx_ingress_controller_nginx_process_resident_memory_bytes)'
@@ -854,6 +962,9 @@ common_alerts:
                 - name: request_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))'
+                  panel: true
+                  panel_title: "Controller Request p99"
+                  panel_id: "nginx-controller-request-p99"
                 - name: error_pct
                   unit: "%"
                   query: '100 * sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m])) / sum(rate(nginx_ingress_controller_requests[5m]))'

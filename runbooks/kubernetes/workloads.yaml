@@ -69,13 +69,25 @@ common_alerts:
                   query: 'max(kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~"$workload-.*",container="$container",reason="ContainerCannotRun"})'
                 - name: restarts_15m
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[15m]))'
+                  panel: true
+                  panel_title: "Restarts (15m)"
+                  panel_id: "kube-restarts-15m"
                 - name: restarts_6h
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))'
+                  panel: true
+                  panel_title: "Restarts (6h)"
+                  panel_id: "kube-restarts-6h"
                 - name: restart_rate_per_min_5m
                   unit: "restarts/min"
                   query: 'max(rate(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))*60'
+                  panel: true
+                  panel_title: "Restart Rate /min"
+                  panel_id: "kube-restart-rate"
                 - name: container_ready
                   query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                  panel: true
+                  panel_title: "Container Ready"
+                  panel_id: "kube-container-ready"
                 - name: container_running
                   query: 'max(kube_pod_container_status_running{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
                 - name: pod_ready
@@ -103,6 +115,9 @@ common_alerts:
                 - name: mem_peak_pct_6h
                   unit: "%"
                   query: '100*max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                  panel: true
+                  panel_title: "Peak Memory vs Limit % (6h)"
+                  panel_id: "kube-mem-peak-pct-6h"
                 - name: mem_slope_mib_per_min
                   unit: "MiB/min"
                   query: 'max(deriv(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[2h]))*60/1024/1024'
@@ -207,9 +222,15 @@ common_alerts:
                   query: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
                 - name: restarts_6h
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))'
+                  panel: true
+                  panel_title: "Restarts (6h)"
+                  panel_id: "kube-restarts-6h"
                 - name: mem_working_set_mib
                   unit: "MiB"
                   query: 'max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/1024/1024'
+                  panel: true
+                  panel_title: "Memory Working Set"
+                  panel_id: "kube-mem-working-set"
                 - name: mem_limit_mib
                   unit: "MiB"
                   query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024'
@@ -219,15 +240,24 @@ common_alerts:
                 - name: mem_util_pct
                   unit: "%"
                   query: '100*max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                  panel: true
+                  panel_title: "Memory vs Limit %"
+                  panel_id: "kube-mem-util-pct"
                 - name: mem_peak_6h_mib
                   unit: "MiB"
                   query: 'max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/1024/1024'
                 - name: mem_peak_pct
                   unit: "%"
                   query: '100*max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[6h]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                  panel: true
+                  panel_title: "Peak Memory vs Limit % (6h)"
+                  panel_id: "kube-mem-peak-pct-6h"
                 - name: mem_slope_mib_per_min
                   unit: "MiB/min"
                   query: 'max(deriv(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"}[2h]))*60/1024/1024'
+                  panel: true
+                  panel_title: "Memory Growth Rate"
+                  panel_id: "kube-mem-slope"
                 - name: cpu_limit_cores
                   unit: "cores"
                   query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="cpu"})'
@@ -301,18 +331,30 @@ common_alerts:
                 - name: "cpu_throttle_pct"
                   unit: "%"
                   query: '100*sum(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/sum(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                  panel: true
+                  panel_title: "CPU Throttling %"
+                  panel_id: "kube-cpu-throttle-pct"
                 - name: "cpu_usage_cores"
                   unit: "cores"
                   query: 'sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                  panel: true
+                  panel_title: "CPU Usage (cores)"
+                  panel_id: "kube-cpu-usage-cores"
                 - name: "cpu_limit_cores"
                   unit: "cores"
                   query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                  panel: true
+                  panel_title: "CPU Limit (cores)"
+                  panel_id: "kube-cpu-limit-cores"
                 - name: "cpu_request_cores"
                   unit: "cores"
                   query: 'max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
                 - name: "cpu_usage_vs_limit_pct"
                   unit: "%"
                   query: '100*sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                  panel: true
+                  panel_title: "CPU Usage vs Limit %"
+                  panel_id: "kube-cpu-usage-vs-limit"
       - step: 2
         title: "Check node contention and workload impact"
         description: "Determine whether throttling is isolated to the container, caused by node CPU contention, or correlated with request/Kafka processing load."
@@ -323,7 +365,14 @@ common_alerts:
               queries:
                 - name: "node_cpu_pct"
                   unit: "%"
-                  query: '(100 - avg(rate(node_cpu_seconds_total{mode="idle",instance="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",node="$node"}[5m])) * 100)'
+                  # node-exporter in this fleet carries the node name on `rtf_node`
+                  # (`instance` is an ip:port and there is no plain `node` label), so the
+                  # rtf_node form is tried FIRST; the instance/node forms stay as fallbacks
+                  # for fleets that relabel node-exporter differently.
+                  query: '(100 - avg(rate(node_cpu_seconds_total{mode="idle",rtf_node="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",instance="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",node="$node"}[5m])) * 100)'
+                  panel: true
+                  panel_title: "Node CPU %"
+                  panel_id: "kube-node-cpu-pct"
                 - name: "request_rate_rps"
                   unit: "req/s"
                   query: 'sum(rate({__name__=~"http.server.request.duration_count|http.server.duration_count",service.name="$service"}[5m]))'
@@ -387,16 +436,28 @@ common_alerts:
               queries:
                 - name: waiting_image
                   query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"ImagePullBackOff|ErrImagePull|InvalidImageName"}[15m]))'
+                  panel: true
+                  panel_title: "Waiting: Image Pull"
+                  panel_id: "kube-waiting-image"
                 - name: waiting_config
                   query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"CreateContainerConfigError|CreateContainerError"}[15m]))'
                 - name: waiting_crashloop
                   query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="CrashLoopBackOff"}[15m]))'
+                  panel: true
+                  panel_title: "Waiting: CrashLoopBackOff"
+                  panel_id: "kube-waiting-crashloop"
                 - name: waiting_creating
                   query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason=~"ContainerCreating|PodInitializing"}[15m]))'
                 - name: container_ready
                   query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod="$pod",container="$container"})'
+                  panel: true
+                  panel_title: "Container Ready"
+                  panel_id: "kube-container-ready"
                 - name: restarts_15m
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod",container="$container"}[15m]))'
+                  panel: true
+                  panel_title: "Restarts (15m)"
+                  panel_id: "kube-restarts-15m"
       - step: 2
         title: "Check init containers and crash classification"
         description: >-
@@ -510,8 +571,14 @@ common_alerts:
                   query: 'max(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
                 - name: pod_ready_true
                   query: 'max(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="true"})'
+                  panel: true
+                  panel_title: "Pod Ready"
+                  panel_id: "kube-pod-ready"
                 - name: container_ready
                   query: 'min(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
+                  panel: true
+                  panel_title: "Container Ready"
+                  panel_id: "kube-container-ready"
                 - name: container_running
                   query: 'max(kube_pod_container_status_running{namespace="$namespace",pod=~"$workload-.*",container="$container"})'
                 - name: phase_running
@@ -520,6 +587,9 @@ common_alerts:
                   query: 'max(kube_pod_status_phase{namespace="$namespace",pod=~"$workload-.*",phase="Pending"})'
                 - name: restarts_15m
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[15m]))'
+                  panel: true
+                  panel_title: "Restarts (15m)"
+                  panel_id: "kube-restarts-15m"
                 - name: pod_age_min
                   unit: "min"
                   query: '(time()-max(kube_pod_created{namespace="$namespace",pod=~"$workload-.*"}))/60'
@@ -595,6 +665,9 @@ common_alerts:
                 - name: mem_util_pct
                   unit: "%"
                   query: '100*max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})'
+                  panel: true
+                  panel_title: "Memory vs Limit %"
+                  panel_id: "kube-mem-util-pct"
                 - name: cpu_throttle_pct
                   unit: "%"
                   query: '100*max(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))/max(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[5m]))'
@@ -630,6 +703,9 @@ common_alerts:
                 - name: deploy_unavailable
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Unavailable"
+                  panel_id: "kube-replicas-unavailable"
                 - name: deploy_gen_lag
                   query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"})-max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
                 - name: newest_rs_age_min
@@ -695,18 +771,30 @@ common_alerts:
                 - name: "replicas_desired"
                   unit: "pods"
                   query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Desired"
+                  panel_id: "kube-replicas-desired"
                 - name: "replicas_available"
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_available{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Available"
+                  panel_id: "kube-replicas-available"
                 - name: "replicas_ready"
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_ready{namespace="$namespace",deployment="$workload"})'
                 - name: "replicas_unavailable"
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Unavailable"
+                  panel_id: "kube-replicas-unavailable"
                 - name: "replicas_updated"
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_updated{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Updated"
+                  panel_id: "kube-replicas-updated"
                 - name: "generation_lag"
                   unit: ""
                   query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"}) - max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
@@ -733,6 +821,9 @@ common_alerts:
                 - name: "pods_not_ready"
                   unit: "pods"
                   query: 'sum(kube_pod_status_ready{namespace="$namespace",pod=~"$workload-.*",condition="false"})'
+                  panel: true
+                  panel_title: "Pods Not Ready"
+                  panel_id: "kube-pods-not-ready"
           - tool_id: "tool.capture_diagnostics"
             description: "Inspect deployment conditions and associated pod status."
       - step: 3
@@ -780,15 +871,27 @@ common_alerts:
               queries:
                 - name: gen_lag
                   query: 'max(kube_deployment_metadata_generation{namespace="$namespace",deployment="$workload"})-max(kube_deployment_status_observed_generation{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Generation Lag"
+                  panel_id: "kube-generation-lag"
                 - name: replicas_desired
                   unit: "pods"
                   query: 'max(kube_deployment_spec_replicas{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Desired"
+                  panel_id: "kube-replicas-desired"
                 - name: replicas_updated
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_updated{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Updated"
+                  panel_id: "kube-replicas-updated"
                 - name: replicas_available
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_available{namespace="$namespace",deployment="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Available"
+                  panel_id: "kube-replicas-available"
                 - name: replicas_unavailable
                   unit: "pods"
                   query: 'max(kube_deployment_status_replicas_unavailable{namespace="$namespace",deployment="$workload"})'
@@ -799,6 +902,9 @@ common_alerts:
                 - name: newest_rs_age_min
                   unit: "min"
                   query: '(time()-max(kube_replicaset_created{namespace="$namespace"} * on(replicaset,namespace) group_left(owner_name) kube_replicaset_owner{namespace="$namespace",owner_name="$workload"}))/60'
+                  panel: true
+                  panel_title: "Newest ReplicaSet Age"
+                  panel_id: "kube-newest-rs-age"
       - step: 2
         title: "Classify why the new-revision pods are not becoming available"
         description: >-
@@ -925,18 +1031,33 @@ common_alerts:
                 - name: "replicas_desired"
                   unit: "pods"
                   query: 'max(kube_statefulset_replicas{namespace="$namespace",statefulset="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Desired"
+                  panel_id: "kube-replicas-desired"
                 - name: "replicas_ready"
                   unit: "pods"
                   query: 'max(kube_statefulset_status_replicas_ready{namespace="$namespace",statefulset="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Ready"
+                  panel_id: "kube-replicas-ready"
                 - name: "replicas_current"
                   unit: "pods"
                   query: 'max(kube_statefulset_status_replicas_current{namespace="$namespace",statefulset="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Current"
+                  panel_id: "kube-replicas-current"
                 - name: "replicas_updated"
                   unit: "pods"
                   query: 'max(kube_statefulset_status_replicas_updated{namespace="$namespace",statefulset="$workload"})'
+                  panel: true
+                  panel_title: "Replicas Updated"
+                  panel_id: "kube-replicas-updated"
                 - name: "generation_lag"
                   unit: ""
                   query: 'max(kube_statefulset_metadata_generation{namespace="$namespace",statefulset="$workload"}) - max(kube_statefulset_status_observed_generation{namespace="$namespace",statefulset="$workload"})'
+                  panel: true
+                  panel_title: "Generation Lag"
+                  panel_id: "kube-generation-lag"
       - step: 2
         title: "Classify the failing ordinal pod(s)"
         description: >-
@@ -1060,15 +1181,27 @@ common_alerts:
                 - name: "ds_desired"
                   unit: "pods"
                   query: 'max(kube_daemonset_status_desired_number_scheduled{namespace="$namespace",daemonset="$workload"})'
+                  panel: true
+                  panel_title: "Desired Scheduled"
+                  panel_id: "kube-ds-desired"
                 - name: "ds_scheduled"
                   unit: "pods"
                   query: 'max(kube_daemonset_status_current_number_scheduled{namespace="$namespace",daemonset="$workload"})'
+                  panel: true
+                  panel_title: "Currently Scheduled"
+                  panel_id: "kube-ds-scheduled"
                 - name: "ds_ready"
                   unit: "pods"
                   query: 'max(kube_daemonset_status_number_ready{namespace="$namespace",daemonset="$workload"})'
+                  panel: true
+                  panel_title: "Ready"
+                  panel_id: "kube-ds-ready"
                 - name: "ds_unavailable"
                   unit: "pods"
                   query: 'max(kube_daemonset_status_number_unavailable{namespace="$namespace",daemonset="$workload"})'
+                  panel: true
+                  panel_title: "Unavailable"
+                  panel_id: "kube-ds-unavailable"
                 - name: "ds_misscheduled"
                   unit: "pods"
                   query: 'max(kube_daemonset_status_number_misscheduled{namespace="$namespace",daemonset="$workload"})'
@@ -1086,6 +1219,9 @@ common_alerts:
                 - name: "nodes_not_ready"
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="Ready",status="false"})'
+                  panel: true
+                  panel_title: "Nodes Not Ready"
+                  panel_id: "kube-nodes-not-ready"
                 - name: "nodes_unschedulable"
                   unit: "nodes"
                   query: 'sum(kube_node_spec_unschedulable)'
@@ -1121,21 +1257,36 @@ common_alerts:
                 - name: "waiting_image_pull_backoff"
                   unit: ""
                   query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="ImagePullBackOff"})'
+                  panel: true
+                  panel_title: "Waiting: ImagePullBackOff"
+                  panel_id: "kube-waiting-imagepullbackoff"
                 - name: "waiting_err_image_pull"
                   unit: ""
                   query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="ErrImagePull"})'
+                  panel: true
+                  panel_title: "Waiting: ErrImagePull"
+                  panel_id: "kube-waiting-errimagepull"
                 - name: "waiting_invalid_image"
                   unit: ""
                   query: 'max(kube_pod_container_status_waiting_reason{namespace="$namespace",pod="$pod",container="$container",reason="InvalidImageName"})'
                 - name: "pod_phase_pending"
                   unit: ""
                   query: 'max(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Pending"})'
+                  panel: true
+                  panel_title: "Pod Pending"
+                  panel_id: "kube-pod-pending"
                 - name: "container_ready"
                   unit: ""
                   query: 'max(kube_pod_container_status_ready{namespace="$namespace",pod="$pod",container="$container"})'
+                  panel: true
+                  panel_title: "Container Ready"
+                  panel_id: "kube-container-ready"
                 - name: "restarts_6h"
                   unit: ""
                   query: 'max(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod",container="$container"}[6h]))'
+                  panel: true
+                  panel_title: "Restarts (6h)"
+                  panel_id: "kube-restarts-6h"
       - step: 2
         title: "Determine pull failure mode"
         description: "Differentiate auth failure, missing tag, registry outage, or DNS/network issue. The pod events (Failed to pull image: manifest unknown / unauthorized / timeout) are the primary RCA artifact."
@@ -1175,12 +1326,24 @@ common_alerts:
               queries:
                 - name: failed
                   query: 'max(kube_job_status_failed{namespace="$namespace",job_name="$job"})'
+                  panel: true
+                  panel_title: "Failed Pods"
+                  panel_id: "kube-job-failed"
                 - name: succeeded
                   query: 'max(kube_job_status_succeeded{namespace="$namespace",job_name="$job"})'
+                  panel: true
+                  panel_title: "Succeeded Pods"
+                  panel_id: "kube-job-succeeded"
                 - name: active
                   query: 'max(kube_job_status_active{namespace="$namespace",job_name="$job"})'
+                  panel: true
+                  panel_title: "Active Pods"
+                  panel_id: "kube-job-active"
                 - name: spec_completions
                   query: 'max(kube_job_spec_completions{namespace="$namespace",job_name="$job"})'
+                  panel: true
+                  panel_title: "Spec Completions"
+                  panel_id: "kube-job-completions"
                 - name: spec_parallelism
                   query: 'max(kube_job_spec_parallelism{namespace="$namespace",job_name="$job"})'
                 - name: spec_backoff_limit
@@ -1222,6 +1385,9 @@ common_alerts:
                   query: 'max(max_over_time(kube_pod_container_status_waiting_reason{namespace="$namespace",pod=~"$job-.*",reason=~"CreateContainerConfigError|CreateContainerError"}[30m]))'
                 - name: restarts_30m
                   query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$job-.*"}[30m]))'
+                  panel: true
+                  panel_title: "Restarts (30m)"
+                  panel_id: "kube-restarts-30m"
       - step: 3
         title: "Capture Job conditions and pod events"
         description: "Confirm the metric pack against the Job/pod events — the Job's Failed condition reason (BackoffLimitExceeded, DeadlineExceeded/ActiveDeadlineSeconds), and, if any pod still exists, 'Failed to pull image', CreateContainerConfigError naming the missing object, FailedScheduling, and the last-state termination block (reason, exit code)."
@@ -1259,18 +1425,129 @@ common_alerts:
       - "Name the concrete failure from the logs (the exception, missing config/secret, failed dependency, bad input, or OOM size) — not a generic 'job failed'."
       - "If this Job is driven by a CronJob, confirm whether prior runs failed the same way (systemic) or this is a one-off (bad input / transient dependency) before re-running."
 
-  - name: "KubeCronJobSuspended"  # need to reproduce
-    patterns: ["KubeCronJobSuspended", "cronjob suspended", "spec.suspend"]
+  - name: "KubeCronJobSuspended"
+    patterns:
+      [
+        "KubeCronJobSuspended",
+        "cronjob suspended",
+        "cronjob not scheduling",
+        "spec.suspend",
+      ]
     priority: P3
     diagnostic_steps:
       - step: 1
-        title: "Confirm intended suspension"
-        description: "Verify whether suspension is planned maintenance or accidental state drift."
+        title: "Confirm the suspension and how long scheduling has actually been stopped"
+        description: >-
+          `spec.suspend=true` stops the controller creating new Jobs; running Jobs are NOT
+          killed. The question is never "is it suspended" (the alert says so) but "was that
+          intended, and what has been missed". Report against the CronJob named in the alert
+          ($cronjob). Interpret:
+          cj_suspended == 1 => suspension confirmed on the object.
+          cj_suspended == 0 => the CronJob is NOT suspended any more — someone already resumed
+            it, or the alert is stale. Say so and check cj_min_since_last to confirm it has
+            since run, instead of recommending a resume.
+          min_since_last_schedule >> the schedule interval (from cj_schedule) => real missed
+            runs; multiply out how many runs were skipped and name the interval. This is the
+            business impact of the suspension.
+          min_since_last_schedule <= one interval => suspended only moments ago; nothing missed
+            yet — the fix is cheap if unintended.
+          cj_active > 0 => a Job from before the suspension is STILL running; do not treat the
+            pipeline as fully stopped, and do not delete the CronJob while it runs.
+          cj_min_to_next negative => the next scheduled time has passed with no Job created —
+            consistent with the suspension (or, if not suspended, a controller problem).
         tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Suspend flag, minutes since the last schedule and until the next, active Jobs, and the CronJob's own schedule/concurrency policy (lifted into labels so the RCA can quote the cron expression)."
+            params:
+              queries:
+                - name: cj_suspended
+                  query: 'max(kube_cronjob_spec_suspend{namespace="$namespace",cronjob="$cronjob"})'
+                  panel: true
+                  panel_title: "Suspended"
+                  panel_id: "kube-cronjob-suspended"
+                - name: cj_min_since_last_schedule
+                  unit: "min"
+                  query: '(time() - max(kube_cronjob_status_last_schedule_time{namespace="$namespace",cronjob="$cronjob"})) / 60'
+                  panel: true
+                  panel_title: "Minutes Since Last Schedule"
+                  panel_id: "kube-cronjob-min-since-last"
+                - name: cj_min_to_next_schedule
+                  unit: "min"
+                  query: '(max(kube_cronjob_next_schedule_time{namespace="$namespace",cronjob="$cronjob"}) - time()) / 60'
+                  panel: true
+                  panel_title: "Minutes to Next Schedule"
+                  panel_id: "kube-cronjob-min-to-next"
+                - name: cj_active
+                  unit: "jobs"
+                  query: 'max(kube_cronjob_status_active{namespace="$namespace",cronjob="$cronjob"})'
+                  panel: true
+                  panel_title: "Active Jobs"
+                  panel_id: "kube-cronjob-active"
+                # `by (schedule, concurrency_policy)` lifts the cron expression into the result
+                # labels so the RCA can state the real interval instead of guessing it.
+                - name: cj_schedule
+                  query: 'max by (schedule, concurrency_policy) (kube_cronjob_info{namespace="$namespace",cronjob="$cronjob"})'
+      - step: 2
+        title: "Decide intentional vs accidental from the Job history and the blast radius"
+        description: >-
+          A deliberate suspension (maintenance, migration, cost) looks different from drift.
+          Interpret:
+          cj_jobs_failed_24h > 0 AND cj_jobs_succeeded_24h == 0 => the CronJob was very likely
+            suspended BECAUSE it was failing — resuming it without fixing the Job will just
+            resume the failures. Investigate the failed Job first (KubeJobFailed).
+          cj_jobs_succeeded_24h > 0 => it was healthy right up to the suspension — accidental
+            drift or planned maintenance is far more likely than a deliberate stop for failure.
+          cj_ns_suspended >> 1 or cj_cluster_suspended >> 1 => a batch of CronJobs was suspended
+            together (namespace freeze, migration, cost exercise) — almost certainly deliberate;
+            treat as expected state and confirm with the owner rather than resuming unilaterally.
+            These counts are label-free blast-radius scalars ONLY — keep reporting the alert's
+            own CronJob by name.
+          Whether the suspension is intentional CANNOT be proven from metrics — say which
+          evidence points which way and ask the owner; do not assert intent.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Failed/succeeded Jobs spawned by this CronJob in the last 24h, and how many other CronJobs are suspended in the namespace and cluster."
+            params:
+              queries:
+                # CronJob-spawned Jobs are named <cronjob>-<timestamp>, so job_name=~"$cronjob-.*"
+                # attributes Job outcomes back to this CronJob.
+                - name: cj_jobs_failed_24h
+                  unit: "jobs"
+                  query: 'sum(max_over_time(kube_job_status_failed{namespace="$namespace",job_name=~"$cronjob-.*"}[24h])) or vector(0)'
+                  panel: true
+                  panel_title: "Jobs Failed (24h)"
+                  panel_id: "kube-cronjob-jobs-failed-24h"
+                - name: cj_jobs_succeeded_24h
+                  unit: "jobs"
+                  query: 'sum(max_over_time(kube_job_status_succeeded{namespace="$namespace",job_name=~"$cronjob-.*"}[24h])) or vector(0)'
+                  panel: true
+                  panel_title: "Jobs Succeeded (24h)"
+                  panel_id: "kube-cronjob-jobs-succeeded-24h"
+                - name: cj_ns_suspended
+                  unit: "cronjobs"
+                  query: 'count(kube_cronjob_spec_suspend{namespace="$namespace"} == 1) or vector(0)'
+                - name: cj_cluster_suspended
+                  unit: "cronjobs"
+                  query: 'count(kube_cronjob_spec_suspend == 1) or vector(0)'
           - tool_id: "tool.capture_diagnostics"
-            description: "Inspect cronjob spec and recent schedule history."
-    remediation: []
-    escalation: "Service owner if missed schedules impact downstream SLAs."
+            description: "Collect the CronJob object (spec.suspend, schedule, concurrencyPolicy, last-applied annotation) and its recent Job history."
+    remediation:
+      - action: "Resume the CronJob (set spec.suspend=false)"
+        description: >-
+          ONLY if step 2 showed the CronJob was healthy before suspension (cj_jobs_succeeded_24h
+          > 0, no failures) and the owner confirms the stop was unintended. Do NOT resume when
+          cj_jobs_failed_24h > 0 with no successes — fix the failing Job first, or the failures
+          resume with it. Also do not resume when a namespace-wide freeze is in effect
+          (cj_ns_suspended >> 1) without the owner's go-ahead.
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+    escalation: "Service owner — only they can confirm whether the suspension was planned and whether the missed runs need a manual backfill."
+    follow_up: >-
+      Metrics cannot show WHO suspended the CronJob or why; that lives in the object's
+      annotations / audit log / change record. Forge reports the state, the missed-run count and
+      the pre-suspension health, and says intent is unproven rather than inferring it. There is
+      also no metric for a backfill requirement — whether skipped runs must be re-run is a
+      business decision for the owner.
 
   - name: "KubePodEvicted"
     patterns: ["KubePodEvicted", "pod evicted", "evicted", "node pressure"]
@@ -1300,6 +1577,9 @@ common_alerts:
               queries:
                 - name: evicted_reason
                   query: 'max(max_over_time(kube_pod_status_reason{namespace="$namespace",pod="$pod",reason="Evicted"}[6h]))'
+                  panel: true
+                  panel_title: "Evicted"
+                  panel_id: "kube-pod-evicted"
                 - name: pod_phase_failed
                   query: 'max(max_over_time(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Failed"}[6h]))'
                 - name: qos_besteffort
@@ -1311,6 +1591,9 @@ common_alerts:
                 - name: mem_peak_30m_mib
                   unit: "MiB"
                   query: 'max(max_over_time(container_memory_working_set_bytes{namespace="$namespace",pod="$pod",container!="POD"}[30m]))/1024/1024'
+                  panel: true
+                  panel_title: "Peak Memory (30m)"
+                  panel_id: "kube-mem-peak-30m"
       - step: 2
         title: "Identify the node pressure that caused it (and the blast radius)"
         description: >-
@@ -1336,9 +1619,15 @@ common_alerts:
                 - name: nodes_mem_pressure
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="MemoryPressure",status="true"})'
+                  panel: true
+                  panel_title: "Nodes Under Memory Pressure"
+                  panel_id: "kube-nodes-mem-pressure"
                 - name: nodes_disk_pressure
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="DiskPressure",status="true"})'
+                  panel: true
+                  panel_title: "Nodes Under Disk Pressure"
+                  panel_id: "kube-nodes-disk-pressure"
                 - name: nodes_pid_pressure
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="PIDPressure",status="true"})'
@@ -1354,6 +1643,9 @@ common_alerts:
                 - name: evicted_cluster_6h
                   unit: "pods"
                   query: 'sum(max_over_time(kube_pod_status_reason{reason="Evicted"}[6h]))'
+                  panel: true
+                  panel_title: "Cluster Evictions (6h)"
+                  panel_id: "kube-evicted-cluster-6h"
       - step: 3
         title: "Capture node pressure detail and pod eviction events"
         description: "Confirm the metric pack against node conditions and the pod's eviction event — the kubelet message names the exact trigger (e.g. 'The node was low on resource: memory/ephemeral-storage', 'Pod ephemeral local storage usage exceeds the total limit of containers'), the node, and the QoS-based victim selection."
@@ -1425,13 +1717,22 @@ common_alerts:
               queries:
                 - name: phase_pending
                   query: 'max(kube_pod_status_phase{namespace="$namespace",pod="$pod",phase="Pending"})'
+                  panel: true
+                  panel_title: "Pod Pending"
+                  panel_id: "kube-pod-pending"
                 - name: age_min
                   unit: "min"
                   query: '(time()-max(kube_pod_created{namespace="$namespace",pod="$pod"}))/60'
+                  panel: true
+                  panel_title: "Pod Age"
+                  panel_id: "kube-pod-age"
                 - name: scheduled_false
                   query: 'max(kube_pod_status_scheduled{namespace="$namespace",pod="$pod",condition="false"})'
                 - name: scheduled_true
                   query: 'max(kube_pod_status_scheduled{namespace="$namespace",pod="$pod",condition="true"})'
+                  panel: true
+                  panel_title: "Pod Scheduled"
+                  panel_id: "kube-pod-scheduled"
                 - name: unschedulable
                   query: 'max(kube_pod_status_unschedulable{namespace="$namespace",pod="$pod"})'
                 - name: waiting_creating
@@ -1468,12 +1769,18 @@ common_alerts:
                 - name: nodes_ready
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="Ready",status="true"})'
+                  panel: true
+                  panel_title: "Nodes Ready"
+                  panel_id: "kube-nodes-ready"
                 - name: nodes_notready
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition="Ready",status!="true"})'
                 - name: nodes_unschedulable
                   unit: "nodes"
                   query: 'sum(kube_node_spec_unschedulable)'
+                  panel: true
+                  panel_title: "Nodes Unschedulable"
+                  panel_id: "kube-nodes-unschedulable"
                 - name: nodes_pressure
                   unit: "nodes"
                   query: 'sum(kube_node_status_condition{condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"})'
@@ -1519,44 +1826,450 @@ common_alerts:
       - "Name the exact scheduling rejection from the FailedScheduling event (which resource, taint, affinity, or unbound PVC) — not a generic 'pending'."
       - "If unschedulable due to resource requests, reconcile the request against real node allocatable; if due to taints/affinity, confirm whether the constraint or the node pool is wrong."
 
-  - name: "KubePersistentVolumeError"    # need to reproduce
-    patterns: ["KubePersistentVolumeError", "persistent volume failed", "volume lost", "phase pending"]
+  - name: "KubePersistentVolumeError"
+    patterns:
+      [
+        "KubePersistentVolumeError",
+        "KubePersistentVolumeFailed",
+        "persistent volume failed",
+        "volume lost",
+        "pvc pending",
+      ]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Check PV lifecycle state"
-        description: "Inspect PV phase and storage backend errors from CSI/controller logs."
+        title: "Establish which lifecycle state the volume is actually in"
+        description: >-
+          The phase decides everything downstream — each one has a different cause and a
+          different fix, so name the phase before proposing anything. pv_phase lifts the phase
+          into the result labels, so report the phase by NAME for the PV in the alert
+          ($persistentvolume). Interpret:
+          phase Failed => the volume's automatic reclaim (delete/recycle) FAILED; the backing
+            disk may still exist and still cost money. Data is usually intact — do NOT delete
+            the PV before the storage team confirms the backend state.
+          phase Lost => the PV's backing storage is GONE (deleted out-of-band, subscription /
+            resource-group / disk removed). Any bound PVC is unusable and its data is
+            unrecoverable from k8s — this is a data-loss event, escalate immediately.
+          phase Pending => the volume never finished provisioning (CSI driver error, quota,
+            zone/topology mismatch, bad StorageClass) — no data at risk yet, but nothing can
+            mount it.
+          phase Released => the PVC was deleted and the reclaim policy is Retain; the volume is
+            holding data intentionally and is NOT an error. If Released is the only phase set,
+            say the alert reflects normal Retain behaviour rather than a fault.
+          phase Available/Bound => the PV is healthy NOW; the alert has cleared. Say so instead
+            of manufacturing a fault.
         tool_calls:
-          - tool_id: "tool.capture_diagnostics"   # need to add support for pv
-            description: "Collect PV state, bound PVC, and storage event trail."
-    remediation: []
-    escalation: "Storage/platform team immediately when PV enters Failed or Lost state."
+          - tool_id: "tool.query_metrics"
+            description: "The PV's current phase (name lifted into labels), its capacity, storage class and bound claim; plus whether the paired PVC is itself Pending or Lost."
+            params:
+              queries:
+                # `== 1` keeps only the ACTIVE phase and `by (phase)` lifts its name, so the RCA
+                # can state the phase instead of reading a bare 0/1.
+                - name: pv_phase
+                  query: 'max by (phase) (kube_persistentvolume_status_phase{persistentvolume="$persistentvolume"} == 1)'
+                  panel: true
+                  panel_title: "PV Phase"
+                  panel_id: "kube-pv-phase"
+                - name: pv_capacity_gib
+                  unit: "GiB"
+                  query: 'max(kube_persistentvolume_capacity_bytes{persistentvolume="$persistentvolume"}) / 1024 / 1024 / 1024'
+                  panel: true
+                  panel_title: "PV Capacity"
+                  panel_id: "kube-pv-capacity"
+                # claim_ref names the PVC (and its namespace) this PV belongs to — that is how
+                # the RCA can say WHICH workload's storage is affected.
+                - name: pv_claim_ref
+                  query: 'max by (name, claim_namespace) (kube_persistentvolume_claim_ref{persistentvolume="$persistentvolume"})'
+                - name: pv_storageclass
+                  query: 'max by (storageclass) (kube_persistentvolume_info{persistentvolume="$persistentvolume"})'
+                - name: pvc_phase
+                  query: 'max by (phase, persistentvolumeclaim) (kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"} == 1)'
+                  panel: true
+                  panel_title: "PVC Phase"
+                  panel_id: "kube-pvc-phase"
+      - step: 2
+        title: "Find the impact — is a workload blocked on this volume right now"
+        description: >-
+          A broken PV only matters through the pods that need it. Interpret:
+          pods_pending > 0 in the claim's namespace => pods cannot start because the volume will
+            not bind/mount; this is live impact — name the pending workload.
+          pods_pending == 0 AND phase is Failed/Released => nothing is waiting; the problem is
+            orphaned capacity and cost, not availability. Lower the urgency accordingly and say
+            so rather than implying an outage.
+          container_ready == 0 for the mounting workload => the pod exists but cannot become
+            ready — typically a mount/attach failure rather than a scheduling failure.
+          cluster_pv_failed / cluster_pv_pending >> 1 => a STORAGE-BACKEND or CSI-driver level
+            problem, not one bad volume (driver crashloop, quota exhausted, zone outage) —
+            escalate as a platform incident. Label-free blast-radius counts ONLY; keep naming
+            the alert's own PV.
+          cluster_pvc_lost > 0 => other claims have lost their storage too; treat as a
+            data-loss incident with a wider scope.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Pods stuck Pending in the claim's namespace, readiness of the mounting workload, and cluster-wide counts of Failed/Pending PVs and Lost PVCs."
+            params:
+              queries:
+                - name: pods_pending
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$namespace",phase="Pending"}) or vector(0)'
+                  panel: true
+                  panel_title: "Pods Pending in Namespace"
+                  panel_id: "kube-pv-pods-pending"
+                - name: container_ready
+                  query: 'min(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*"})'
+                - name: cluster_pv_failed
+                  unit: "volumes"
+                  query: 'count(kube_persistentvolume_status_phase{phase="Failed"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Failed PVs (cluster)"
+                  panel_id: "kube-pv-failed-cluster"
+                - name: cluster_pv_pending
+                  unit: "volumes"
+                  query: 'count(kube_persistentvolume_status_phase{phase="Pending"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Pending PVs (cluster)"
+                  panel_id: "kube-pv-pending-cluster"
+                - name: cluster_pvc_lost
+                  unit: "claims"
+                  query: 'count(kube_persistentvolumeclaim_status_phase{phase="Lost"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Lost PVCs (cluster)"
+                  panel_id: "kube-pvc-lost-cluster"
+                - name: cluster_pvc_pending
+                  unit: "claims"
+                  query: 'count(kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1) or vector(0)'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect the PV and its PVC, the StorageClass/CSI driver, and the volume attach/mount events that explain the phase."
+      - step: 3
+        title: "Read the blocked workload's logs and mount errors"
+        description: >-
+          For Pending/mount failures the real cause is in the events and the kubelet's mount
+          error — quota exceeded, topology/zone mismatch, driver not found, attach timeout,
+          multi-attach on a ReadWriteOnce volume. Quote the actual error. If the logs and events
+          are clean, say the failure is on the storage-backend side and not visible from the
+          cluster, rather than guessing a cause.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Recent errors from the workload waiting on this volume (mount/attach failures, permission denied, multi-attach)."
+    remediation:
+      - action: "Re-provision or re-bind the volume"
+        description: >-
+          ONLY for phase Pending where step 3 identified a fixable provisioning cause (wrong
+          StorageClass, zone/topology mismatch, exhausted quota): correct the PVC's storageClass
+          / size / topology so a new volume can be provisioned. Never apply this to a Failed or
+          Lost volume — that risks destroying recoverable data.
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "Restart the workload blocked on the mount"
+        description: >-
+          ONLY when the volume itself is healthy (phase Bound/Available) and step 3 showed a
+          stale attach or multi-attach that a fresh pod would clear. Pointless while the PV is
+          Failed/Lost/Pending — the new pod will block on the same volume.
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: >-
+      Page storage/platform immediately for phase Lost (data loss) or when
+      cluster_pv_failed/cluster_pv_pending indicate a CSI-driver or backend-wide failure. PV
+      deletion and backend disk recovery must be done by the storage owner, never automatically.
+    follow_up: >-
+      KSM exposes the PV's PHASE but not the underlying CSI/cloud error string — the reason a
+      reclaim failed or a provision was rejected lives in the CSI controller logs and the cloud
+      provider's API, which forge does not read today. The runbook narrows to the phase, the
+      affected claim/workload and the blast radius, and says the backend reason is unavailable
+      instead of inventing one.
 
   - name: "KubePVCFillingUp"
-    patterns: ["KubePVCFillingUp", "pvc filling up", "volume low free space"]
+    patterns:
+      [
+        "KubePVCFillingUp",
+        "KubePersistentVolumeFillingUp",
+        "pvc filling up",
+        "volume low free space",
+      ]
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Confirm free space trend"
-        description: "Validate sustained growth and identify consuming workloads."
+        title: "Confirm the fill level on THIS claim and measure the trend"
+        description: >-
+          A PVC alert is about ONE volume — report against the claim named in the alert
+          ($persistentvolumeclaim), never the cluster's worst volume. used_pct is the current
+          fill; the trend decides whether this is an emergency or a capacity plan.
+          NOTE: fill level comes from kubelet_volume_stats_* (scraped from the node that mounts
+          the volume), so a volume whose pod is NOT running has NO samples — if every value is
+          n/a, say the volume is currently unmounted rather than reporting 0%. Interpret:
+          used_pct >= 97 AND hours_to_full < 6 => imminent exhaustion; writes will start failing
+            (read-only remount / app write errors) — expand now, do not wait for cleanup.
+          used_pct 85-97 AND fill_rate_mib_per_hour > 0 => steady growth; use hours_to_full to
+            decide expand-now vs schedule. Report the projected exhaustion time explicitly.
+          fill_rate_mib_per_hour <= 0 => NOT filling; the volume is simply sized close to its
+            working set. A one-off cleanup will not help — right-size the request instead.
+          growth_6h_gib large AND fill_rate high => a recent step change (log burst, retention
+            change, backup/dump left behind, WAL/segment accumulation), not organic growth —
+            look for what started writing; cleanup is likely to reclaim real space.
+          inodes_used_pct > 85 while used_pct is low => INODE exhaustion, not byte exhaustion —
+            millions of small files; expanding bytes will NOT fix it, the fix is deleting files
+            (or a filesystem with more inodes).
         tool_calls:
-          - tool_id: "tool.fetch_metrics"    # need to handle separately pvc thing
-            description: "Inspect PVC consumption and associated pod disk usage."
-    remediation: []
-    escalation: "Service owner and storage team if growth trend indicates near-term exhaustion."
+          - tool_id: "tool.query_metrics"
+            description: "Current fill level, free/used/total bytes, the 6h fill rate, projected hours-to-full, and inode usage for the alerting PVC."
+            params:
+              queries:
+                - name: used_pct
+                  unit: "%"
+                  query: '100 * max(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / max(kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"})'
+                  panel: true
+                  panel_title: "Volume Used %"
+                  panel_id: "kube-pvc-used-pct"
+                - name: available_gib
+                  unit: "GiB"
+                  query: 'max(kubelet_volume_stats_available_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Free Space"
+                  panel_id: "kube-pvc-available"
+                - name: used_gib
+                  unit: "GiB"
+                  query: 'max(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                - name: capacity_gib
+                  unit: "GiB"
+                  query: 'max(kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                # deriv() over 6h is the fill SLOPE; `max by (persistentvolumeclaim)` keeps the
+                # claim name in the result labels so the RCA can echo WHICH volume is filling.
+                - name: fill_rate_mib_per_hour
+                  unit: "MiB/h"
+                  query: 'max by (persistentvolumeclaim) (deriv(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}[6h])) * 3600 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Fill Rate"
+                  panel_id: "kube-pvc-fill-rate"
+                # clamp_min(...,1) keeps the projection finite when the slope is flat/negative;
+                # a huge value therefore means "not filling", not "about to fill".
+                - name: hours_to_full
+                  unit: "h"
+                  query: '(max(kubelet_volume_stats_available_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / clamp_min(max(deriv(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}[6h])), 1)) / 3600'
+                  panel: true
+                  panel_title: "Projected Hours to Full"
+                  panel_id: "kube-pvc-hours-to-full"
+                - name: growth_6h_gib
+                  unit: "GiB"
+                  query: '(max(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) - max(min_over_time(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}[6h]))) / 1024 / 1024 / 1024'
+                - name: inodes_used_pct
+                  unit: "%"
+                  query: '100 * max(kubelet_volume_stats_inodes_used{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / max(kubelet_volume_stats_inodes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"})'
+                  panel: true
+                  panel_title: "Inodes Used %"
+                  panel_id: "kube-pvc-inodes-used-pct"
+      - step: 2
+        title: "Identify what the volume is attached to, and whether expansion is possible"
+        description: >-
+          Name the workload that owns the claim — the fix (clean up vs expand vs rotate logs)
+          depends on what writes to it. Interpret:
+          mounting_pods == 0 => nothing currently mounts the claim; the data is stale/orphaned
+            and reclaiming it may be safe — verify with the owner before deleting anything.
+          mounting_pods >= 1 => report the owning workload by name; a StatefulSet volume
+            (claim name ends in -<ordinal>) must be expanded per-replica.
+          requested_gib > capacity_gib => an expansion is already in flight (the PVC request was
+            raised, the filesystem has not grown yet) — the volume may resize on its own; check
+            before requesting another expansion.
+          pvc_phase_bound == 0 => the claim is NOT Bound; this is a claim/PV problem rather than
+            a fill problem — follow KubePersistentVolumeError instead.
+          ns_pvcs_over_85 / cluster_pvcs_over_85 >> 1 => many volumes are filling together;
+            suspect a shared cause (retention/backup policy, log-level change) rather than one
+            runaway workload. These counts are label-free blast-radius scalars ONLY — never
+            rename the alert's object to whatever the cluster's worst volume is.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Requested size vs actual capacity (in-flight expansion), claim bind state, how many pods mount the claim, and how many other volumes are also above 85%."
+            params:
+              queries:
+                - name: requested_gib
+                  unit: "GiB"
+                  query: 'max(kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Requested Size"
+                  panel_id: "kube-pvc-requested"
+                - name: pvc_phase_bound
+                  query: 'max(kube_persistentvolumeclaim_status_phase{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim",phase="Bound"})'
+                - name: mounting_pods
+                  unit: "pods"
+                  query: 'count(kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) or vector(0)'
+                - name: ns_pvcs_over_85
+                  unit: "volumes"
+                  query: 'count(100 * kubelet_volume_stats_used_bytes{namespace="$namespace"} / kubelet_volume_stats_capacity_bytes{namespace="$namespace"} > 85) or vector(0)'
+                - name: cluster_pvcs_over_85
+                  unit: "volumes"
+                  query: 'count(100 * kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 85) or vector(0)'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect the PVC object, its StorageClass (allowVolumeExpansion) and the owning workload spec."
+      - step: 3
+        title: "Read the owning workload's logs for write-amplifying behaviour"
+        description: >-
+          Only useful when step 1 showed a recent step change in growth. Look for retention or
+          rotation failures, repeated large writes, backup/dump jobs, or "no space left on
+          device" errors already appearing. If the logs are clean, say so — do not speculate.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Recent errors from the workload mounting this claim (disk-full errors, rotation/retention failures)."
+    remediation:
+      - action: "Expand the PersistentVolumeClaim"
+        description: >-
+          ONLY if step 1 showed sustained growth (fill_rate > 0) and step 2 confirmed the
+          StorageClass has allowVolumeExpansion=true and no expansion is already in flight
+          (requested_gib == capacity_gib). Raise spec.resources.requests.storage; expansion is
+          ONE-WAY (a PVC cannot be shrunk). For a StatefulSet, every replica's claim must be
+          expanded. Does NOT apply when inodes_used_pct is the constraint.
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "Reclaim space on the volume"
+        description: >-
+          ONLY if step 1/3 identified reclaimable data (a step change in growth, rotation
+          failure, or inode exhaustion where expansion cannot help). Delete/rotate the
+          identified files or lower the application's retention — not a k8s operation, so it is
+          suggestion-only: hand the owning team the file/directory evidence from step 3.
+        tool_id: ""
+        requires_approval: false
+    escalation: "Storage/platform team when the StorageClass does not allow expansion, or when hours_to_full < 6."
+    follow_up: >-
+      Fill level is available only while the volume is MOUNTED (kubelet_volume_stats_*), so an
+      unmounted claim reports n/a rather than its real usage. Per-directory attribution (WHICH
+      path grew) needs an in-pod `du`, which forge cannot run today — the runbook narrows to the
+      owning workload and the growth rate, and says so instead of guessing the directory.
 
   - name: "KubePVCCriticalFull"
-    patterns: ["KubePVCCriticalFull", "pvc critical full", "disk nearly full"]
+    patterns:
+      [
+        "KubePVCCriticalFull",
+        "pvc critical full",
+        "volume critically full",
+        "disk nearly full",
+      ]
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Stabilize critical storage usage"
-        description: "Identify immediate cleanup or emergency expansion options."
+        title: "Confirm how little headroom is left and how fast it is going"
+        description: >-
+          This is the CRITICAL tier of KubePVCFillingUp — treat it as imminent write failure on
+          the claim named in the alert. Interpret:
+          available_gib near 0 OR used_pct >= 99 => writes are failing or about to; many
+            filesystems also reserve blocks, so an app can fail before 100%. Expand immediately;
+            cleanup is usually too slow at this point.
+          hours_to_full < 2 => no time for a cleanup cycle — expand.
+          fill_rate_mib_per_hour <= 0 AND used_pct >= 95 => not growing, but with no headroom;
+            the volume is under-sized for its working set — right-size it rather than chase files.
+          inodes_used_pct > 95 => inode exhaustion: "no space left on device" with bytes free.
+            Expanding capacity will NOT fix it — files must be deleted.
+          All values n/a => the volume is not currently mounted (no kubelet samples); say so
+            rather than reporting 0%.
         tool_calls:
-          - tool_id: "tool.fetch_metrics"   # need to handle separately
-            description: "Confirm available bytes and current write pressure."
-    remediation: []
-    escalation: "Immediate page to storage/platform and owning service team."
+          - tool_id: "tool.query_metrics"
+            description: "Free space, fill percentage, fill rate, projected hours-to-full and inode usage for the alerting PVC."
+            params:
+              queries:
+                - name: available_gib
+                  unit: "GiB"
+                  query: 'max(kubelet_volume_stats_available_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Free Space"
+                  panel_id: "kube-pvc-available"
+                - name: used_pct
+                  unit: "%"
+                  query: '100 * max(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / max(kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"})'
+                  panel: true
+                  panel_title: "Volume Used %"
+                  panel_id: "kube-pvc-used-pct"
+                - name: capacity_gib
+                  unit: "GiB"
+                  query: 'max(kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                - name: fill_rate_mib_per_hour
+                  unit: "MiB/h"
+                  query: 'max by (persistentvolumeclaim) (deriv(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}[6h])) * 3600 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Fill Rate"
+                  panel_id: "kube-pvc-fill-rate"
+                - name: hours_to_full
+                  unit: "h"
+                  query: '(max(kubelet_volume_stats_available_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / clamp_min(max(deriv(kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}[6h])), 1)) / 3600'
+                  panel: true
+                  panel_title: "Projected Hours to Full"
+                  panel_id: "kube-pvc-hours-to-full"
+                - name: inodes_used_pct
+                  unit: "%"
+                  query: '100 * max(kubelet_volume_stats_inodes_used{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / max(kubelet_volume_stats_inodes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"})'
+                  panel: true
+                  panel_title: "Inodes Used %"
+                  panel_id: "kube-pvc-inodes-used-pct"
+      - step: 2
+        title: "Check whether the workload is already failing, and whether expansion is possible"
+        description: >-
+          A full volume shows up as application errors and restarts, not just a metric.
+          Interpret:
+          restarts_15m > 0 OR container_ready == 0 => the workload is already breaking on the
+            full volume — this is customer-impacting now.
+          requested_gib > capacity_gib => an expansion is already in flight; wait for the
+            filesystem resize rather than issuing another.
+          mounting_pods == 0 => nothing mounts the claim; the alert is about stale data, so the
+            urgency drops — confirm with the owner before reclaiming.
+          ns_pvcs_over_95 / cluster_pvcs_over_95 >> 1 => a shared cause across volumes
+            (retention/backup policy) — label-free blast-radius counts ONLY; keep reporting the
+            alert's own claim by name.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Whether the owning workload is already restarting/unready, in-flight expansion, mount count, and how many other volumes are also above 95%."
+            params:
+              queries:
+                - name: restarts_15m
+                  unit: "restarts"
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*"}[15m])) or vector(0)'
+                  panel: true
+                  panel_title: "Restarts (15m)"
+                  panel_id: "kube-restarts-15m"
+                - name: container_ready
+                  query: 'min(kube_pod_container_status_ready{namespace="$namespace",pod=~"$workload-.*"})'
+                - name: requested_gib
+                  unit: "GiB"
+                  query: 'max(kube_persistentvolumeclaim_resource_requests_storage_bytes{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) / 1024 / 1024 / 1024'
+                  panel: true
+                  panel_title: "Requested Size"
+                  panel_id: "kube-pvc-requested"
+                - name: mounting_pods
+                  unit: "pods"
+                  query: 'count(kube_pod_spec_volumes_persistentvolumeclaims_info{namespace="$namespace",persistentvolumeclaim="$persistentvolumeclaim"}) or vector(0)'
+                - name: ns_pvcs_over_95
+                  unit: "volumes"
+                  query: 'count(100 * kubelet_volume_stats_used_bytes{namespace="$namespace"} / kubelet_volume_stats_capacity_bytes{namespace="$namespace"} > 95) or vector(0)'
+                - name: cluster_pvcs_over_95
+                  unit: "volumes"
+                  query: 'count(100 * kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes > 95) or vector(0)'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Collect the PVC, its StorageClass (allowVolumeExpansion) and the owning workload spec."
+      - step: 3
+        title: "Read the workload's logs for disk-full errors"
+        description: >-
+          Confirm real impact with real lines — "no space left on device", read-only filesystem,
+          WAL/segment write failures, checkpoint or flush errors. If the logs are clean the app
+          may not have written yet; say that instead of assuming failure.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Recent errors from the workload mounting this claim (ENOSPC, read-only filesystem, write/flush failures)."
+    remediation:
+      - action: "Expand the PersistentVolumeClaim immediately"
+        description: >-
+          Primary fix when step 2 confirmed the StorageClass allows expansion and none is in
+          flight. Raise spec.resources.requests.storage; expansion is ONE-WAY. Expand every
+          replica's claim for a StatefulSet. Not applicable when inodes_used_pct is the
+          constraint — expanding bytes does not add inodes.
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "Emergency space reclaim on the volume"
+        description: >-
+          ONLY if expansion is unavailable (StorageClass forbids it) or inode-bound. Delete the
+          reclaimable files identified in step 3 / lower retention. Not a k8s operation —
+          suggestion-only; hand the owning team the evidence.
+        tool_id: ""
+        requires_approval: false
+    escalation: "Page storage/platform immediately — a full volume usually means active data loss or write failure for the owning service."
+    follow_up: >-
+      Same limits as KubePVCFillingUp: no samples while the volume is unmounted, and no
+      per-directory attribution without an in-pod `du`. State those gaps rather than guessing
+      which path filled the disk.
 
   - name: "KubeHpaMaxedOut"
     patterns: ["KubeHpaMaxedOut", "HPA maxed out", "hpa max replicas", "ScalingLimited"]
@@ -1588,12 +2301,21 @@ common_alerts:
                 - name: desired_replicas
                   unit: "pods"
                   query: 'max(kube_horizontalpodautoscaler_status_desired_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                  panel: true
+                  panel_title: "Desired Replicas"
+                  panel_id: "kube-hpa-desired-replicas"
                 - name: current_replicas
                   unit: "pods"
                   query: 'max(kube_horizontalpodautoscaler_status_current_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                  panel: true
+                  panel_title: "Current Replicas"
+                  panel_id: "kube-hpa-current-replicas"
                 - name: max_replicas
                   unit: "pods"
                   query: 'max(kube_horizontalpodautoscaler_spec_max_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
+                  panel: true
+                  panel_title: "Max Replicas"
+                  panel_id: "kube-hpa-max-replicas"
                 - name: min_replicas
                   unit: "pods"
                   query: 'max(kube_horizontalpodautoscaler_spec_min_replicas{namespace="$namespace",horizontalpodautoscaler="$hpa"})'
@@ -1651,9 +2373,15 @@ common_alerts:
                 - name: cpu_util_vs_req_pct
                   unit: "%"
                   query: '100*sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m]))/sum(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="cpu"})'
+                  panel: true
+                  panel_title: "CPU vs Request %"
+                  panel_id: "kube-hpa-cpu-vs-request"
                 - name: mem_util_vs_req_pct
                   unit: "%"
                   query: '100*sum(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container!="POD"})/sum(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="memory"})'
+                  panel: true
+                  panel_title: "Memory vs Request %"
+                  panel_id: "kube-hpa-mem-vs-request"
                 - name: cpu_peak_pod_pct
                   unit: "%"
                   query: 'topk(1, 100*sum by (pod)(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$workload-.*",container!="POD"}[5m])) / on(pod) sum by (pod)(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",resource="cpu"}))'

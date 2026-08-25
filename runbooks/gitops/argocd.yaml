@@ -83,10 +83,16 @@ common_alerts:
               queries:
                 - name: app_state
                   query: 'max by (name, project, sync_status, health_status, repo, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                  panel: true
+                  panel_title: "App Sync/Health State"
+                  panel_id: "argocd-app-state"
                 - name: outofsync_apps
                   query: 'max by (name, project, repo, dest_namespace) (argocd_app_info{sync_status="OutOfSync"} == 1)'
                 - name: outofsync_total
                   query: 'sum(argocd_app_info{sync_status="OutOfSync"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Out-of-Sync Apps (cluster)"
+                  panel_id: "argocd-outofsync-total"
       - step: 2
         title: "Is Argo CD trying to sync, and is auto-sync even on? Look at sync attempts and apply errors"
         description: >-
@@ -111,6 +117,9 @@ common_alerts:
               queries:
                 - name: autosync_enabled
                   query: 'max by (name, autosync_enabled) (argocd_app_info{name="$app", project="$project"})'
+                  panel: true
+                  panel_title: "Auto-Sync Enabled"
+                  panel_id: "argocd-autosync-enabled"
                 - name: sync_attempts_1h
                   query: 'sum by (name) (increase(argocd_app_sync_total{name="$app", project="$project"}[1h]))'
                 - name: sync_failures_1h
@@ -123,6 +132,17 @@ common_alerts:
               queries:
                 - name: unavailable_deployments
                   query: 'kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"} > 0'
+                # Graph form of the line above. The `> 0` filter is right for the
+                # evidence list (name only what is broken) but WRONG for a panel: the
+                # series disappears while the namespace is healthy, so the graph goes
+                # blank instead of showing a flat zero. sum(...) or vector(0) always
+                # renders, and a rise off zero is the readable signal.
+                - name: unavailable_replicas_total
+                  unit: "replicas"
+                  query: 'sum(kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"}) or vector(0)'
+                  panel: true
+                  panel_title: "Unavailable Replicas in Target NS"
+                  panel_id: "argocd-unavailable-replicas-total"
                 - name: crashloop_or_imagepull_pods
                   query: 'kube_pod_container_status_waiting_reason{namespace="$dest_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName"} == 1'
                 - name: notready_pods
@@ -172,10 +192,16 @@ common_alerts:
               queries:
                 - name: app_state
                   query: 'max by (name, project, sync_status, health_status, repo, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                  panel: true
+                  panel_title: "App Sync/Health State"
+                  panel_id: "argocd-app-state"
                 - name: degraded_apps
                   query: 'max by (name, project, repo, dest_namespace) (argocd_app_info{health_status="Degraded"} == 1)'
                 - name: degraded_total
                   query: 'sum(argocd_app_info{health_status="Degraded"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Degraded Apps (cluster)"
+                  panel_id: "argocd-degraded-total"
       - step: 2
         title: "Name the actual failing workload in the destination namespace (the Argo CD health rollup does not)"
         description: >-
@@ -204,18 +230,39 @@ common_alerts:
               queries:
                 - name: unavailable_deployments
                   query: 'kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"} > 0'
+                # Graph form of the line above. The `> 0` filter is right for the
+                # evidence list (name only what is broken) but WRONG for a panel: the
+                # series disappears while the namespace is healthy, so the graph goes
+                # blank instead of showing a flat zero. sum(...) or vector(0) always
+                # renders, and a rise off zero is the readable signal.
+                - name: unavailable_replicas_total
+                  unit: "replicas"
+                  query: 'sum(kube_deployment_status_replicas_unavailable{namespace="$dest_namespace"}) or vector(0)'
+                  panel: true
+                  panel_title: "Unavailable Replicas in Target NS"
+                  panel_id: "argocd-unavailable-replicas-total"
                 - name: unready_statefulsets
                   query: '(kube_statefulset_status_replicas_ready{namespace="$dest_namespace"} < kube_statefulset_replicas{namespace="$dest_namespace"})'
                 - name: crashloop_or_imagepull_pods
                   query: 'kube_pod_container_status_waiting_reason{namespace="$dest_namespace",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError|CreateContainerError|InvalidImageName"} == 1'
                 - name: restarts_30m
                   query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$dest_namespace"}[30m]))'
+                  panel: true
+                  panel_title: "Container Restarts (30m)"
+                  panel_id: "argocd-restarts-30m"
                 - name: last_terminated_reason
                   query: 'kube_pod_container_status_last_terminated_reason{namespace="$dest_namespace",reason=~"OOMKilled|Error|ContainerCannotRun|DeadlineExceeded"} == 1'
                 - name: notready_pods
                   query: 'kube_pod_status_ready{namespace="$dest_namespace",condition="true"} == 0'
                 - name: not_running_pods
                   query: 'kube_pod_status_phase{namespace="$dest_namespace",phase=~"Failed|Pending|Unknown"} == 1'
+                # Graph form — see the note on unavailable_replicas_total above.
+                - name: not_running_pods_total
+                  unit: "pods"
+                  query: 'sum(kube_pod_status_phase{namespace="$dest_namespace",phase=~"Failed|Pending|Unknown"}) or vector(0)'
+                  panel: true
+                  panel_title: "Pods Not Running in Target NS"
+                  panel_id: "argocd-not-running-pods-total"
       - step: 3
         title: "Was it a bad deploy? Correlate with sync history + apply errors, and read the failing pod's logs"
         description: >-
@@ -291,10 +338,16 @@ common_alerts:
               queries:
                 - name: app_state
                   query: 'max by (name, project, sync_status, health_status, dest_server, dest_namespace) (argocd_app_info{name="$app", project="$project"})'
+                  panel: true
+                  panel_title: "App Sync/Health State"
+                  panel_id: "argocd-app-state"
                 - name: unknown_apps
                   query: 'max by (name, project, dest_server) (argocd_app_info{health_status="Unknown"} == 1)'
                 - name: unknown_total
                   query: 'sum(argocd_app_info{health_status="Unknown"} == 1) or vector(0)'
+                  panel: true
+                  panel_title: "Health-Unknown Apps (cluster)"
+                  panel_id: "argocd-unknown-total"
       - step: 2
         title: "Check the destination-cluster connection and cache freshness, and whether the controller is keeping up"
         description: >-
@@ -318,14 +371,23 @@ common_alerts:
               queries:
                 - name: cluster_connection_ok
                   query: 'min(argocd_cluster_connection_status)'
+                  panel: true
+                  panel_title: "Cluster Connection OK"
+                  panel_id: "argocd-cluster-connection-ok"
                 - name: cluster_cache_age_s
                   unit: "s"
                   query: 'max(argocd_cluster_cache_age_seconds)'
+                  panel: true
+                  panel_title: "Cluster Cache Age"
+                  panel_id: "argocd-cluster-cache-age"
                 - name: k8s_api_errors_15m
                   query: 'sum by (response_code) (increase(argocd_app_k8s_request_total{response_code!~"2.."}[15m])) or vector(0)'
                 - name: reconcile_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                  panel: true
+                  panel_title: "Reconcile p95"
+                  panel_id: "argocd-reconcile-p95"
           - tool_id: "tool.query_metrics"
             description: "Workload state in the app's destination namespace (KSM) — separates a genuine workload/CRD problem from a cluster-connection/cache issue."
             params:
@@ -389,6 +451,9 @@ common_alerts:
                   query: 'sum by (name, project, phase) (increase(argocd_app_sync_total{phase=~"Error|Failed"}[1h])) > 0'
                 - name: app_state
                   query: 'max by (name, sync_status, health_status, repo) (argocd_app_info{name="$app", project="$project"})'
+                  panel: true
+                  panel_title: "App Sync/Health State"
+                  panel_id: "argocd-app-state"
       - step: 2
         title: "Classify the cause: Git/repo, Kubernetes apply, or a broken control-plane dependency"
         description: >-
@@ -412,14 +477,26 @@ common_alerts:
               queries:
                 - name: git_fetch_fails_30m
                   query: 'sum(increase(argocd_git_fetch_fail_total[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Git Fetch Failures (30m)"
+                  panel_id: "argocd-git-fetch-fails"
                 - name: git_lsremote_fails_30m
                   query: 'sum(increase(argocd_git_lsremote_fail_total[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Git ls-remote Failures (30m)"
+                  panel_id: "argocd-git-lsremote-fails"
                 - name: k8s_apply_errors
                   query: 'sum by (name, verb, response_code) (increase(argocd_app_k8s_request_total{name="$app", project="$project",response_code!~"2.."}[30m]))'
                 - name: repo_server_up
                   query: 'max(up{job=~".*argocd-repo-server-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "Repo Server Up"
+                  panel_id: "argocd-repo-server-up"
                 - name: controller_up
                   query: 'max(up{job=~".*argocd-application-controller-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Up"
+                  panel_id: "argocd-controller-up"
           - tool_id: "tool.read_logs"
             description: "application-controller + repo-server logs filtered for the sync/apply/hook/repo error around the failure window."
             params:
@@ -474,10 +551,19 @@ common_alerts:
               queries:
                 - name: controller_up
                   query: 'max(up{job=~".*argocd-application-controller-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "Controller Up"
+                  panel_id: "argocd-controller-up"
                 - name: server_up
                   query: 'max(up{job=~".*argocd-server-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "API Server Up"
+                  panel_id: "argocd-server-up"
                 - name: repo_server_up
                   query: 'max(up{job=~".*argocd-repo-server-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "Repo Server Up"
+                  panel_id: "argocd-repo-server-up"
       - step: 2
         title: "Confirm the functional impact and read the pod state/logs for the down component"
         description: >-
@@ -498,10 +584,16 @@ common_alerts:
               queries:
                 - name: reconcile_rate
                   query: 'sum(rate(argocd_app_reconcile_count[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Reconcile Rate"
+                  panel_id: "argocd-reconcile-rate"
                 - name: git_request_rate
                   query: 'sum(rate(argocd_git_request_total[5m])) or vector(0)'
                 - name: apps_visible
                   query: 'count(argocd_app_info) or vector(0)'
+                  panel: true
+                  panel_title: "Apps Visible"
+                  panel_id: "argocd-apps-visible"
           - tool_id: "tool.query_metrics"
             description: "KSM pod-state of the Argo CD component pods in the argo-cd namespace — names WHICH pod crashed/OOMed and its restart count, so the RCA gives the concrete cause of the outage rather than just 'component down'."
             params:
@@ -570,10 +662,19 @@ common_alerts:
               queries:
                 - name: git_fetch_fails_15m
                   query: 'sum(increase(argocd_git_fetch_fail_total{rtf_service="$rtf_service"}[15m])) or vector(0)'
+                  panel: true
+                  panel_title: "Git Fetch Failures (15m)"
+                  panel_id: "argocd-git-fetch-fails-15m"
                 - name: git_lsremote_fails_15m
                   query: 'sum(increase(argocd_git_lsremote_fail_total{rtf_service="$rtf_service"}[15m])) or vector(0)'
+                  panel: true
+                  panel_title: "Git ls-remote Failures (15m)"
+                  panel_id: "argocd-git-lsremote-fails-15m"
                 - name: repo_pending
                   query: 'max(argocd_repo_pending_request_total{rtf_service="$rtf_service"}) or vector(0)'
+                  panel: true
+                  panel_title: "Pending Repo Requests"
+                  panel_id: "argocd-repo-pending"
       - step: 2
         title: "Measure Git latency/throughput and the blast radius on app syncs"
         description: >-
@@ -598,6 +699,9 @@ common_alerts:
                   query: 'sum by (request_type) (rate(argocd_git_request_total{rtf_service="$rtf_service"}[5m]))'
                 - name: sync_failures_1h
                   query: 'sum(increase(argocd_app_sync_total{phase=~"Error|Failed"}[1h])) or vector(0)'
+                  panel: true
+                  panel_title: "Sync Failures (1h)"
+                  panel_id: "argocd-sync-failures-1h"
           - tool_id: "tool.read_logs"
             description: "repo-server logs filtered for git/auth/ls-remote/fetch/'authentication required'/'could not resolve host'/'revision not found' signatures."
             params:
@@ -650,14 +754,23 @@ common_alerts:
                 - name: reconcile_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                  panel: true
+                  panel_title: "Reconcile p95"
+                  panel_id: "argocd-reconcile-p95"
                 - name: reconcile_p99_s
                   unit: "s"
                   query: 'histogram_quantile(0.99, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                  panel: true
+                  panel_title: "Reconcile p99"
+                  panel_id: "argocd-reconcile-p99"
                 - name: avg_reconcile_s
                   unit: "s"
                   query: 'sum(rate(argocd_app_reconcile_sum[5m])) / sum(rate(argocd_app_reconcile_count[5m]))'
                 - name: reconcile_rate
                   query: 'sum(rate(argocd_app_reconcile_count[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Reconcile Rate"
+                  panel_id: "argocd-reconcile-rate"
                 - name: apps_managed
                   query: 'count(argocd_app_info) or vector(0)'
       - step: 2
@@ -686,6 +799,9 @@ common_alerts:
                 - name: git_request_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_git_request_duration_seconds_bucket[5m])))'
+                  panel: true
+                  panel_title: "Git Request p95"
+                  panel_id: "argocd-git-request-p95"
                 - name: redis_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_redis_request_duration_seconds_bucket[5m])))'
@@ -705,6 +821,9 @@ common_alerts:
                 - name: controller_mem_limit_pct
                   unit: "%"
                   query: 'topk(3, 100 * sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~".*application-controller.*",container!="",container!="POD"}) / sum by (pod) (kube_pod_container_resource_limits{namespace="$namespace",pod=~".*application-controller.*",resource="memory"}))'
+                  panel: true
+                  panel_title: "Controller Memory vs Limit %"
+                  panel_id: "argocd-controller-mem-limit-pct"
                 - name: controller_restarts_30m
                   query: 'topk(3, increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*application-controller.*"}[30m]))'
     remediation: # suggestion-only — capacity / sharding / dependency tuning
@@ -758,8 +877,14 @@ common_alerts:
                   query: 'max(up{job=~".*argocd-redis.*"})'
                 - name: redis_failed_5m
                   query: 'sum by (initiator) (increase(argocd_redis_request_total{failed="true"}[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Redis Request Failures (5m)"
+                  panel_id: "argocd-redis-failed"
                 - name: redis_request_rate
                   query: 'sum by (initiator) (rate(argocd_redis_request_total[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Redis Request Rate by Initiator"
+                  panel_id: "argocd-redis-request-rate"
       - step: 2
         title: "Measure the impact on Argo CD (cache misses → recompute → slow reconcile) and read redis pod state"
         description: >-
@@ -781,18 +906,27 @@ common_alerts:
                 - name: redis_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_redis_request_duration_seconds_bucket[5m])))'
+                  panel: true
+                  panel_title: "Redis Request p95"
+                  panel_id: "argocd-redis-p95"
                 - name: redis_failure_ratio
                   unit: "%"
                   query: '100 * sum(rate(argocd_redis_request_total{failed="true"}[5m])) / sum(rate(argocd_redis_request_total[5m]))'
                 - name: reconcile_p95_s
                   unit: "s"
                   query: 'histogram_quantile(0.95, sum by (le) (rate(argocd_app_reconcile_bucket[5m])))'
+                  panel: true
+                  panel_title: "Reconcile p95"
+                  panel_id: "argocd-reconcile-p95"
           - tool_id: "tool.query_metrics"
             description: "KSM pod-state of the argocd-redis pod (restarts / OOM / crashloop / not-ready) in the argo-cd namespace. NOTE: in this fleet argocd-redis is often NOT a scraped pod (no up/KSM series) — if these are empty, say the redis pod state is not visible here and rely on the argocd_redis_request failure/latency signals + the redis pod's own events."
             params:
               queries:
                 - name: redis_pod_restarts_30m
                   query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*argocd-redis.*"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Redis Pod Restarts (30m)"
+                  panel_id: "argocd-redis-pod-restarts"
                 - name: redis_pod_last_terminated
                   query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~".*argocd-redis.*",reason=~"OOMKilled|Error|ContainerCannotRun"} == 1'
                 - name: redis_pod_waiting_reason
@@ -851,10 +985,19 @@ common_alerts:
               queries:
                 - name: dex_up
                   query: 'max(up{job=~".*argocd-dex.*"}) or vector(0)'
+                  panel: true
+                  panel_title: "Dex Up"
+                  panel_id: "argocd-dex-up"
                 - name: server_up
                   query: 'max(up{job=~".*argocd-server-metrics"}) or vector(0)'
+                  panel: true
+                  panel_title: "API Server Up"
+                  panel_id: "argocd-server-up"
                 - name: login_rate
                   query: 'sum(rate(argocd_login_request_total[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Login Rate"
+                  panel_id: "argocd-login-rate"
       - step: 2
         title: "Find WHY Dex is down — pod state, config/connector, or upstream IdP"
         description: >-
@@ -873,6 +1016,9 @@ common_alerts:
               queries:
                 - name: dex_restarts_30m
                   query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~".*argocd-dex.*"}[30m])) or vector(0)'
+                  panel: true
+                  panel_title: "Dex Restarts (30m)"
+                  panel_id: "argocd-dex-restarts"
                 - name: dex_last_terminated
                   query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod=~".*argocd-dex.*",reason=~"OOMKilled|Error|ContainerCannotRun"} == 1'
                 - name: dex_waiting_reason
