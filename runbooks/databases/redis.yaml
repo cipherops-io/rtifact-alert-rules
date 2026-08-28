@@ -76,24 +76,28 @@ infra_panels: &infra_panels
     panel: true
     panel_title: "CPU"
     panel_id: "infra-cpu-pct"
+    panel_query: 'label_replace(sum(rate(container_cpu_usage_seconds_total{pod=~"$service-[0-9]+",container!="",container!="POD"}[5m])) * 100, "series", "usage", "", "") or label_replace(sum(kube_pod_container_resource_requests{pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "request", "", "") or label_replace(sum(kube_pod_container_resource_limits{pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "limit", "", "")'
   - name: infra_mem_mib
     unit: "MiB"
     query: 'max(container_memory_working_set_bytes{pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024'
     panel: true
     panel_title: "Memory"
     panel_id: "memory"
+    panel_query: 'label_replace(max(container_memory_working_set_bytes{pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "limit", "", "")'
   - name: infra_cpu_by_pod
     unit: "%"
     query: 'sum by (pod) (rate(container_cpu_usage_seconds_total{pod=~"$service-[0-9]+",container!="",container!="POD"}[5m])) * 100'
     panel: true
     panel_title: "CPU by Pod"
     panel_id: "infra-cpu-pct-by-pod"
+    panel_query: 'label_replace(sum by (pod) (rate(container_cpu_usage_seconds_total{pod=~"$service-[0-9]+",container!="",container!="POD"}[5m])) * 100, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "limit", "", "")'
   - name: infra_mem_by_pod
     unit: "MiB"
     query: 'sum by (pod) (container_memory_working_set_bytes{pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024'
     panel: true
     panel_title: "Memory by Pod"
     panel_id: "memory-by-pod"
+    panel_query: 'label_replace(sum by (pod) (container_memory_working_set_bytes{pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "limit", "", "")'
 
 common_alerts:
   # ============================================================ AVAILABILITY
