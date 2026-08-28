@@ -1,0 +1,298 @@
+tech_stack: service-error-logs
+version: "1.0"
+description: >-
+  Runbook for service-level ERROR-LOG alerts raised by proactive monitoring
+  ("<service> - Increased/Elevated error logs detected", "error logs detected
+  with minor degradation/error rate increase"). These alerts fire on the LOG
+  STREAM, not on a Kubernetes failure object and not on latency: the evidence
+  that matters is which exception is being logged, by which pod, at what rate
+  versus the previous hour, and whether callers see any of it. Grounds the RCA in
+  log4j2/Micrometer counters, Spring Data repository exception tags, Actuator
+  HTTP outcomes and the eBPF service graph, so the assessment names the exception
+  and the pod instead of recommending "increase trace sampling".
+
+match_keywords:
+  - error logs detected
+  - increased error logs
+  - elevated error logs
+  - error log spike
+  - log error rate
+  - exception rate
+
+categories:
+  - APPLICATION
+  - LOGS
+
+common_alerts:
+  - name: "ServiceErrorLogsDetected"
+    patterns:
+      [
+        "error logs detected",
+        "increased error logs detected",
+        "elevated error logs detected",
+        "error logs detected with minor degradation",
+        "error logs detected with minor error rate increase",
+        "error log spike",
+        "log error rate increase",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Size the error-log burst and compare it with the previous hour"
+        description: >-
+          The alert says errors were logged; it does NOT say how many, whether
+          that is unusual, or whether the service is otherwise healthy. Establish
+          that first. `log4j2_events_total{level="error"}` is the same counter the
+          alert is derived from, so this is the alert's own subject measured
+          directly. Two selectors are issued because the alert's service name is
+          sometimes the workload (core-apps-tier0-chat, whose container is
+          core-apps-tier0-container-chat) and sometimes the k8s Service object
+          (core-apps-tier0-svc-message, which is the Prometheus `job`); take
+          whichever returned a value and say which.
+          Interpret: error_logs_1h at or below error_logs_prev_1h => NOT a spike,
+          this is the service's normal error floor — say so plainly and do not
+          invent a regression. error_logs_1h more than ~2x error_logs_prev_1h =>
+          a real burst, continue. error_log_share_pct well under 1% with a large
+          total_log_events => a low-rate background failure affecting a small
+          share of work, NOT an outage; scale the severity language accordingly.
+          warn_logs_1h far above error_logs_1h => most of the noise is retryable
+          (retry aspects, circuit breakers) and the errors may be the tail of a
+          retry chain — check step 3's exception name before blaming a dependency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Error/warn log event counts for this hour and the previous one, and errors as a share of all log events."
+            params:
+              queries:
+                - name: error_logs_1h
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", container="$container", level="error"}[1h]))'
+                  panel: true
+                - name: error_logs_1h_by_job
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", job="$service", level="error"}[1h]))'
+                - name: error_logs_prev_1h
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", container="$container", level="error"}[1h] offset 1h))'
+                - name: error_logs_prev_1h_by_job
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", job="$service", level="error"}[1h] offset 1h))'
+                - name: warn_logs_1h
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", container="$container", level="warn"}[1h]))'
+                - name: total_log_events_1h
+                  unit: events
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", container="$container"}[1h]))'
+                - name: error_log_share_pct
+                  unit: "%"
+                  query: 'sum(increase(log4j2_events_total{namespace="$namespace", container="$container", level="error"}[1h])) / sum(increase(log4j2_events_total{namespace="$namespace", container="$container"}[1h])) * 100'
+                  panel: true
+
+      - step: 2
+        title: "Attribute the errors to a pod — one bad replica or all of them?"
+        description: >-
+          `by (pod)` lifts the winning replica's name into the result labels, so
+          the RCA can name the pod instead of the deployment.
+          Interpret: pods_logging_errors equal to the replica count => the fault is
+          in the service's code or a shared dependency, restarting one pod fixes
+          nothing. pods_logging_errors == 1 while others are quiet => a single bad
+          replica (stuck connection pool, poisoned cache, bad node); name THAT pod
+          and a targeted restart becomes a reasonable action. restarts_6h > 0
+          alongside the errors => the errors may be startup/shutdown noise from a
+          restarting pod rather than steady-state failure — check whether the log
+          timestamps in step 5 cluster around the restarts before treating them as
+          a new fault.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Worst pod by error-log count, how many replicas are logging errors at all, and recent restarts."
+            params:
+              queries:
+                - name: worst_pod_error_logs
+                  unit: events
+                  query: 'topk(1, sum by (pod) (increase(log4j2_events_total{namespace="$namespace", job="$service", level="error"}[1h])))'
+                - name: worst_pod_error_logs_by_container
+                  unit: events
+                  query: 'topk(1, sum by (pod) (increase(log4j2_events_total{namespace="$namespace", container="$container", level="error"}[1h])))'
+                - name: pods_logging_errors
+                  unit: pods
+                  query: 'count(sum by (pod) (increase(log4j2_events_total{namespace="$namespace", container="$container", level="error"}[1h])) > 0)'
+                - name: pods_logging_errors_by_job
+                  unit: pods
+                  query: 'count(sum by (pod) (increase(log4j2_events_total{namespace="$namespace", job="$service", level="error"}[1h])) > 0)'
+                - name: restarts_6h
+                  unit: restarts
+                  query: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace", container="$container"}[6h]))'
+
+      - step: 3
+        title: "Name the exception — Spring Data repository and HTTP outcome tags"
+        description: >-
+          This is the step that decides the RCA. Micrometer tags every Spring Data
+          repository invocation and every Actuator HTTP request with the exception
+          class it threw, so the exception can be named WITHOUT parsing a log line,
+          and `by (repository, method)` names the exact query/handler that threw it.
+          Interpret: top_repo_exception present => the failures are in the data
+          layer, and its name is the root cause to report verbatim —
+          OptimisticLockingFailureException means concurrent writers to the same
+          document (contention, retry storms, a hot key), DuplicateKeyException
+          means a uniqueness violation from a non-idempotent write path,
+          MappingInstantiationException means the persisted document no longer
+          matches the entity class (a schema/deserialisation defect, NOT a load
+          problem — scaling and restarting will not touch it),
+          DataAccessResourceFailureException means the database was unreachable.
+          top_http_exception present with http_5xx_1h > 0 => the errors escape to
+          callers; report the failing URI. NO series for http_5xx_1h while error
+          logs are high => the errors are handled internally and callers see
+          success — say exactly that, it is the difference between "logged noise"
+          and "user-visible incident", and it is the honest answer to "who is
+          impacted". If BOTH exception queries are empty the service is not
+          Micrometer-instrumented for them; fall through to the log lines in step 5
+          and do not guess an exception name.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Top repository exception (with the repository+method that threw it), top HTTP exception, 5xx volume and the worst URI."
+            params:
+              queries:
+                - name: top_repo_exception
+                  unit: calls
+                  query: 'topk(1, sum by (exception, repository, method) (increase(spring_data_repository_invocations_seconds_count{namespace="$namespace", container="$container", exception!~"[Nn]one"}[1h])))'
+                  panel: true
+                - name: top_repo_exception_by_job
+                  unit: calls
+                  query: 'topk(1, sum by (exception, repository, method) (increase(spring_data_repository_invocations_seconds_count{namespace="$namespace", job="$service", exception!~"[Nn]one"}[1h])))'
+                - name: repo_exception_classes
+                  unit: classes
+                  query: 'count(sum by (exception) (increase(spring_data_repository_invocations_seconds_count{namespace="$namespace", container="$container", exception!~"[Nn]one"}[1h])) > 0)'
+                - name: top_http_exception
+                  unit: requests
+                  query: 'topk(1, sum by (exception, uri) (increase(http_server_requests_seconds_count{namespace="$namespace", container="$container", exception!~"[Nn]one"}[1h])))'
+                - name: top_http_exception_by_job
+                  unit: requests
+                  query: 'topk(1, sum by (exception, uri) (increase(http_server_requests_seconds_count{namespace="$namespace", job="$service", exception!~"[Nn]one"}[1h])))'
+                - name: http_5xx_1h
+                  unit: requests
+                  query: 'sum(increase(http_server_requests_seconds_count{namespace="$namespace", container="$container", status=~"5.."}[1h]))'
+                - name: top_5xx_uri
+                  unit: requests
+                  query: 'topk(1, sum by (uri) (increase(http_server_requests_seconds_count{namespace="$namespace", container="$container", status=~"5.."}[1h])))'
+
+      - step: 4
+        title: "Decide the blast radius from the eBPF service graph"
+        description: >-
+          OBI/eBPF measures real traffic on the wire, so it answers "did anyone
+          notice?" independently of the service's own instrumentation.
+          Interpret: inbound_failed_1h == 0 (or no series) while inbound_requests_1h
+          is healthy => the logged errors are NOT reaching callers; this is an
+          internal error rate, and the recommended action is to fix the named
+          exception, NOT to scale, restart or "increase trace sampling".
+          inbound_failed_1h > 0 => callers are getting failures; raise the severity
+          and report the caller-visible failure count. worst_failing_dependency
+          present => this service's errors are inherited from the dependency it
+          names — hand the investigation to that service's owner rather than
+          treating this one as the culprit. Sparse or missing service-graph data
+          means low eBPF coverage for this service: say the blast radius is
+          unknown, do not report it as zero.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Inbound request/failure counts for this service and the downstream dependency failing it the most."
+            params:
+              queries:
+                - name: inbound_requests_1h
+                  unit: requests
+                  query: 'sum(increase(traces_service_graph_request_server_count{server="$service"}[1h]))'
+                - name: inbound_failed_1h
+                  unit: requests
+                  query: 'sum(increase(traces_service_graph_request_failed_total{server="$service"}[1h]))'
+                - name: worst_failing_dependency
+                  unit: requests
+                  query: 'topk(1, sum by (server) (increase(traces_service_graph_request_failed_total{client="$service"}[1h])))'
+                - name: top_caller
+                  unit: requests
+                  query: 'topk(1, sum by (client) (increase(traces_service_graph_request_server_count{server="$service"}[1h])))'
+
+      - step: 5
+        title: "Read the actual error lines"
+        description: >-
+          Quote real lines. The counters above say how much and which exception
+          class; only the log line carries the message, the thread, the context id
+          and the stack frame. Report the top 2-3 DISTINCT error templates with
+          their counts, verbatim — never paraphrase them into "errors were
+          detected" and never recommend "review the logs" when the lines are right
+          here. Cross-check them against step 3: a repository exception in the
+          metrics should appear in the lines too; if the lines show something else
+          entirely (a downstream timeout, a Kafka publish failure, a parse error),
+          trust the LINES and report that instead. If the lines are dominated by
+          one retryable warning with a small error tail, say the service is
+          retrying successfully and the errors are the residue.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Error-level log lines for this service, clustered into templates with counts."
+            params:
+              level: error
+              tail_lines: 200
+
+      - step: 6
+        title: "Rule out resource pressure and correlate with recent change"
+        description: >-
+          Errors that start at a deploy or under memory/pool exhaustion have a
+          different fix than a code defect.
+          Interpret: heap_used_pct above ~85% or a rising trend alongside the error
+          burst => memory pressure, expect GC pauses and timeout-shaped errors.
+          hikari_pending > 0 or hikari_timeouts_1h > 0 => the DB connection pool is
+          saturated: the errors are a symptom of pool exhaustion, and the fix is
+          pool sizing or the slow query holding connections, not a restart.
+          Both flat/zero => resources are NOT the cause; combine with a correlated
+          deployment (if the investigation surfaced one) to point at a code change,
+          otherwise report the exception from step 3 as the root cause on its own.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "JVM heap utilisation and DB connection-pool saturation for the alerting service."
+            params:
+              queries:
+                - name: heap_used_pct
+                  unit: "%"
+                  query: 'max(jvm_memory_used_bytes{namespace="$namespace", container="$container", area="heap"}) / max(jvm_memory_max_bytes{namespace="$namespace", container="$container", area="heap"}) * 100'
+                  panel: true
+                - name: hikari_pending
+                  unit: connections
+                  query: 'max(hikaricp_connections_pending{namespace="$namespace", container="$container"})'
+                - name: hikari_timeouts_1h
+                  unit: timeouts
+                  query: 'sum(increase(hikaricp_connections_timeout_total{namespace="$namespace", container="$container"}[1h]))'
+                - name: threads_live
+                  unit: threads
+                  query: 'max(jvm_threads_live_threads{namespace="$namespace", container="$container"})'
+    remediation: # suggestions only — forge.* actions are approval-gated, never auto-run
+      - action: "fix_named_exception"
+        description: >-
+          Primary fix. Address the exception named in step 3 / step 5 in the
+          service's own code — for MappingInstantiationException reconcile the
+          entity class with the stored documents; for OptimisticLockingFailure
+          add a bounded retry or remove the write contention; for DuplicateKey
+          make the write path idempotent. Only this closes the alert when step 4
+          showed no caller-visible failures.
+        tool_id: ""
+        requires_approval: false
+      - action: "restart_deployment"
+        description: >-
+          ONLY when step 2 showed a single replica logging the errors while its
+          peers are quiet, or step 6 proved pool/heap exhaustion — a restart
+          clears wedged state and fixes nothing else. Never restart for a
+          steady-state error rate spread evenly across all replicas.
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "rollback_deployment"
+        description: >-
+          Roll back if a deployment of $service shortly preceded the burst (a
+          correlated change is present in the investigation) and the exception in
+          step 3 is a deserialisation/mapping or contract error consistent with
+          new code.
+        tool_id: "forge.revert_deployment"
+        requires_approval: true
+    escalation: >-
+      Owning service team, with the exception class, the repository/method or URI
+      that threw it, and the worst pod named. Escalate to the owner of the
+      dependency instead when step 4's worst_failing_dependency is set. Platform
+      SRE only when step 6 shows resource exhaustion the team cannot size away.
+    follow_up:
+      - "If step 1's counters are empty for both selectors, this service does not export log4j2/Micrometer counters — the RCA must rest on the log lines from step 5 alone and should say so rather than reporting zero errors."
+      - "If step 3's exception queries are empty but the log lines clearly show an exception, the service is missing Spring Data / Actuator metric tags; the exception name is still reportable from the line itself."
+      - "An error rate that matches the previous hour is a chronic error floor, not an incident — raise it as a backlog item for the owning team instead of an alert-worthy regression."
