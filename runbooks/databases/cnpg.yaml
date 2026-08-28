@@ -45,12 +45,14 @@ infra_panels: &infra_panels
     panel: true
     panel_title: "CPU by Pod"
     panel_id: "cnpg-cpu-by-pod"
+    panel_query: 'label_replace(sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD"}[5m])) * 100, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD",resource="cpu"}) * 100, "series", "limit", "", "")'
   - name: cluster_mem_by_pod
     unit: "MiB"
     query: 'sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024'
     panel: true
     panel_title: "Memory by Pod"
     panel_id: "cnpg-mem-by-pod"
+    panel_query: 'label_replace(sum by (pod) (container_memory_working_set_bytes{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD"}) / 1024 / 1024, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$service-[0-9]+",container!="",container!="POD",resource="memory"}) / 1024 / 1024, "series", "limit", "", "")'
 
 # storage_panels: the disk-fill signals for the WAL/retention alerts. A CNPG pod's
 # PVC is named exactly like the pod ($service-<ordinal>), and there is no separate

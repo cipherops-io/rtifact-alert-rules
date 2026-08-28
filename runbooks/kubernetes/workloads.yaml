@@ -229,8 +229,9 @@ common_alerts:
                   unit: "MiB"
                   query: 'max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/1024/1024'
                   panel: true
-                  panel_title: "Memory Working Set"
+                  panel_title: "Memory: Usage vs Request vs Limit"
                   panel_id: "kube-mem-working-set"
+                  panel_query: 'label_replace(max(container_memory_working_set_bytes{namespace="$namespace",pod=~"$workload-.*",container="$container"})/1024/1024, "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024, "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024, "series", "limit", "", "")'
                 - name: mem_limit_mib
                   unit: "MiB"
                   query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod=~"$workload-.*",container="$container",resource="memory"})/1024/1024'
@@ -338,14 +339,12 @@ common_alerts:
                   unit: "cores"
                   query: 'sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
                   panel: true
-                  panel_title: "CPU Usage (cores)"
+                  panel_title: "CPU: Usage vs Request vs Limit"
                   panel_id: "kube-cpu-usage-cores"
+                  panel_query: 'label_replace(sum(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m])), "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"}), "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"}), "series", "limit", "", "")'
                 - name: "cpu_limit_cores"
                   unit: "cores"
                   query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
-                  panel: true
-                  panel_title: "CPU Limit (cores)"
-                  panel_id: "kube-cpu-limit-cores"
                 - name: "cpu_request_cores"
                   unit: "cores"
                   query: 'max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
