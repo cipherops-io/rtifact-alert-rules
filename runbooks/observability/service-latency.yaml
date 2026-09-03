@@ -52,41 +52,69 @@ common_alerts:
           (locks/GC) — weight the log evidence in step 4 higher. inbound_failed_pct is
           guarded to return 0 when there are no failed requests, so 0 means "measured,
           none" — only a MISSING value means this service has no eBPF coverage.
+          The inbound queries deliberately aggregate over EVERY caller rather than
+          filtering to one `client` label value: collectors name off-mesh callers
+          differently per environment (a synthetic "incoming", the node hostname, the
+          ingress pod), so any hardcoded client value returns zero series on the
+          clusters that use another convention. slowest_client_p99_ms and the
+          per-caller p99 panel do the attribution instead — its labels NAME the slow
+          caller edge. Interpret the caller: an in-mesh service name => that caller's
+          traffic pattern is driving the latency (check retries/fan-out from it); a
+          node hostname/IP, "incoming", or a monitoring client (prometheus/agent
+          names) => off-mesh traffic, i.e. kubelet probes, ingress or scrapes rather
+          than user requests. CRITICAL low-traffic branch: if inbound_req_per_s is
+          very low (a few req/s or less, roughly probe cadence) and the caller and
+          route evidence point at health/scrape endpoints, then the percentile is
+          computed over a handful of probe requests — SAY that the alert reflects
+          probe/health-check latency with no evidence of user-facing impact, and do
+          NOT dress it up as a service-wide degradation.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Inbound (server-side) p50/p95/p99, request rate now vs 1h ago, per-pod p99, and failed-request ratio from OBI service-graph histograms."
+            description: "Inbound (server-side) p50/p95/p99 across all callers, request rate now vs 1h ago, per-caller and per-pod p99 attribution, and failed-request ratio from OBI service-graph histograms."
             params:
               queries:
                 - name: inbound_p99_ms
                   unit: "ms"
-                  query: 'histogram_quantile(0.99, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m])))*1000'
                   panel: true
                   panel_title: "Inbound p99 (eBPF)"
                   panel_id: "svc-inbound-p99"
                 - name: inbound_p95_ms
                   unit: "ms"
-                  query: 'histogram_quantile(0.95, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  query: 'histogram_quantile(0.95, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m])))*1000'
                   panel: true
                   panel_title: "Inbound p95 (eBPF)"
                   panel_id: "svc-inbound-p95"
                 - name: inbound_p50_ms
                   unit: "ms"
-                  query: 'histogram_quantile(0.50, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  query: 'histogram_quantile(0.50, sum by (le) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m])))*1000'
                 - name: inbound_req_per_s
                   unit: "req/s"
-                  query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                  query: 'sum(rate(traces_service_graph_request_total{server="$service"}[5m]))'
                   panel: true
                   panel_title: "Inbound Request Rate (eBPF)"
                   panel_id: "svc-inbound-req-rate"
                 - name: inbound_req_per_s_1h_ago
                   unit: "req/s"
-                  query: 'sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m] offset 1h))'
+                  query: 'sum(rate(traces_service_graph_request_total{server="$service"}[5m] offset 1h))'
+                - name: slowest_client_p99_ms
+                  unit: "ms"
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, client) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m]))))*1000'
+                - name: inbound_p99_by_client_ms
+                  unit: "ms"
+                  query: 'histogram_quantile(0.99, sum by (le, client) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m])))*1000'
+                  panel: true
+                  panel_title: "Inbound p99 by Caller"
+                  panel_id: "svc-inbound-p99-by-client"
+                - name: busiest_client_req_per_s
+                  unit: "req/s"
+                  query: 'topk(1, sum by (client) (rate(traces_service_graph_request_total{server="$service"}[5m])))'
                 - name: slowest_pod_p99_ms
                   unit: "ms"
-                  query: 'topk(1, histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m]))))*1000'
+                  query: 'topk(1, histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m]))))*1000'
                 - name: inbound_p99_by_pod_ms
                   unit: "ms"
-                  query: 'histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service",client="incoming"}[5m])))*1000'
+                  query: 'histogram_quantile(0.99, sum by (le, k8s.pod.name) (rate(traces_service_graph_request_server_bucket{server="$service"}[5m])))*1000'
                   panel: true
                   panel_title: "Inbound p99 by Pod"
                   panel_id: "svc-inbound-p99-by-pod"
@@ -95,7 +123,7 @@ common_alerts:
                 # division then returns no data — indistinguishable from "not instrumented".
                 - name: inbound_failed_pct
                   unit: "%"
-                  query: '100 * (sum(rate(traces_service_graph_request_failed_total{server="$service",client="incoming"}[5m])) or vector(0)) / sum(rate(traces_service_graph_request_total{server="$service",client="incoming"}[5m]))'
+                  query: '100 * (sum(rate(traces_service_graph_request_failed_total{server="$service"}[5m])) or vector(0)) / sum(rate(traces_service_graph_request_total{server="$service"}[5m]))'
                   panel: true
                   panel_title: "Failed Request %"
                   panel_id: "svc-inbound-failed-pct"
@@ -157,8 +185,12 @@ common_alerts:
           if the only routes are probes/scrape endpoints (/health, /ready, /metrics,
           /actuator/*), then this service's real traffic is NOT OTel-HTTP-instrumented and
           the route breakdown says nothing about user latency; say so and fall back to the
-          service-graph evidence from steps 1-2. Interpret: one real route's p95 far above
-          the rest => that operation is the bottleneck; pair it with the step-2 edge (e.g. a
+          service-graph evidence from steps 1-2. Cross-check that against step 1's
+          inbound_req_per_s: when the eBPF inbound rate is the same order as the probe
+          route's rate, the probes are not merely the instrumented traffic, they are the
+          ONLY traffic — the alert is probe latency on an idle service, which is a finding
+          in itself, not an instrumentation gap to recommend more sampling for.
+          Interpret: one real route's p95 far above the rest => that operation is the bottleneck; pair it with the step-2 edge (e.g. a
           /tts route that calls an LLM proxy). Values pinned at a histogram bucket edge (e.g.
           exactly 4.75ms or 10000ms) mean the true latency lies inside/above that bucket —
           report "~value" or ">= value", not an exact figure. requests_by_status_code and
