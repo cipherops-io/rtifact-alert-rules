@@ -6,6 +6,8 @@ groups:
         expr: cnpg_collector_up == 0
         for: 1m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -15,13 +17,14 @@ groups:
           query: cnpg_collector_up == 0
         annotations:
           summary: "CloudNativePG cluster collector is down"
-          description: "CloudNativePG cluster {{ $labels.cnpg_cluster }} collector is down — pod {{ $labels.pod }}."
+          description: "CloudNativePG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) — the instance-manager metrics collector on pod {{ $labels.pod }} is down. Postgres may still be serving, but every other CNPG alert for this instance is blind until the collector recovers."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterdown"
 
 #      - alert: CNPGClusterDegraded
 #        expr: cnpg_cluster_ready_instances < cnpg_cluster_instances
 #        for: 5m
 #        labels:
+#          sourceType: metric
 #          severity: critical
 #          priority: P1
 #          tech_stack: cnpg
@@ -38,6 +41,7 @@ groups:
 #        expr: cnpg_cluster_instances == 1
 #        for: 5m
 #        labels:
+#          sourceType: metric
 #          severity: warning
 #          priority: P2
 #          tech_stack: cnpg
@@ -54,6 +58,8 @@ groups:
         expr: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300
         for: 1m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -63,14 +69,15 @@ groups:
           query: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300
         annotations:
           summary: "CloudNativePG cluster has a long-running transaction"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} has a transaction running for {{ $value
-            | humanizeDuration }}."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} has a transaction on database {{ $labels.datname }} running for {{ $value | humanizeDuration }} in state '{{ $labels.state }}', opened by user {{ $labels.usename }} from application {{ $labels.application_name }}."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterlongrunningtransactionwarning"
 
       - alert: CNPGClusterLongRunningTransactionCritical
         expr: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800
         for: 1m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -80,14 +87,15 @@ groups:
           query: cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800
         annotations:
           summary: "CloudNativePG cluster has a critically long-running transaction"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} has a transaction running for {{ $value
-            | humanizeDuration }} — exceeds 30-minute threshold. Investigate for lock contention or runaway queries."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} has a transaction on database {{ $labels.datname }} running for {{ $value | humanizeDuration }} in state '{{ $labels.state }}', opened by user {{ $labels.usename }} from application {{ $labels.application_name }} — exceeds the 30-minute threshold. Investigate for lock contention or runaway queries."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterlongrunningtransactioncritical"
 
       - alert: CNPGClusterReplicationLagWarning
         expr: cnpg_pg_replication_lag > 30
         for: 2m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -97,13 +105,15 @@ groups:
           query: cnpg_pg_replication_lag > 30
         annotations:
           summary: "CloudNativePG replica is lagging behind primary"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} replica is {{ $value | humanizeDuration }} behind primary."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) replica pod {{ $labels.pod }} is {{ $value | humanizeDuration }} behind the primary."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationlagwarning"
 
       - alert: CNPGClusterReplicationLagCritical
         expr: cnpg_pg_replication_lag > 120
         for: 2m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -113,14 +123,14 @@ groups:
           query: cnpg_pg_replication_lag > 120
         annotations:
           summary: "CloudNativePG replica replication lag is critical"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} replica is {{ $value | humanizeDuration }} behind primary
-            — exceeds 2-minute critical threshold. Failover RPO is at risk."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) replica pod {{ $labels.pod }} is {{ $value | humanizeDuration }} behind the primary — exceeds the 2-minute critical threshold. Failover RPO is at risk."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationlagcritical"
 
 #      - alert: CNPGClusterBackupOverdue
 #        expr: time() - cnpg_cluster_last_successful_backup_timestamp > 86400
 #        for: 5m
 #        labels:
+#          sourceType: metric
 #          severity: warning
 #          priority: P2
 #          tech_stack: cnpg
@@ -137,6 +147,7 @@ groups:
 #        expr: cnpg_cluster_pg_wal_volume_size_bytes / cnpg_cluster_pg_wal_volume_total_size_bytes > 0.80
 #        for: 5m
 #        labels:
+#          sourceType: metric
 #          severity: warning
 #          priority: P2
 #          tech_stack: cnpg
@@ -154,6 +165,8 @@ groups:
         expr: rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -163,7 +176,7 @@ groups:
           query: rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0
         annotations:
           summary: "CloudNativePG WAL archiving is failing"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} WAL archiving is failing."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} is failing to archive WAL segments. Continued failure blocks point-in-time recovery and lets pg_wal grow on this instance."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterwalarchivefailing"
 
       - alert: CNPGClusterDeadReplicationSlot
@@ -172,6 +185,8 @@ groups:
           and cnpg_pg_replication_slots_pg_wal_lsn_diff > 0
         for: 10m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -183,8 +198,7 @@ groups:
             and cnpg_pg_replication_slots_pg_wal_lsn_diff > 0
         annotations:
           summary: "CloudNativePG has an inactive replication slot"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} has an inactive replication slot holding WAL — pg_wal will
-            grow unboundedly."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} has an inactive {{ $labels.slot_type }} replication slot {{ $labels.slot_name }} still holding WAL — pg_wal will grow unboundedly until the consumer returns or the slot is dropped."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterdeadreplicationslot"
 
       - alert: CNPGClusterHighConnections
@@ -195,6 +209,8 @@ groups:
           > 0.80
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -208,14 +224,14 @@ groups:
             > 0.80
         annotations:
           summary: "CloudNativePG connection count is approaching the limit"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} connection utilization is {{ $value | humanizePercentage }}
-            of max_connections on pod {{ $labels.pod }}."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} connection utilization is {{ $value | humanizePercentage }} of max_connections."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterhighconnections"
 
 #      - alert: CNPGClusterPrimaryNotReady
 #        expr: cnpg_cluster_primary_uptime_seconds == 0
 #        for: 2m
 #        labels:
+#          sourceType: metric
 #          severity: critical
 #          priority: P0
 #          tech_stack: cnpg
@@ -232,6 +248,7 @@ groups:
 #        expr: increase(cnpg_cluster_switchover_count[10m]) > 0
 #        for: 0m
 #        labels:
+#          sourceType: metric
 #          severity: info
 #          priority: P3
 #          tech_stack: cnpg
@@ -248,6 +265,7 @@ groups:
 #        expr: cnpg_cluster_pg_data_volume_used_bytes / cnpg_cluster_pg_data_volume_total_size_bytes > 0.85
 #        for: 10m
 #        labels:
+#          sourceType: metric
 #          severity: warning
 #          priority: P2
 #          tech_stack: cnpg
@@ -266,6 +284,8 @@ groups:
         expr: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 1000000000
         for: 10m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -275,14 +295,15 @@ groups:
           query: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 1000000000
         annotations:
           summary: "CloudNativePG database transaction ID age is high"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} database {{ $labels.datname }} has xid age {{ $value }} (>1B).
-            Autovacuum is falling behind; wraparound risk at ~2.1B."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} database {{ $labels.datname }} has xid age {{ $value }} (>1B). Autovacuum is falling behind; wraparound risk at ~2.1B."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterxidwraparoundwarning"
 
       - alert: CNPGClusterXIDWraparoundCritical
         expr: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 1800000000
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -292,15 +313,15 @@ groups:
           query: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 1800000000
         annotations:
           summary: "CloudNativePG database is approaching transaction ID wraparound"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} database {{ $labels.datname }} xid age {{ $value }} (>1.8B).
-            Postgres forces read-only/shutdown near 2.1B — investigate stuck autovacuum, long transactions, or abandoned
-            replication slots now."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} database {{ $labels.datname }} has xid age {{ $value }} (>1.8B). Postgres forces read-only/shutdown near 2.1B — investigate stuck autovacuum, long transactions, or abandoned replication slots now."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterxidwraparoundcritical"
 
       - alert: CNPGClusterMultixactWraparoundWarning
         expr: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_mxid_age) > 1000000000
         for: 10m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -310,8 +331,7 @@ groups:
           query: max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_mxid_age) > 1000000000
         annotations:
           summary: "CloudNativePG multixact ID age is high"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} database {{ $labels.datname }} multixact age {{ $value }} (>1B).
-            Multixact wraparound has the same 2.1B ceiling as xid."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} database {{ $labels.datname }} has multixact age {{ $value }} (>1B). Multixact wraparound has the same 2.1B ceiling as xid."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclustermultixactwraparoundwarning"
 
       # ── Replication slot retaining WAL (unbounded pg_wal growth → disk fill) ──
@@ -319,6 +339,8 @@ groups:
         expr: cnpg_pg_replication_slots_pg_wal_lsn_diff > 2147483648
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -328,14 +350,15 @@ groups:
           query: cnpg_pg_replication_slots_pg_wal_lsn_diff > 2147483648
         annotations:
           summary: "CloudNativePG replication slot is retaining significant WAL"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} slot {{ $labels.slot_name }} is retaining {{ $value
-            | humanize1024 }}B of WAL (>2GB)."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} {{ $labels.slot_type }} slot {{ $labels.slot_name }} is retaining {{ $value | humanize1024 }}B of WAL (>2GB)."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationslotwalretainedwarning"
 
       - alert: CNPGClusterReplicationSlotWALRetainedCritical
         expr: cnpg_pg_replication_slots_pg_wal_lsn_diff > 10737418240
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -345,8 +368,7 @@ groups:
           query: cnpg_pg_replication_slots_pg_wal_lsn_diff > 10737418240
         annotations:
           summary: "CloudNativePG replication slot is retaining excessive WAL"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} slot {{ $labels.slot_name }} retaining {{ $value
-            | humanize1024 }}B of WAL (>10GB). pg_wal will fill the volume — drop the dead slot or recover the consumer."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} {{ $labels.slot_type }} slot {{ $labels.slot_name }} is retaining {{ $value | humanize1024 }}B of WAL (>10GB). pg_wal will fill the volume — drop the dead slot or recover the consumer."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicationslotwalretainedcritical"
 
       # ── Replica WAL receiver down (replica stopped streaming) ──
@@ -354,6 +376,8 @@ groups:
         expr: (cnpg_pg_replication_in_recovery == 1) and on (cnpg_cluster, namespace, pod) (cnpg_pg_replication_is_wal_receiver_up == 0)
         for: 2m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -363,8 +387,7 @@ groups:
           query: (cnpg_pg_replication_in_recovery == 1) and on (cnpg_cluster, namespace, pod) (cnpg_pg_replication_is_wal_receiver_up == 0)
         annotations:
           summary: "CloudNativePG replica WAL receiver is down"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} replica {{ $labels.pod }} is in recovery but its WAL receiver
-            is down — it is no longer streaming from the primary."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) replica pod {{ $labels.pod }} is in recovery but its WAL receiver is down — it is no longer streaming from the primary."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterreplicawalreceiverdown"
 
       # ── Backups (instance-collector based, since cnpg_cluster_* is not scraped) ──
@@ -372,6 +395,8 @@ groups:
         expr: (time() - cnpg_collector_last_available_backup_timestamp > 86400) and (cnpg_collector_last_available_backup_timestamp > 0)
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -381,13 +406,15 @@ groups:
           query: (time() - cnpg_collector_last_available_backup_timestamp > 86400) and (cnpg_collector_last_available_backup_timestamp > 0)
         annotations:
           summary: "CloudNativePG last available backup is over 24h old"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} last available backup is {{ $value | humanizeDuration }} old."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) last available backup, as reported by pod {{ $labels.pod }}, is {{ $value | humanizeDuration }} old."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterbackupoverdue"
 
       - alert: CNPGClusterLastBackupFailed
         expr: cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -397,8 +424,7 @@ groups:
           query: cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp
         annotations:
           summary: "CloudNativePG most recent backup attempt failed"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} has a failed backup newer than the last successful one —
-            backups are currently broken."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) has a failed backup newer than the last successful one, as reported by pod {{ $labels.pod }} — backups are currently broken."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterlastbackupfailed"
 
       # ── Operator intervention signals ──
@@ -406,6 +432,8 @@ groups:
         expr: cnpg_collector_manual_switchover_required > 0
         for: 1m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -415,13 +443,15 @@ groups:
           query: cnpg_collector_manual_switchover_required > 0
         annotations:
           summary: "CloudNativePG requires a manual switchover"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} is signalling that a manual switchover is required."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} is signalling that a manual switchover is required."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclustermanualswitchoverrequired"
 
       - alert: CNPGClusterFenced
         expr: cnpg_collector_fencing_on > 0
         for: 1m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
           tech_stack: cnpg
@@ -431,7 +461,7 @@ groups:
           query: cnpg_collector_fencing_on > 0
         annotations:
           summary: "CloudNativePG instance is fenced"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} is fenced — it is isolated and not serving."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} is fenced — it is isolated and not serving."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterfenced"
 
       # ── Monitoring blind-spot: the collector itself is erroring ──
@@ -439,6 +469,8 @@ groups:
         expr: cnpg_collector_last_collection_error > 0
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P3
           tech_stack: cnpg
@@ -448,8 +480,7 @@ groups:
           query: cnpg_collector_last_collection_error > 0
         annotations:
           summary: "CloudNativePG metrics collection is failing"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} metrics collector reported an error on
-            its last run — other CNPG alerts may be blind."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} metrics collector reported an error on its last run — other CNPG alerts for this instance may be blind."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclustermetricscollectionfailing"
 
       # ── Query / contention health ──
@@ -457,6 +488,8 @@ groups:
         expr: rate(cnpg_pg_stat_database_deadlocks[5m]) > 0
         for: 5m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -466,14 +499,15 @@ groups:
           query: rate(cnpg_pg_stat_database_deadlocks[5m]) > 0
         annotations:
           summary: "CloudNativePG deadlocks detected"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} db {{ $labels.datname }} is hitting deadlocks ({{ $value
-            | humanize }}/s)."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} database {{ $labels.datname }} is hitting deadlocks ({{ $value | humanize }}/s)."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterdeadlocks"
 
       - alert: CNPGClusterBackendsWaitingOnLocks
         expr: cnpg_backends_waiting_total > 3
         for: 3m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
           tech_stack: cnpg
@@ -483,8 +517,7 @@ groups:
           query: cnpg_backends_waiting_total > 3
         annotations:
           summary: "CloudNativePG has sessions blocked waiting on locks"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} has {{ $value }} backend(s) waiting on locks — possible
-            contention or a blocking transaction."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} has {{ $value }} backend(s) waiting on locks — possible contention or a blocking transaction."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterbackendswaitingonlocks"
 
       - alert: CNPGClusterLowCacheHitRatio
@@ -497,6 +530,8 @@ groups:
           ) < 0.90
         for: 15m
         labels:
+          sourceType: metric
+          cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P3
           tech_stack: cnpg
@@ -506,6 +541,5 @@ groups:
           query: low buffer cache hit ratio (<90%)
         annotations:
           summary: "CloudNativePG buffer cache hit ratio is low"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} pod {{ $labels.pod }} cache hit ratio is {{ $value
-            | humanizePercentage }} (<90%). Consider shared_buffers / working-set review."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} buffer cache hit ratio is {{ $value | humanizePercentage }} (<90%). Consider shared_buffers / working-set review."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterlowcachehitratio"
