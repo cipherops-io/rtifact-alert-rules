@@ -37,7 +37,7 @@ We built `rtifact-alert-rules` because we needed something different.
 - We cover ~25 stacks; awesome covers 90+
 - No AI/ML stack rules yet (planned for v0.2)
 - No SLO burn-rate rules yet (planned)
-- No dashboard JSON; rules only
+- Dashboard JSON covers only part of the catalog (see `dashboards/`); most stacks are rules-only
 
 ## We learn from each other
 

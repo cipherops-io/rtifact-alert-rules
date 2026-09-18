@@ -41,11 +41,11 @@ brew install prometheus            # provides promtool
 brew install yamllint              # optional, recommended
 pip3 install pyyaml                # for the validators
 
-# 3. Make your change in rules/<category>/<stack>.yaml
+# 3. Make your change in rules/metrics/<category>/<stack>.yml
 
 # 4. Add tests in tests/<category>/<stack>_test.yaml
 
-# 5. Add or update the runbook in runbooks/<category>/<stack>.md
+# 5. Add or update the runbook in runbooks/<category>/<stack>.{md,yaml}
 
 # 6. Run all checks
 make all

@@ -34,10 +34,10 @@ See the auto-generated [`docs/catalog.md`](docs/catalog.md) for every alert with
 ```bash
 # Prometheus (in prometheus.yml):
 rule_files:
-  - /etc/prometheus/rules/postgresql.yaml
+  - /etc/prometheus/rules/postgresql.yml
 
 # vmalert flag:
-./vmalert -rule=./rules/databases/postgresql.yaml -datasource.url=http://victoriametrics:8428
+./vmalert -rule=./rules/metrics/databases/postgresql.yml -datasource.url=http://victoriametrics:8428
 ```
 
 ### Validate rules locally
@@ -68,7 +68,7 @@ Every rule MUST carry these labels. CI enforces it.
 | `tech_stack` | controlled enum (see `docs/conventions/label-contract.md`) | Which technology this alert belongs to |
 | `signal` | `symptom`, `cause`, `slo-burn` | SRE distinction (what the user feels vs why) |
 | `category` | `workload`, `data`, `network`, `control-plane`, `app`, `storage` | High-level grouping |
-| `runbook` | `runbooks/<category>/<stack>.md` | Path to the runbook in this repo |
+| `runbook` | `runbooks/<category>/<stack>.{md,yaml}` | Path to the runbook in this repo (CI checks the file exists) |
 
 Every rule MUST also have annotations: `summary`, `description`, `runbook_url`.
 
@@ -77,12 +77,15 @@ See [`docs/conventions/label-contract.md`](docs/conventions/label-contract.md) f
 ## Repo layout
 
 ```
-rules/<category>/<stack>.yaml      # source of truth (plain Prometheus groups)
-tests/<category>/<stack>_test.yaml # promtool test rules unit tests
-runbooks/<category>/<stack>.md     # human runbook for that tech stack
-docs/                              # auto-generated catalog + design docs
-scripts/                           # lint, test, render, catalog tools
-.github/workflows/                 # CI for lint, test, label contract
+rules/metrics/<category>/<stack>.yml   # source of truth (plain Prometheus groups)
+rules/logs/<category>/<name>.yml       # log-based rules (reserved; empty for now)
+tests/<category>/<stack>_test.yaml     # promtool test rules unit tests
+runbooks/<category>/<stack>.md         # human runbook for that tech stack
+runbooks/<category>/<stack>.yaml       # structured runbook (machine-readable RCA steps)
+dashboards/<category>/<stack>*.json    # companion Grafana dashboards
+docs/                                  # auto-generated catalog + design docs
+scripts/                               # lint, test, render, catalog tools
+.github/workflows/                     # CI for lint, test, label contract
 ```
 
 ## Contributing

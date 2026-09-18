@@ -4,7 +4,7 @@
 
 ## caching
 
-### `rules/caching/memcached.yaml`
+### `rules/metrics/caching/memcached.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -21,45 +21,47 @@
 
 ## databases
 
-### `rules/databases/clickhouse.yaml`
+### `rules/metrics/databases/clickhouse.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ClickHouseDown` | critical | P1 | 1m | symptom | `up{job=~"clickhouse.*"} == 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseHighMemoryUsage` | warning | P2 | 5m | cause | `ClickHouseMetrics_MemoryTracking / ClickHouseAsyncMetrics_CGroupMemLimit > 0.80` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseReplicationQueueHigh` | warning | P2 | 5m | cause | `ClickHouseMetrics_ReplicatedChecks > 100` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseZooKeeperSessionLost` | critical | P1 | 1m | symptom | `ClickHouseMetrics_ZooKeeperSession == 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHousePartsExplosion` | warning | P2 | 5m | cause | `ClickHouseMetrics_Parts > 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseLongRunningMutation` | warning | P2 | 30m | cause | `ClickHouseMetrics_Mutations > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseQueryThreadsHigh` | warning | P2 | 5m | cause | `ClickHouseMetrics_QueryThread > 50` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseInsertDelayHigh` | warning | P2 | 5m | symptom | `ClickHouseAsyncMetrics_ReplicaDelay > 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDiskUsageHigh` | warning | P2 | 5m | cause | `(ClickHouseAsyncMetrics_DiskTotal_default - ClickHouseAsyncMetrics_DiskAvailabl…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseMergesDelayed` | warning | P2 | 10m | cause | `ClickHouseMetrics_BackgroundMergesAndMutationsPoolTask / ClickHouseAsyncMetrics…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDetachedPartsHigh` | warning | P3 | 10m | cause | `ClickHouseAsyncMetrics_NumberOfDetachedParts > 10` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDistributedSendFailed` | warning | P2 | 5m | symptom | `rate(ClickHouseProfileEvents_DistributedSyncInsertionTimeoutExceeded[5m]) > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseKeeperConnectionLost` | critical | P1 | 1m | symptom | `ClickHouseMetrics_KeeperAliveConnections == 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorMetricsAbsent` | warning | P2 | 10m | cause | `absent(clickhouse_operator_chi)` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorHostReconcileErrors` | warning | P2 | 5m | cause | `increase(clickhouse_operator_host_reconciles_errors[15m]) > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorHostReconcileErrorsSustained` | critical | P1 | 10m | cause | `increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorCHIReconcileAborted` | warning | P2 | 5m | cause | `increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorCHIReconcileStuck` | warning | P2 | 15m | cause | `sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorHostReconcileSlow` | warning | P3 | 15m | cause | `increase(clickhouse_operator_host_reconciles_timings_sum[1h]) / increase(clickh…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorHostRestartsHigh` | warning | P2 | 5m | symptom | `increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorPodsDisappearing` | warning | P2 | 10m | symptom | `sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m])) …` | [clickhouse.md](runbooks/databases/clickhouse.md) |
 
-### `rules/databases/cnpg.yaml`
+### `rules/metrics/databases/cnpg.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
 | `CNPGClusterDown` | critical | P1 | 1m | symptom | `cnpg_collector_up == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterDegraded` | critical | P1 | 5m | symptom | `cnpg_cluster_ready_instances < cnpg_cluster_instances` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterHAWarning` | warning | P2 | 5m | cause | `cnpg_cluster_instances == 1` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 | `CNPGClusterLongRunningTransactionWarning` | warning | P2 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 300` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 | `CNPGClusterLongRunningTransactionCritical` | critical | P1 | 1m | cause | `cnpg_backends_max_tx_duration_seconds{state!="idle"} > 1800` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 | `CNPGClusterReplicationLagWarning` | warning | P2 | 2m | cause | `cnpg_pg_replication_lag > 30` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 | `CNPGClusterReplicationLagCritical` | critical | P1 | 2m | cause | `cnpg_pg_replication_lag > 120` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterBackupOverdue` | warning | P2 | 5m | cause | `time() - cnpg_cluster_last_successful_backup_timestamp > 86400` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterHighWALDiskUsage` | warning | P2 | 5m | cause | `cnpg_cluster_pg_wal_volume_size_bytes / cnpg_cluster_pg_wal_volume_total_size_b…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 | `CNPGClusterWALArchiveFailing` | warning | P2 | 5m | cause | `rate(cnpg_pg_stat_archiver_failed_count[5m]) > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterDeadReplicationSlot` | critical | P1 | 10m | cause | `cnpg_pg_replication_slots_active == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterHighConnections` | warning | P2 | 5m | cause | `cnpg_backends_total / cnpg_pg_settings_max_connections > 0.80` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterPrimaryNotReady` | critical | P0 | 2m | symptom | `cnpg_cluster_primary_uptime_seconds == 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterFailoverOccurred` | info | P3 | 0m | cause | `increase(cnpg_cluster_switchover_count[10m]) > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
-| `CNPGClusterDataVolumeNearFull` | warning | P2 | 10m | cause | `cnpg_cluster_pg_data_volume_used_bytes / cnpg_cluster_pg_data_volume_total_size…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterDeadReplicationSlot` | critical | P1 | 10m | cause | `cnpg_pg_replication_slots_active == 0 and cnpg_pg_replication_slots_pg_wal_lsn_…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterHighConnections` | warning | P2 | 5m | cause | `sum by (cnpg_cluster, namespace, pod) (cnpg_backends_total) / on (cnpg_cluster,…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterXIDWraparoundWarning` | warning | P2 | 10m | cause | `max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 100…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterXIDWraparoundCritical` | critical | P1 | 5m | cause | `max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_xid_age) > 180…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterMultixactWraparoundWarning` | warning | P2 | 10m | cause | `max by (cnpg_cluster, namespace, pod, datname) (cnpg_pg_database_mxid_age) > 10…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterReplicationSlotWALRetainedWarning` | warning | P2 | 5m | cause | `cnpg_pg_replication_slots_pg_wal_lsn_diff > 2147483648` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterReplicationSlotWALRetainedCritical` | critical | P1 | 5m | cause | `cnpg_pg_replication_slots_pg_wal_lsn_diff > 10737418240` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterReplicaWALReceiverDown` | critical | P1 | 2m | symptom | `(cnpg_pg_replication_in_recovery == 1) and on (cnpg_cluster, namespace, pod) (c…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterBackupOverdue` | warning | P2 | 5m | cause | `(time() - cnpg_collector_last_available_backup_timestamp > 86400) and (cnpg_col…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterLastBackupFailed` | critical | P1 | 5m | symptom | `cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_bac…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterManualSwitchoverRequired` | critical | P1 | 1m | symptom | `cnpg_collector_manual_switchover_required > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterFenced` | critical | P1 | 1m | symptom | `cnpg_collector_fencing_on > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterMetricsCollectionFailing` | warning | P3 | 5m | cause | `cnpg_collector_last_collection_error > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterDeadlocks` | warning | P2 | 5m | symptom | `rate(cnpg_pg_stat_database_deadlocks[5m]) > 0` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterBackendsWaitingOnLocks` | warning | P2 | 3m | symptom | `cnpg_backends_waiting_total > 3` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
+| `CNPGClusterLowCacheHitRatio` | warning | P3 | 15m | cause | `sum by (cnpg_cluster, namespace, pod) (rate(cnpg_pg_stat_database_blks_hit[5m])…` | [cnpg.yaml](runbooks/databases/cnpg.yaml) |
 
-### `rules/databases/elasticsearch.yaml`
+### `rules/metrics/databases/elasticsearch.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -76,7 +78,7 @@
 | `ElasticsearchPendingTasks` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_number_of_pending_tasks > 100` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
 | `ElasticsearchSnapshotFailed` | warning | P2 | 5m | cause | `elasticsearch_snapshot_stats_snapshot_number_of_failures > 0` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
 
-### `rules/databases/mongodb.yaml`
+### `rules/metrics/databases/mongodb.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -90,7 +92,7 @@
 | `MongoDBFlushAverageMsHigh` | warning | P3 | 10m | cause | `mongodb_mongod_background_flushing_average_ms > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
 | `MongoDBWiredTigerCacheEvictions` | warning | P2 | 5m | cause | `rate(mongodb_mongod_wiredtiger_cache_evicted_total[5m]) > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
 
-### `rules/databases/mysql.yaml`
+### `rules/metrics/databases/mysql.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -108,7 +110,7 @@
 | `MySQLAbortedConnections` | warning | P2 | 5m | cause | `rate(mysql_global_status_aborted_connects[5m]) > 5` | [mysql.md](runbooks/databases/mysql.md) |
 | `MySQLLongRunningTransaction` | warning | P2 | 1m | cause | `mysql_info_schema_innodb_trx_wait_time_seconds > 300` | [mysql.md](runbooks/databases/mysql.md) |
 
-### `rules/databases/postgresql.yaml`
+### `rules/metrics/databases/postgresql.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -126,13 +128,13 @@
 | `PostgreSQLCommitRatioLow` | warning | P3 | 10m | symptom | `rate(pg_stat_database_xact_commit[5m]) / (rate(pg_stat_database_xact_commit[5m]…` | [postgresql.md](runbooks/databases/postgresql.md) |
 | `PgBouncerHighWaitingClients` | warning | P2 | 2m | symptom | `pgbouncer_pools_cl_waiting > 10` | [postgresql.md](runbooks/databases/postgresql.md) |
 
-### `rules/databases/redis.yaml`
+### `rules/metrics/databases/redis.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
 | `RedisDown` | critical | P1 | 1m | symptom | `redis_up == 0` | [redis.yaml](runbooks/databases/redis.yaml) |
-| `RedisMissingMaster` | critical | P1 | 1m | symptom | `(count(redis_instance_info{role="master"}) or vector(0)) < 1` | [redis.yaml](runbooks/databases/redis.yaml) |
-| `RedisTooManyMasters` | critical | P1 | 1m | symptom | `count(redis_instance_info{role="master"}) > 1` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisMissingMaster` | critical | P1 | 1m | symptom | `count by (rtf_env, rtf_cluster_id, rtf_service) ( redis_up == 1 ) unless count …` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisTooManyMasters` | critical | P1 | 1m | symptom | `count by (rtf_env, rtf_cluster_id, rtf_service) ( redis_instance_info{role="mas…` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisReplicationBroken` | critical | P1 | 1m | symptom | `delta(redis_connected_slaves[1m]) < 0` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisClusterFlapping` | critical | P1 | 2m | symptom | `changes(redis_connected_slaves[2m]) > 2` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisMissingBackup` | critical | P1 | 5m | cause | `time() - redis_rdb_last_save_timestamp_seconds > 60 * 60 * 48` | [redis.yaml](runbooks/databases/redis.yaml) |
@@ -153,7 +155,7 @@
 
 ## gitops
 
-### `rules/gitops/argocd.yaml`
+### `rules/metrics/gitops/argocd.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -172,21 +174,27 @@
 
 ## ingress
 
-### `rules/ingress/nginx-ingress.yaml`
+### `rules/metrics/ingress/nginx-ingress.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `NginxIngressDown` | critical | P0 | 5m | symptom | `absent(up{job=~".*nginx.*ingress.*"} == 1)` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressHigh5xxRate` | warning | P2 | 10m | symptom | `sum by (ingress, exported_namespace) (rate(nginx_ingress_controller_requests{st…` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressHighLatency` | warning | P2 | 10m | symptom | `histogram_quantile(0.99, sum by (le, ingress, exported_namespace) ( rate(nginx_…` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressUpstreamErrors` | warning | P2 | 5m | symptom | `rate(nginx_ingress_controller_requests{status=~"5.."}[5m]) > 1` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressCertificateExpiringSoon` | warning | P2 | 1h | cause | `nginx_ingress_controller_ssl_expire_time_seconds - time() < 86400 * 14` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressConfigReloadFailed` | critical | P1 | 5m | symptom | `nginx_ingress_controller_config_last_reload_successful == 0` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
-| `NginxIngressHighConnections` | warning | P2 | 10m | cause | `nginx_ingress_controller_nginx_process_connections{state="active"} > 5000` | [nginx-ingress.md](runbooks/ingress/nginx-ingress.md) |
+| `NginxIngressDown` | critical | P0 | 5m | symptom | `absent( up{ job=~".*(nginx.*ingress\|ingress.*nginx).*" } == 1 )` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressControllerReplicaDown` | warning | P2 | 5m | cause | `up{ job=~".*(nginx.*ingress\|ingress.*nginx).*" } == 0` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressHigh5xxRate` | warning | P2 | 10m | symptom | `( sum by (ingress, exported_namespace) ( rate(nginx_ingress_controller_requests…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressCritical5xxRate` | critical | P1 | 5m | symptom | `( sum by (ingress, exported_namespace) ( rate(nginx_ingress_controller_requests…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressBackend5xxResponsesHigh` | warning | P2 | 5m | symptom | `sum by ( host, ingress, exported_namespace, exported_service ) ( rate( nginx_in…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressHighLatency` | warning | P2 | 10m | symptom | `histogram_quantile( 0.99, sum by (le, ingress, exported_namespace) ( rate( ngin…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressUpstreamHighLatency` | warning | P2 | 10m | cause | `histogram_quantile( 0.99, sum by ( le, host ) ( rate( nginx_ingress_controller_…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressCertificateExpiringSoon` | warning | P2 | 1h | cause | `( min by (host, secret_name, secret_namespace) ( nginx_ingress_controller_ssl_e…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressCertificateExpired` | critical | P0 | 5m | symptom | `min by (host, secret_name, secret_namespace) ( nginx_ingress_controller_ssl_exp…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressConfigReloadFailed` | critical | P1 | 5m | symptom | `nginx_ingress_controller_config_last_reload_successful == 0` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressOrphanIngress` | warning | P2 | 5m | cause | `max by ( controller_class, controller_namespace, exported_namespace, ingress, t…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressHighConnections` | warning | P2 | 10m | cause | `nginx_ingress_controller_nginx_process_connections{ state="active" } > 5000` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
+| `NginxIngressConnectionsDropped` | warning | P1 | 5m | symptom | `( sum by (controller_pod, controller_namespace) ( rate( nginx_ingress_controlle…` | [nginx-ingress.yaml](runbooks/ingress/nginx-ingress.yaml) |
 
 ## kubernetes
 
-### `rules/kubernetes/apiserver.yaml`
+### `rules/metrics/kubernetes/apiserver.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -198,7 +206,7 @@
 | `KubeAPIServerAdmissionLatency` | warning | P2 | 10m | cause | `histogram_quantile(0.99, sum by (le, rtf_cluster_id, rtf_env, rtf_service, name…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
 | `KubeAPIServerEtcdRequestErrors` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, operation) (rate(etcd_request_dur…` | [apiserver.yaml](runbooks/kubernetes/apiserver.yaml) |
 
-### `rules/kubernetes/coredns.yaml`
+### `rules/metrics/kubernetes/coredns.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -209,7 +217,7 @@
 | `CoreDNSForwardErrorsHigh` | warning | P2 | 5m | symptom | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance, to) (rate(coredns_forwa…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
 | `CoreDNSCacheHitsLow` | warning | P3 | 30m | cause | `sum by (rtf_cluster_id, rtf_env, rtf_service, instance) (rate(coredns_cache_hit…` | [coredns.yaml](runbooks/kubernetes/coredns.yaml) |
 
-### `rules/kubernetes/etcd.yaml`
+### `rules/metrics/kubernetes/etcd.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -227,7 +235,7 @@
 | `EtcdHighApplyDurations` | warning | P2 | 5m | cause | `histogram_quantile(0.99, rate(etcd_server_apply_duration_seconds_bucket[5m])) >…` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
 | `EtcdCertificateExpiringSoon` | warning | P2 | 1h | cause | `(etcd_server_client_cert_expiry_seconds - time()) / 86400 < 30` | [etcd.yaml](runbooks/kubernetes/etcd.yaml) |
 
-### `rules/kubernetes/kube-state-metrics.yaml`
+### `rules/metrics/kubernetes/kube-state-metrics.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -237,7 +245,7 @@
 | `KubeStateMetricsShardingMismatch` | warning | P3 | 15m | cause | `stdvar by (rtf_cluster_id, rtf_env, rtf_service) (kube_state_metrics_total_shar…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
 | `KubeStateMetricsShardsMissing` | warning | P2 | 15m | symptom | `2 ^ max by (rtf_cluster_id, rtf_env, rtf_service) (kube_state_metrics_total_sha…` | [kube-state-metrics.yaml](runbooks/kubernetes/kube-state-metrics.yaml) |
 
-### `rules/kubernetes/kubelet.yaml`
+### `rules/metrics/kubernetes/kubelet.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -252,7 +260,7 @@
 | `KubeletTooManyPods` | warning | P2 | 15m | cause | `max by (node) (kubelet_running_pods{job="kubelet"}) / max by (node) (kube_node_…` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
 | `KubeletClientCertExpiring` | warning | P2 | 5m | cause | `kubelet_certificate_manager_client_ttl_seconds < 86400 * 7` | [kubelet.yaml](runbooks/kubernetes/kubelet.yaml) |
 
-### `rules/kubernetes/node-exporter.yaml`
+### `rules/metrics/kubernetes/node-exporter.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -268,12 +276,13 @@
 | `NodeClockSkew` | warning | P2 | 10m | cause | `(node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0…` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
 | `NodeFileDescriptorUsage` | warning | P2 | 10m | cause | `node_filefd_allocated / node_filefd_maximum > 0.80` | [node-exporter.yaml](runbooks/kubernetes/node-exporter.yaml) |
 
-### `rules/kubernetes/workloads.yaml`
+### `rules/metrics/kubernetes/workloads.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
 | `KubePodCrashLooping` | critical | P1 | 5m | symptom | `max_over_time(kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodOOMKilled` | critical | P1 | 0m | symptom | `increase(kube_pod_container_status_restarts_total[10m]) > 0 and on(namespace, p…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodCPUThrottlingHigh` | warning | P2 | 10m | cause | `( sum by (rtf_cluster_id, rtf_env, namespace, pod, container) ( rate(container_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeContainerWaiting` | warning | P2 | 1h | cause | `kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeDeploymentReplicasMismatch` | warning | P2 | 15m | symptom | `kube_deployment_spec_replicas != kube_deployment_status_replicas_available` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
@@ -292,29 +301,27 @@
 
 ## messaging
 
-### `rules/messaging/kafka.yaml`
+### `rules/metrics/messaging/kafka.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `KafkaExporterDown` | warning | P2 | 2m | symptom | `up{job=~".*kafka.*exporter.*"} == 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaExporterMissing` | warning | P2 | 5m | symptom | `absent(kafka_exporter_build_info)` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaOfflinePartitions` | critical | P1 | 1m | symptom | `kafka_offline_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaUnderReplicatedPartitions` | warning | P2 | 5m | cause | `kafka_under_replicated_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaTopicUnderReplicatedPartition` | warning | P3 | 10m | cause | `kafka_topic_partition_under_replicated_partition > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaInsufficientInSyncReplicas` | warning | P2 | 5m | cause | `kafka_topic_partition_in_sync_replica < 2 and kafka_topic_partition_replicas >=…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaTopicInSyncReplicasBelowThree` | warning | P3 | 10m | cause | `kafka_topic_partition_in_sync_replica < 3 and kafka_topic_partition_replicas >=…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaPartitionLeaderMissing` | critical | P1 | 1m | symptom | `kafka_topic_partition_leader == -1` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaPreferredLeaderImbalance` | warning | P3 | 15m | cause | `100 * sum(kafka_topic_partition_leader_is_preferred == bool 0) / count(kafka_to…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaConsumerGroupLagHigh` | warning | P2 | 5m | cause | `kafka_consumergroup_lag > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaConsumerGroupLagCritical` | critical | P1 | 5m | symptom | `kafka_consumergroup_lag > 100000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaConsumerGroupTotalLagHigh` | warning | P2 | 10m | cause | `kafka_consumergroup_lag_sum > 50000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaConsumerGroupLagIncreasingFast` | warning | P2 | 15m | cause | `delta(kafka_consumergroup_lag_sum[15m]) > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaConsumerGroupNoMembersWithLag` | warning | P2 | 10m | symptom | `(kafka_consumergroup_members == 0) and (kafka_consumergroup_lag_sum > 0)` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaTopicOffsetDecreased` | warning | P2 | 5m | symptom | `delta(kafka_topic_partition_current_offset[10m]) < 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaTopicNoMessages` | warning | P3 | 30m | cause | `sum by (topic) (increase(kafka_topic_partition_current_offset[30m])) == 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
-| `KafkaBrokerCountChanged` | warning | P3 | 1m | cause | `changes(kafka_brokers[10m]) > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaExporterDown` | critical | P1 | 5m | symptom | `up{job=~".*kafka.*exporter.*"} == 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaExporterMissing` | critical | P1 | 10m | symptom | `absent(kafka_exporter_build_info)` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaOfflinePartitions` | critical | P0 | 1m | symptom | `kafka_offline_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaUnderReplicatedPartitions` | critical | P1 | 5m | cause | `kafka_under_replicated_partitions > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicUnderReplicatedPartition` | critical | P1 | 5m | cause | `sum by (topic) ( kafka_topic_partition_under_replicated_partition ) > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicInSyncReplicasBelowThree` | warning | P2 | 5m | cause | `min by (topic) ( kafka_topic_partition_in_sync_replica ) < 3` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaPartitionLeaderMissing` | critical | P0 | 1m | symptom | `kafka_topic_partition_leader < 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaPreferredLeaderImbalance` | warning | P2 | 30m | cause | `sum by (topic) ( kafka_topic_partition_leader_is_preferred == 0 ) > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagHigh` | warning | P2 | 10m | cause | `sum by (consumergroup, topic) ( kafka_consumergroup_lag ) > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagCritical` | critical | P1 | 10m | symptom | `sum by (consumergroup, topic) ( kafka_consumergroup_lag ) > 50000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupTotalLagHigh` | warning | P2 | 5m | cause | `sum by (consumergroup) ( kafka_consumergroup_lag ) > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupLagIncreasingFast` | warning | P2 | 15m | cause | `sum by (consumergroup, topic) ( increase(kafka_consumergroup_lag[15m]) ) > 10000` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaConsumerGroupNoMembersWithLag` | critical | P1 | 5m | symptom | `( sum by (consumergroup) ( kafka_consumergroup_members ) == 0 ) and on (consume…` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaTopicOffsetDecreased` | warning | P2 | 1m | symptom | `delta(kafka_topic_partition_current_offset[10m]) < 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
+| `KafkaBrokerCountChanged` | warning | P2 | 5m | cause | `changes(kafka_brokers[15m]) > 0` | [kafka.yaml](runbooks/messaging/kafka.yaml) |
 
-### `rules/messaging/rabbitmq.yaml`
+### `rules/metrics/messaging/rabbitmq.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -336,7 +343,7 @@
 
 ## observability
 
-### `rules/observability/alertmanager.yaml`
+### `rules/metrics/observability/alertmanager.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -347,7 +354,7 @@
 | `AlertmanagerClusterDown` | critical | P1 | 5m | symptom | `(count by (job) (avg_over_time(up{job=~".*alertmanager.*"}[5m]) < 0.5) / count …` | [alertmanager.md](runbooks/observability/alertmanager.md) |
 | `AlertmanagerSilencesGrowing` | warning | P3 | 1h | cause | `rate(alertmanager_silences[1h]) > 0.5` | [alertmanager.md](runbooks/observability/alertmanager.md) |
 
-### `rules/observability/grafana.yaml`
+### `rules/metrics/observability/grafana.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -356,7 +363,7 @@
 | `GrafanaDatasourceErrors` | warning | P2 | 10m | symptom | `rate(grafana_datasource_request_total{code!~"2.."}[5m]) > 0.1` | [grafana.md](runbooks/observability/grafana.md) |
 | `GrafanaSlowRequests` | warning | P3 | 10m | symptom | `histogram_quantile(0.99, sum by (le, handler) (rate(grafana_http_request_durati…` | [grafana.md](runbooks/observability/grafana.md) |
 
-### `rules/observability/loki.yaml`
+### `rules/metrics/observability/loki.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -370,7 +377,7 @@
 | `LokiHighQueueDepth` | warning | P2 | 5m | cause | `loki_query_scheduler_queue_length > 1000` | [loki.md](runbooks/observability/loki.md) |
 | `LokiRulerFailing` | warning | P2 | 5m | cause | `rate(loki_ruler_evaluation_failures_total[5m]) > 0` | [loki.md](runbooks/observability/loki.md) |
 
-### `rules/observability/prometheus-operator.yaml`
+### `rules/metrics/observability/prometheus-operator.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -380,7 +387,7 @@
 | `PrometheusOperatorReconcileErrors` | warning | P2 | 10m | symptom | `(sum by (controller, namespace) (rate(prometheus_operator_reconcile_errors_tota…` | [prometheus-operator.md](runbooks/observability/prometheus-operator.md) |
 | `PrometheusOperatorRejectedResources` | warning | P2 | 5m | symptom | `min_over_time(prometheus_operator_managed_resources{state="rejected"}[5m]) > 0` | [prometheus-operator.md](runbooks/observability/prometheus-operator.md) |
 
-### `rules/observability/prometheus.yaml`
+### `rules/metrics/observability/prometheus.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -395,7 +402,7 @@
 | `PrometheusRemoteWriteErrors` | warning | P2 | 5m | symptom | `rate(prometheus_remote_storage_samples_failed_total[5m]) > 0` | [prometheus.md](runbooks/observability/prometheus.md) |
 | `PrometheusRemoteWriteBehind` | warning | P2 | 5m | cause | `(time() - prometheus_remote_storage_queue_highest_sent_timestamp_seconds) > 120` | [prometheus.md](runbooks/observability/prometheus.md) |
 
-### `rules/observability/victoriametrics.yaml`
+### `rules/metrics/observability/victoriametrics.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -407,7 +414,7 @@
 | `VictoriaMetricsConcurrentInsertsLimitReached` | warning | P2 | 15m | cause | `avg_over_time(vm_concurrent_insert_current[1m]) / vm_concurrent_insert_capacity…` | [victoriametrics.md](runbooks/observability/victoriametrics.md) |
 | `VictoriaMetricsTooSlowQueryRate` | warning | P2 | 15m | symptom | `histogram_quantile(0.99, sum by (le) (rate(vm_request_duration_seconds_bucket{p…` | [victoriametrics.md](runbooks/observability/victoriametrics.md) |
 
-### `rules/observability/vmagent.yaml`
+### `rules/metrics/observability/vmagent.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -419,7 +426,7 @@
 | `VMAgentRemoteWriteRetries` | warning | P2 | 15m | cause | `sum by (instance, url) (rate(vmagent_remotewrite_retries_count_total[5m])) > 0.1` | [vmagent.md](runbooks/observability/vmagent.md) |
 | `VMAgentTargetScrapeFailures` | warning | P3 | 15m | cause | `sum by (job, instance) (rate(vm_promscrape_scrapes_failed_total[5m])) > 1` | [vmagent.md](runbooks/observability/vmagent.md) |
 
-### `rules/observability/vmalert.yaml`
+### `rules/metrics/observability/vmalert.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -432,7 +439,7 @@
 
 ## runtimes
 
-### `rules/runtimes/java-springboot.yaml`
+### `rules/metrics/runtimes/java-springboot.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -450,7 +457,7 @@
 | `SpringBootActuatorHealthDegraded` | warning | P2 | 2m | symptom | `spring_boot_health_status{status="DOWN",job=~"springboot.*\|java.*"} == 1` | [java-springboot.md](runbooks/runtimes/java-springboot.md) |
 | `SpringBootHighRejectedTasks` | critical | P1 | 2m | symptom | `rate(executor_rejected_tasks_total{job=~"springboot.*\|java.*"}[5m]) > 0` | [java-springboot.md](runbooks/runtimes/java-springboot.md) |
 
-### `rules/runtimes/python-fastapi.yaml`
+### `rules/metrics/runtimes/python-fastapi.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -471,4 +478,4 @@
 
 ---
 
-_301 alerts across 29 files in 8 categories._
+_321 alerts across 29 files in 8 categories._

@@ -1,6 +1,6 @@
-# Unit tests for rules/kubernetes/etcd.yaml
+# Unit tests for rules/metrics/kubernetes/etcd.yml
 rule_files:
-  - ../../rules/kubernetes/etcd.yaml
+  - ../../rules/metrics/kubernetes/etcd.yml
 
 evaluation_interval: 1m
 

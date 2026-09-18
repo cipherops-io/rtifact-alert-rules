@@ -1,4 +1,4 @@
-# Unit tests for rules/databases/cnpg.yaml
+# Unit tests for rules/metrics/databases/cnpg.yml
 #
 # Run with:
 #   promtool test rules tests/databases/cnpg_test.yaml
@@ -7,7 +7,7 @@
 #   https://prometheus.io/docs/prometheus/latest/configuration/unit_testing_rules/
 
 rule_files:
-  - ../../rules/databases/cnpg.yaml
+  - ../../rules/metrics/databases/cnpg.yml
 
 evaluation_interval: 1m
 
