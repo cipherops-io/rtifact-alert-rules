@@ -388,3 +388,1913 @@ tests:
       - eval_time: 30m
         alertname: ClickHouseOperatorPodsDisappearing
         exp_alerts: []
+
+  # ##########################################################################
+  # clickhouse-server.rules — the ClickHouse servers themselves, via the
+  # chi_clickhouse_* metrics exported by the operator's metrics-exporter.
+  #
+  # Same eval-time convention as above: counter cases are evaluated at exactly
+  # the width of the rule's range selector so increase() does no extrapolation
+  # and $value is an exact integer.
+  # ##########################################################################
+
+  # ============================================================
+  # ClickHouseServerDown: positive — the exporter cannot read
+  # system.metrics from the host, past the 2m grace. Dotted fetch_type,
+  # as written by operator 0.25.x and earlier.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system.metrics"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ClickHouseServerDown
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_fetch_errors{fetch_type=~\"system[._ ]metrics\"} > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              fetch_type: "system.metrics"
+            exp_annotations:
+              summary: "ClickHouse server is not answering queries"
+              description: "The metrics-exporter has been unable to read system.metrics from ClickHouse host chi-prod3-cluster-0-0 (CHI prod3) for over 2 minutes — the server is not answering queries on its native port. Clients routed to this host get connection errors or timeouts. If this is the only live replica of its shard, that shard's data cannot be read or written, and distributed queries that touch it fail."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseserverdown"
+
+  # ============================================================
+  # ClickHouseServerDown: positive — same failure, underscored
+  # fetch_type as written by operator 0.27.x and master. Both spellings
+  # must match the same rule.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system_metrics"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ClickHouseServerDown
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_fetch_errors{fetch_type=~\"system[._ ]metrics\"} > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              fetch_type: "system_metrics"
+            exp_annotations:
+              summary: "ClickHouse server is not answering queries"
+              description: "The metrics-exporter has been unable to read system.metrics from ClickHouse host chi-prod3-cluster-0-0 (CHI prod3) for over 2 minutes — the server is not answering queries on its native port. Clients routed to this host get connection errors or timeouts. If this is the only live replica of its shard, that shard's data cannot be read or written, and distributed queries that touch it fail."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseserverdown"
+
+  # ============================================================
+  # ClickHouseServerDown: negative — fetches are succeeding.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system.metrics"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ClickHouseServerDown
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseServerMetricsAbsent: positive — no chi_clickhouse_*
+  # series at all for longer than the 15m grace.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'up{job="clickhouse-operator"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseServerMetricsAbsent
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "absent(chi_clickhouse_metric_Uptime)"
+            exp_annotations:
+              summary: "No ClickHouse server metrics are being scraped"
+              description: "No chi_clickhouse_metric_* series has been scraped for 15 minutes. Either the metrics-exporter container is down, it cannot reach any ClickHouse host, or the scrape config no longer matches its endpoint. While this is firing every ClickHouse server alert is blind: a readonly replica, rejected inserts, replication lag, or a filling disk will all go undetected."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseservermetricsabsent"
+
+  # ============================================================
+  # ClickHouseServerMetricsAbsent: negative — the exporter is
+  # scraping ClickHouse normally.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '86400+60x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseServerMetricsAbsent
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseMetricsFetchErrors: positive — system.metrics still
+  # works but the system.disks fetch keeps failing (dotted spelling).
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system.disks"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseMetricsFetchErrors
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_fetch_errors{fetch_type!~\"system[._ ]metrics\"} > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              fetch_type: "system.disks"
+            exp_annotations:
+              summary: "metrics-exporter cannot fetch part of the ClickHouse metric set"
+              description: "The metrics-exporter has been failing the system.disks fetch on host chi-prod3-cluster-0-0 (CHI prod3) for over 15 minutes, while system.metrics still succeeds — so the server is up but one metric family is missing. Whichever alerts depend on that family (parts, mutations, disks, detached parts or replicas) are blind until it recovers. Common causes: the exporter user lacks SELECT on that system table, or the query times out on a cluster with very many tables."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemetricsfetcherrors"
+
+  # ============================================================
+  # ClickHouseMetricsFetchErrors: positive — 'system parts' is a
+  # distinct fetch from 'system.metrics'; the space-separated spelling
+  # must not be swallowed by the system[._ ]metrics matcher.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system parts"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseMetricsFetchErrors
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_fetch_errors{fetch_type!~\"system[._ ]metrics\"} > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              fetch_type: "system parts"
+            exp_annotations:
+              summary: "metrics-exporter cannot fetch part of the ClickHouse metric set"
+              description: "The metrics-exporter has been failing the system parts fetch on host chi-prod3-cluster-0-0 (CHI prod3) for over 15 minutes, while system.metrics still succeeds — so the server is up but one metric family is missing. Whichever alerts depend on that family (parts, mutations, disks, detached parts or replicas) are blind until it recovers. Common causes: the exporter user lacks SELECT on that system table, or the query times out on a cluster with very many tables."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemetricsfetcherrors"
+
+  # ============================================================
+  # ClickHouseMetricsFetchErrors: negative — a failing system.metrics
+  # fetch belongs to ClickHouseServerDown, not here; this rule must
+  # stay silent for it.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system.metrics"}'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseMetricsFetchErrors
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseMetricsFetchErrors: negative — every non-metrics fetch
+  # is succeeding.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_fetch_errors{chi="prod3",hostname="chi-prod3-cluster-0-0",fetch_type="system.disks"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseMetricsFetchErrors
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseServerRestarted: positive — uptime is 3 minutes and
+  # climbing, so the server came up very recently.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '120+60x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ClickHouseServerRestarted
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "info"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_Uptime < 300"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse server restarted recently"
+              description: "ClickHouse host chi-prod3-cluster-0-0 (CHI prod3) has been up for only 3m 0s. A restart drops every in-flight query and open connection, and the replica has to reload its parts and catch up on its replication queue before it serves complete results. Expect this during a planned rolling upgrade; outside one, check whether the container was OOMKilled or crashed."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseserverrestarted"
+
+  # ============================================================
+  # ClickHouseServerRestarted: negative — the server has been up
+  # for a day.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '86400+60x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: ClickHouseServerRestarted
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReadonlyReplica: positive — two replicated tables are
+  # read-only for longer than the 5m grace.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReadonlyReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '2+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseReadonlyReplica
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_ReadonlyReplica > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse has replicated tables stuck in read-only mode"
+              description: "2 replicated table(s) on host chi-prod3-cluster-0-0 (CHI prod3) have been read-only for over 5 minutes. A replica goes read-only when it loses its ZooKeeper/Keeper session or cannot find its metadata there, and while it is read-only every INSERT, ALTER and merge on those tables is rejected. Writes routed to this host fail outright; reads still work but drift further behind the other replicas the longer this lasts."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereadonlyreplica"
+
+  # ============================================================
+  # ClickHouseReadonlyReplica: negative — no read-only replicas.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReadonlyReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseReadonlyReplica
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReplicationLagHigh: positive — 10 minutes behind,
+  # twice the 5m threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReplicasMaxAbsoluteDelay{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '600+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseReplicationLagHigh
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse replication is lagging"
+              description: "The most delayed replicated table on host chi-prod3-cluster-0-0 (CHI prod3) is 10m 0s behind (threshold 5m). Queries that land on this replica return stale results — rows written elsewhere are simply missing — and if the leader is lost now, everything still in this replica's queue is at risk. Usual causes: merges and fetches saturating the host, a slow or full disk, or a Keeper/ZooKeeper ensemble that is not keeping up."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationlaghigh"
+
+  # ============================================================
+  # ClickHouseReplicationLagHigh: negative — a minute of lag is
+  # normal on a busy cluster.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReplicasMaxAbsoluteDelay{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '60+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseReplicationLagHigh
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReplicationQueueHigh: positive — the queue sits at 250
+  # entries and does not drain.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReplicasMaxQueueSize{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '250+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseReplicationQueueHigh
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_ReplicasMaxQueueSize > 100"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse replication queue is backing up"
+              description: "The largest replication queue on host chi-prod3-cluster-0-0 (CHI prod3) holds 250 entries (threshold 100) and has not drained for 15 minutes. The replica is being handed fetches, merges and mutations faster than it can apply them; replication lag and part count grow from here, and a queue entry that keeps failing will retry forever and block everything queued behind it."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationqueuehigh"
+
+  # ============================================================
+  # ClickHouseReplicationQueueHigh: negative — a small queue that is
+  # being worked off.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ReplicasMaxQueueSize{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '10+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseReplicationQueueHigh
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseReplicatedDataLoss: positive — one data-loss event in
+  # # the 10m window.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x10'
+  #   alert_rule_test:
+  #     - eval_time: 10m
+  #       alertname: ClickHouseReplicatedDataLoss
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "critical"
+  #             priority: "P1"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_ReplicatedDataLoss[10m]) > 0
+  #               or (chi_clickhouse_event_ReplicatedDataLoss > 0 unless chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse reported replicated data loss"
+  #             description: "ClickHouse raised 1 ReplicatedDataLoss event(s) on host chi-prod3-cluster-0-0 (CHI prod3) in the last 10m. The server found a part referenced in ZooKeeper/Keeper that exists on no replica at all — those rows are gone unless they can be re-ingested from the source. This normally follows a Keeper data loss, a restore from a stale Keeper snapshot, or replicas being wiped while their metadata survived."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicateddataloss"
+
+  # # ============================================================
+  # # ClickHouseReplicatedDataLoss: negative — the counter exists but
+  # # has never incremented.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x10'
+  #   alert_rule_test:
+  #     - eval_time: 10m
+  #       alertname: ClickHouseReplicatedDataLoss
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: positive — one failed part
+  # fetch inside the 15m window.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 1+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
+                or (chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is failing to fetch parts from its replicas"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) failed 1 part fetch(es) in the last 15m. Every failed fetch is a part this replica still does not have, so it stays behind on those tables and its replication queue keeps retrying. Look for an unreachable or overloaded source replica, the interserver port being blocked, or a full disk on either side."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicatedpartfetchfailures"
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: negative — fetches are
+  # all succeeding.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseDataAfterMergeDiffersFromReplica: positive — one merge
+  # # produced a different result than the replica.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x15'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "cause"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_DataAfterMergeDiffersFromReplica[15m]) > 0
+  #               or (chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse merge result differs between replicas"
+  #             description: "Host chi-prod3-cluster-0-0 (CHI prod3) merged data 1 time(s) in the last 15m and got a different result than its replica, so it discarded its own result and fetched the other copy. The cluster self-heals, but the divergence itself is the warning: replicas running different ClickHouse versions, non-deterministic expressions in the table's ORDER BY/materialized columns, or silent storage corruption on one host."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedataaftermergediffersfromreplica"
+
+  # # ============================================================
+  # # ClickHouseDataAfterMergeDiffersFromReplica: negative — merges
+  # # agree across replicas.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x15'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseKeeperSessionUnstable: positive — three concurrent
+  # Keeper sessions where a healthy server holds one.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ZooKeeperSession{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '3+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseKeeperSessionUnstable
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_ZooKeeperSession > 1"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse holds more than one Keeper/ZooKeeper session"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) has held 3 concurrent Keeper/ZooKeeper sessions for 5 minutes. A healthy server holds exactly one; more than one means it is re-establishing sessions because the old ones expired, and reads through those sessions can see stale metadata. Sessions that keep expiring end with replicas going read-only."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeepersessionunstable"
+
+  # ============================================================
+  # ClickHouseKeeperSessionUnstable: negative — exactly one session.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_ZooKeeperSession{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '1+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseKeeperSessionUnstable
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseKeeperHardwareExceptions: positive — one connection-level
+  # Keeper failure in the 10m window.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 1+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseKeeperHardwareExceptions
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
+                or (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse cannot talk to Keeper/ZooKeeper reliably"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) hit 1 Keeper/ZooKeeper hardware exception(s) in the last 10m — connection loss or session timeout, not a logical error. Every replicated INSERT, merge assignment and ALTER needs Keeper, so while this continues writes stall and replicas drift towards read-only. Check the Keeper/ZooKeeper ensemble before treating this as a ClickHouse problem."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperhardwareexceptions"
+
+  # ============================================================
+  # ClickHouseKeeperHardwareExceptions: negative — Keeper is stable.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseKeeperHardwareExceptions
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseRejectedInserts: positive — one insert rejected with
+  # 'Too many parts' inside the 10m window.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 1+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_RejectedInserts[10m]) > 0
+                or (chi_clickhouse_event_RejectedInserts > 0 unless chi_clickhouse_event_RejectedInserts offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is rejecting inserts"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) rejected 1 insert(s) in the last 10m with 'Too many parts'. These writes failed outright — the client either retries or loses the data. Merges are not keeping up with the insert rate on at least one table, usually because inserts arrive in many small batches or the background merge pool is saturated."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouserejectedinserts"
+
+  # ============================================================
+  # ClickHouseRejectedInserts: negative — nothing is being rejected.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDelayedInserts: positive — inserts are throttled
+  # continuously. The counter keeps climbing (1/min), giving
+  # increase()==10 over the window.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+1x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ClickHouseDelayedInserts
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_DelayedInserts[10m]) > 0
+                or (chi_clickhouse_event_DelayedInserts > 0 unless chi_clickhouse_event_DelayedInserts offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is throttling inserts"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) delayed 10 insert(s) in the last 10m. ClickHouse throttles writers once a partition crosses parts_to_delay_insert, so producers are already seeing slower INSERTs and ingest lag builds up upstream. This is the stage before outright rejection — if the part count keeps climbing, ClickHouseRejectedInserts follows."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedelayedinserts"
+
+  # ============================================================
+  # ClickHouseDelayedInserts: negative — no throttling.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ClickHouseDelayedInserts
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseMaxPartCountForPartition: positive — 250 active parts
+  # in the busiest partition, above the threshold of 100.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_MaxPartCountForPartition{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '250+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseMaxPartCountForPartition
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_MaxPartCountForPartition > 100"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse has too many parts in a single partition"
+              description: "The busiest partition on host chi-prod3-cluster-0-0 (CHI prod3) holds 250 active parts (threshold 100). Merges are falling behind the insert rate. Every query over that partition has to open all of those parts, so reads get slower as the count grows, and once it reaches parts_to_delay_insert / parts_to_throw_insert the server starts throttling and then rejecting writes."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemaxpartcountforpartition"
+
+  # ============================================================
+  # ClickHouseMaxPartCountForPartition: negative — merges are
+  # keeping up.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_MaxPartCountForPartition{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '20+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseMaxPartCountForPartition
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDistributedFilesToInsertHigh: positive — 120 files
+  # queued for shards, above the threshold of 50.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DistributedFilesToInsert{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '120+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseDistributedFilesToInsertHigh
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_DistributedFilesToInsert > 50"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse distributed inserts are queueing on disk"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) has 120 pending files waiting to be sent to shards by Distributed tables (threshold 50). Rows already accepted from clients are sitting on local disk and are not queryable on their target shards yet, so reads return incomplete results and the backlog is lost if this host's volume is lost. Usual cause: one shard is down, slow, or rejecting writes."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedfilestoinserthigh"
+
+  # ============================================================
+  # ClickHouseDistributedFilesToInsertHigh: negative — the queue
+  # drains as fast as it fills.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DistributedFilesToInsert{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '5+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseDistributedFilesToInsertHigh
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseSmallInsertBatches: positive — 300 inserts in 30m
+  # carrying 500 rows each, under the 1000-row threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_InsertQuery{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+10x40'
+      - series: 'chi_clickhouse_event_InsertedRows{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+5000x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClickHouseSmallInsertBatches
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_InsertQuery[30m]) > 100
+                and
+                increase(chi_clickhouse_event_InsertedRows[30m]) / increase(chi_clickhouse_event_InsertQuery[30m]) < 1000
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is being written to in very small batches"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) is averaging under 1000 rows per INSERT over the last 30m across 300 inserts. Every INSERT creates at least one part, so small batches generate parts far faster than merges can consume them — this is the root cause behind most ClickHouseMaxPartCountForPartition, ClickHouseDelayedInserts and ClickHouseRejectedInserts incidents. Batch on the client side or put async_insert in front of these writers."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousesmallinsertbatches"
+
+  # ============================================================
+  # ClickHouseSmallInsertBatches: negative — the same insert rate
+  # but 5000 rows per insert.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_InsertQuery{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+10x40'
+      - series: 'chi_clickhouse_event_InsertedRows{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+50000x40'
+    alert_rule_test:
+      - eval_time: 30m
+        alertname: ClickHouseSmallInsertBatches
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseStorageBufferErrorOnFlush: positive — one failed
+  # # Buffer flush inside the 15m window.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x15'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseStorageBufferErrorOnFlush
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_StorageBufferErrorOnFlush[15m]) > 0
+  #               or (chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Buffer table failed to flush"
+  #             description: "A Buffer table on host chi-prod3-cluster-0-0 (CHI prod3) failed to flush 1 time(s) in the last 15m. Buffer tables hold rows in memory, so a flush that never succeeds means those rows are dropped when the buffer is discarded or the server restarts — this is silent data loss from the client's point of view, because the INSERT already returned success."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousestoragebuffererroronflush"
+
+  # # ============================================================
+  # # ClickHouseStorageBufferErrorOnFlush: negative — buffers flush
+  # # cleanly.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x15'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseStorageBufferErrorOnFlush
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseTooManyRunningQueries: positive — 120 queries minus 10
+  # pending async inserts leaves 110 real queries, above 80.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '120+0x10'
+      - series: 'chi_clickhouse_metric_PendingAsyncInsert{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '10+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseTooManyRunningQueries
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                ((chi_clickhouse_metric_Query - chi_clickhouse_metric_PendingAsyncInsert) or chi_clickhouse_metric_Query) > 80
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is running too many concurrent queries"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) has been running 110 concurrent queries for 5 minutes (threshold 80). Queries are arriving faster than they complete, so latency rises for everyone on this host, memory pressure grows with each concurrent query, and once max_concurrent_queries is reached new queries are rejected outright."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanyrunningqueries"
+
+  # ============================================================
+  # ClickHouseTooManyRunningQueries: negative — 50 queries, 10 of
+  # which are pending async inserts.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '50+0x10'
+      - series: 'chi_clickhouse_metric_PendingAsyncInsert{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '10+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseTooManyRunningQueries
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseLongestRunningQuery: positive — a query has been
+  # running for 15 minutes, past the 10m threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_LongestRunningQuery{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '900+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseLongestRunningQuery
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_LongestRunningQuery > 600"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "A ClickHouse query has been running for too long"
+              description: "The oldest query on host chi-prod3-cluster-0-0 (CHI prod3) has been running for 15m 0s (threshold 10m). It holds its memory and thread slots for as long as it runs, crowding out other queries, and a client that has already timed out will not consume the result. Usually a missing PREWHERE/partition filter, a runaway JOIN, or an unbounded ad-hoc query."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouselongestrunningquery"
+
+  # ============================================================
+  # ClickHouseLongestRunningQuery: negative — the oldest query is a
+  # minute old.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_LongestRunningQuery{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '60+0x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: ClickHouseLongestRunningQuery
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseQueryPreempted: positive — two queries have been
+  # preempted for the whole 10m grace.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_QueryPreempted{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '2+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseQueryPreempted
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_QueryPreempted > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse queries are being preempted"
+              description: "2 query(s) on host chi-prod3-cluster-0-0 (CHI prod3) have been stopped and waiting for 10 minutes because higher-priority queries are running. Preempted queries make no progress while they wait, so low-priority workloads (reports, backfills) can stall indefinitely whenever the high-priority workload is busy. Either the priority settings are too aggressive or the host is simply oversubscribed."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousequerypreempted"
+
+  # ============================================================
+  # ClickHouseQueryPreempted: negative — nothing is preempted.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_QueryPreempted{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseQueryPreempted
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseTooManyConnections: positive — 60 HTTP + 50 native +
+  # 5 MySQL connections sum to 115, above the threshold of 100.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_HTTPConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '60+0x15'
+      - series: 'chi_clickhouse_metric_TCPConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '50+0x15'
+      - series: 'chi_clickhouse_metric_MySQLConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '5+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseTooManyConnections
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"}) > 100
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse has too many client connections"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) has held 115 client connections (HTTP + native + MySQL + PostgreSQL) for 10 minutes, above the threshold of 100. Each connection costs a server thread and memory, and once max_connections is reached new clients are refused. A count that only grows usually means a client pool that opens connections without closing them, or clients retrying against a host whose queries are already slow."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanyconnections"
+
+  # ============================================================
+  # ClickHouseTooManyConnections: negative — the same protocols with
+  # a normal connection count.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_HTTPConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '10+0x15'
+      - series: 'chi_clickhouse_metric_TCPConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '5+0x15'
+      - series: 'chi_clickhouse_metric_MySQLConnection{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseTooManyConnections
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDiskSpaceLow: positive — 5GB free of 100GB is 5%,
+  # under the 10% threshold.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DiskFreeBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '5000000000+0x15'
+      - series: 'chi_clickhouse_metric_DiskTotalBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '100000000000+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseDiskSpaceLow
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "storage"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              disk: "default"
+            exp_annotations:
+              summary: "ClickHouse disk is nearly full"
+              description: "Disk default on host chi-prod3-cluster-0-0 (CHI prod3) has only 5% free space left. ClickHouse needs free space to merge — a merge needs room for the whole output part before it can delete the inputs — so merges stop first, part counts climb, and inserts start failing. When the volume fills completely the server cannot write at all and replicas go read-only."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskspacelow"
+
+  # ============================================================
+  # ClickHouseDiskSpaceLow: negative — half the volume is free.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DiskFreeBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '50000000000+0x15'
+      - series: 'chi_clickhouse_metric_DiskTotalBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '100000000000+0x15'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseDiskSpaceLow
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDiskWillFillWithin24h: positive — 29GB of 100GB free,
+  # dropping 100MB every 5 minutes. Extrapolating that 6h slope over
+  # 24h lands well below zero.
+  # ============================================================
+  - interval: 5m
+    input_series:
+      - series: 'chi_clickhouse_metric_DiskFreeBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '29000000000-100000000x100'
+      - series: 'chi_clickhouse_metric_DiskTotalBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '100000000000+0x100'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: ClickHouseDiskWillFillWithin24h
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "storage"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0
+                and chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.3
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              disk: "default"
+            exp_annotations:
+              summary: "ClickHouse disk will be full within 24 hours"
+              description: "Disk default on host chi-prod3-cluster-0-0 (CHI prod3) is under 30% free and, at the rate it has been filling over the last 6 hours, will be full within 24 hours. Act while there is still headroom: a PVC resize needs free space to complete, and once the disk is full merges stop and inserts fail. The 6h trend also catches a retention policy that has silently stopped deleting old partitions."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskwillfillwithin24h"
+
+  # ============================================================
+  # ClickHouseDiskWillFillWithin24h: negative — the same 29% free
+  # but flat, so the 24h prediction stays positive.
+  # ============================================================
+  - interval: 5m
+    input_series:
+      - series: 'chi_clickhouse_metric_DiskFreeBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '29000000000+0x100'
+      - series: 'chi_clickhouse_metric_DiskTotalBytes{chi="prod3",hostname="chi-prod3-cluster-0-0",disk="default"}'
+        values: '100000000000+0x100'
+    alert_rule_test:
+      - eval_time: 7h
+        alertname: ClickHouseDiskWillFillWithin24h
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDetachedPartsPresent: positive — three parts detached
+  # as broken, which is not an operator action.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DetachedParts{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events",disk="default",reason="broken"}'
+        values: '3+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseDetachedPartsPresent
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: "chi_clickhouse_metric_DetachedParts{reason!=\"detached_by_user\"} > 0"
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+              database: "analytics"
+              table: "events"
+              disk: "default"
+              reason: "broken"
+            exp_annotations:
+              summary: "ClickHouse has detached parts the server did not expect"
+              description: "3 part(s) of analytics.events on host chi-prod3-cluster-0-0 (CHI prod3) are detached with reason 'broken'. Detached parts are excluded from every query, so those rows are missing from results on this replica, and they still occupy disk. A reason of broken/unexpected/covered-by-broken points at corruption or a failed merge rather than an operator action."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedetachedpartspresent"
+
+  # ============================================================
+  # ClickHouseDetachedPartsPresent: negative — parts detached by an
+  # operator on purpose are excluded by the selector.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_DetachedParts{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events",disk="default",reason="detached_by_user"}'
+        values: '5+0x20'
+    alert_rule_test:
+      - eval_time: 16m
+        alertname: ClickHouseDetachedPartsPresent
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseTooManyMutations: positive — 150 unfinished mutations
+  # # on one table, above the threshold of 100.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_table_mutations{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events"}'
+  #       values: '150+0x20'
+  #   alert_rule_test:
+  #     - eval_time: 16m
+  #       alertname: ClickHouseTooManyMutations
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "cause"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: "chi_clickhouse_table_mutations > 100"
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #             database: "analytics"
+  #             table: "events"
+  #           exp_annotations:
+  #             summary: "ClickHouse has too many unfinished mutations"
+  #             description: "analytics.events on host chi-prod3-cluster-0-0 (CHI prod3) has 150 unfinished mutations (threshold 100). Mutations rewrite whole parts and run in the background pool, so a queue this deep starves merges, inflates disk usage while both copies of each part exist, and means ALTER UPDATE/DELETE issued now will not take effect for a long time."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanymutations"
+
+  # # ============================================================
+  # # ClickHouseTooManyMutations: negative — a handful of mutations
+  # # in flight.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_table_mutations{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events"}'
+  #       values: '10+0x20'
+  #   alert_rule_test:
+  #     - eval_time: 16m
+  #       alertname: ClickHouseTooManyMutations
+  #       exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseMutationsNotProgressing: positive — 40 parts left to
+  # # mutate and the number has not moved in an hour.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_table_mutations_parts_to_do{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events"}'
+  #       values: '40+0x90'
+  #   alert_rule_test:
+  #     - eval_time: 90m
+  #       alertname: ClickHouseMutationsNotProgressing
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "cause"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               chi_clickhouse_table_mutations_parts_to_do > 0 and delta(chi_clickhouse_table_mutations_parts_to_do[1h]) >= 0
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #             database: "analytics"
+  #             table: "events"
+  #           exp_annotations:
+  #             summary: "A ClickHouse mutation is stuck"
+  #             description: "analytics.events on host chi-prod3-cluster-0-0 (CHI prod3) still has 40 parts left to mutate, and that number has not gone down in the last hour. The mutation is not progressing — usually it is failing and retrying on one part. Until it finishes, the ALTER is not applied (deleted rows are still readable, updated values still stale) and every mutation queued behind it on that table waits."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemutationsnotprogressing"
+
+  # # ============================================================
+  # # ClickHouseMutationsNotProgressing: negative — the same mutation
+  # # is working through its parts, one per minute.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_table_mutations_parts_to_do{chi="prod3",hostname="chi-prod3-cluster-0-0",database="analytics",table="events"}'
+  #       values: '100-1x90'
+  #   alert_rule_test:
+  #     - eval_time: 90m
+  #       alertname: ClickHouseMutationsNotProgressing
+  #       exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseDistributedConnectionExceptions: positive — one shard
+  # # connection given up on inside the 10m window.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x10'
+  #   alert_rule_test:
+  #     - eval_time: 10m
+  #       alertname: ClickHouseDistributedConnectionExceptions
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "network"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_DistributedConnectionFailAtAll[10m]) > 0
+  #               or (chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse cannot reach a remote shard"
+  #             description: "Host chi-prod3-cluster-0-0 (CHI prod3) gave up connecting to a remote shard 1 time(s) in the last 10m after exhausting its retries. Distributed queries that need that shard either fail or, with skip_unavailable_shards enabled, quietly return partial results. Check whether the shard's pods are running and whether the interserver/native port is reachable between them."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedconnectionexceptions"
+
+  # # ============================================================
+  # # ClickHouseDistributedConnectionExceptions: negative — every shard
+  # # is reachable.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x10'
+  #   alert_rule_test:
+  #     - eval_time: 10m
+  #       alertname: ClickHouseDistributedConnectionExceptions
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseNetworkErrors: positive — one network error inside the
+  # 10m window. NETWORK_ERROR comes from system.errors; the DNSError
+  # half of the or is absent here.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 1+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "network"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
+                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                or (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is hitting network or DNS errors"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 1 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousenetworkerrors"
+
+  # ============================================================
+  # ClickHouseNetworkErrors: negative — no network or DNS errors.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x10'
+      - series: 'chi_clickhouse_event_DNSError{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseKafkaConsumerErrors: positive — one consumer error
+  # # inside the 30m window.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x30'
+  #   alert_rule_test:
+  #     - eval_time: 30m
+  #       alertname: ClickHouseKafkaConsumerErrors
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_KafkaConsumerErrors[30m]) > 0
+  #               or (chi_clickhouse_event_KafkaConsumerErrors > 0 unless chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Kafka engine consumer is erroring"
+  #             description: "The Kafka engine on host chi-prod3-cluster-0-0 (CHI prod3) reported 1 consumer error(s) in the last 30m. While consumers are erroring the materialized views behind those Kafka tables stop ingesting, so the destination tables fall behind the topic and consumer lag grows until the broker's retention drops messages that were never read."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkaconsumererrors"
+
+  # # ============================================================
+  # # ClickHouseKafkaConsumerErrors: negative — consumers are healthy.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x30'
+  #   alert_rule_test:
+  #     - eval_time: 30m
+  #       alertname: ClickHouseKafkaConsumerErrors
+  #       exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseKafkaCommitFailures: positive — one failed offset
+  # # commit inside the 30m window.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0 1+0x30'
+  #   alert_rule_test:
+  #     - eval_time: 30m
+  #       alertname: ClickHouseKafkaCommitFailures
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_KafkaCommitFailures[30m]) > 0
+  #               or (chi_clickhouse_event_KafkaCommitFailures > 0 unless chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Kafka engine cannot commit offsets"
+  #             description: "The Kafka engine on host chi-prod3-cluster-0-0 (CHI prod3) failed to commit offsets 1 time(s) in the last 30m. Uncommitted offsets are re-read after the next rebalance, so the same messages are inserted again — duplicate rows in the destination table — and the consumer group may rebalance repeatedly instead of making progress."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkacommitfailures"
+
+  # # ============================================================
+  # # ClickHouseKafkaCommitFailures: negative — offsets commit
+  # # normally.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '0+0x30'
+  #   alert_rule_test:
+  #     - eval_time: 30m
+  #       alertname: ClickHouseKafkaCommitFailures
+  #       exp_alerts: []
+
+  # # ##########################################################################
+  # # First-appearance cases. A system.events counter does not exist until the
+  # # event has happened once; it then shows up carrying its value and stays
+  # # flat. increase() cannot see that 0 -> N step (there is no earlier sample
+  # # to compare against), so each of these rules carries a second branch:
+  # #   <counter> > 0 unless <counter> offset <window>
+  # # These cases cover exactly that: the series is absent until t=5m, then sits
+  # # at 1 forever. Without the second branch every one of them would be silent.
+  # # ##########################################################################
+
+  # # ============================================================
+  # # ClickHouseReplicatedDataLoss: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 7m
+  #       alertname: ClickHouseReplicatedDataLoss
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "critical"
+  #             priority: "P1"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_ReplicatedDataLoss[10m]) > 0
+  #               or (chi_clickhouse_event_ReplicatedDataLoss > 0 unless chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse reported replicated data loss"
+  #             description: "ClickHouse raised 1 ReplicatedDataLoss event(s) on host chi-prod3-cluster-0-0 (CHI prod3) in the last 10m. The server found a part referenced in ZooKeeper/Keeper that exists on no replica at all — those rows are gone unless they can be re-ingested from the source. This normally follows a Keeper data loss, a restore from a stale Keeper snapshot, or replicas being wiped while their metadata survived."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicateddataloss"
+
+  # # ============================================================
+  # # ClickHouseReplicatedDataLoss: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseReplicatedDataLoss
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: positive — the counter appears for the
+  # first time at t=5m and never moves again.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 1+0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
+                or (chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is failing to fetch parts from its replicas"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) failed 1 part fetch(es) in the last 15m. Every failed fetch is a part this replica still does not have, so it stays behind on those tables and its replication queue keeps retrying. Look for an unreachable or overloaded source replica, the interserver port being blocked, or a full disk on either side."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicatedpartfetchfailures"
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: negative — the counter has been sitting at
+  # the same nonzero value for longer than one window, so nothing
+  # new has happened.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '7+0x60'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseDataAfterMergeDiffersFromReplica: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 11m
+  #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "cause"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_DataAfterMergeDiffersFromReplica[15m]) > 0
+  #               or (chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse merge result differs between replicas"
+  #             description: "Host chi-prod3-cluster-0-0 (CHI prod3) merged data 1 time(s) in the last 15m and got a different result than its replica, so it discarded its own result and fetched the other copy. The cluster self-heals, but the divergence itself is the warning: replicas running different ClickHouse versions, non-deterministic expressions in the table's ORDER BY/materialized columns, or silent storage corruption on one host."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedataaftermergediffersfromreplica"
+
+  # # ============================================================
+  # # ClickHouseDataAfterMergeDiffersFromReplica: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 20m
+  #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseKeeperHardwareExceptions: positive — the counter appears for the
+  # first time at t=5m and never moves again.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 1+0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseKeeperHardwareExceptions
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
+                or (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse cannot talk to Keeper/ZooKeeper reliably"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) hit 1 Keeper/ZooKeeper hardware exception(s) in the last 10m — connection loss or session timeout, not a logical error. Every replicated INSERT, merge assignment and ALTER needs Keeper, so while this continues writes stall and replicas drift towards read-only. Check the Keeper/ZooKeeper ensemble before treating this as a ClickHouse problem."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperhardwareexceptions"
+
+  # ============================================================
+  # ClickHouseKeeperHardwareExceptions: negative — the counter has been sitting at
+  # the same nonzero value for longer than one window, so nothing
+  # new has happened.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '7+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseKeeperHardwareExceptions
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseRejectedInserts: positive — the counter appears for the
+  # first time at t=5m and never moves again.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 1+0x40'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "critical"
+              priority: "P1"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_RejectedInserts[10m]) > 0
+                or (chi_clickhouse_event_RejectedInserts > 0 unless chi_clickhouse_event_RejectedInserts offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is rejecting inserts"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) rejected 1 insert(s) in the last 10m with 'Too many parts'. These writes failed outright — the client either retries or loses the data. Merges are not keeping up with the insert rate on at least one table, usually because inserts arrive in many small batches or the background merge pool is saturated."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouserejectedinserts"
+
+  # ============================================================
+  # ClickHouseRejectedInserts: negative — the counter has been sitting at
+  # the same nonzero value for longer than one window, so nothing
+  # new has happened.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '7+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseDelayedInserts: positive — the counter appears for the
+  # first time at t=5m and never moves again.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 1+0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseDelayedInserts
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P2"
+              tech_stack: "clickhouse"
+              signal: "symptom"
+              category: "data"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_event_DelayedInserts[10m]) > 0
+                or (chi_clickhouse_event_DelayedInserts > 0 unless chi_clickhouse_event_DelayedInserts offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is throttling inserts"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) delayed 1 insert(s) in the last 10m. ClickHouse throttles writers once a partition crosses parts_to_delay_insert, so producers are already seeing slower INSERTs and ingest lag builds up upstream. This is the stage before outright rejection — if the part count keeps climbing, ClickHouseRejectedInserts follows."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedelayedinserts"
+
+  # ============================================================
+  # ClickHouseDelayedInserts: negative — the counter has been sitting at
+  # the same nonzero value for longer than one window, so nothing
+  # new has happened.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '7+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseDelayedInserts
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseStorageBufferErrorOnFlush: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 11m
+  #       alertname: ClickHouseStorageBufferErrorOnFlush
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_StorageBufferErrorOnFlush[15m]) > 0
+  #               or (chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Buffer table failed to flush"
+  #             description: "A Buffer table on host chi-prod3-cluster-0-0 (CHI prod3) failed to flush 1 time(s) in the last 15m. Buffer tables hold rows in memory, so a flush that never succeeds means those rows are dropped when the buffer is discarded or the server restarts — this is silent data loss from the client's point of view, because the INSERT already returned success."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousestoragebuffererroronflush"
+
+  # # ============================================================
+  # # ClickHouseStorageBufferErrorOnFlush: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 20m
+  #       alertname: ClickHouseStorageBufferErrorOnFlush
+  #       exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseDistributedConnectionExceptions: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 11m
+  #       alertname: ClickHouseDistributedConnectionExceptions
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "network"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_DistributedConnectionFailAtAll[10m]) > 0
+  #               or (chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse cannot reach a remote shard"
+  #             description: "Host chi-prod3-cluster-0-0 (CHI prod3) gave up connecting to a remote shard 1 time(s) in the last 10m after exhausting its retries. Distributed queries that need that shard either fail or, with skip_unavailable_shards enabled, quietly return partial results. Check whether the shard's pods are running and whether the interserver/native port is reachable between them."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedconnectionexceptions"
+
+  # # ============================================================
+  # # ClickHouseDistributedConnectionExceptions: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 15m
+  #       alertname: ClickHouseDistributedConnectionExceptions
+  #       exp_alerts: []
+
+  # ============================================================
+  # ClickHouseNetworkErrors: positive — the counter appears for the
+  # first time at t=5m and never moves again.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 1+0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts:
+          - exp_labels:
+              sourceType: "metric"
+              severity: "warning"
+              priority: "P3"
+              tech_stack: "clickhouse"
+              signal: "cause"
+              category: "network"
+              runbook: "runbooks/databases/clickhouse.md"
+              query: |
+                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
+                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                or (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+              chi: "prod3"
+              hostname: "chi-prod3-cluster-0-0"
+            exp_annotations:
+              summary: "ClickHouse is hitting network or DNS errors"
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 1 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousenetworkerrors"
+
+  # ============================================================
+  # ClickHouseNetworkErrors: negative — the counter has been sitting at
+  # the same nonzero value for longer than one window, so nothing
+  # new has happened.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '7+0x60'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseKafkaConsumerErrors: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 16m
+  #       alertname: ClickHouseKafkaConsumerErrors
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_KafkaConsumerErrors[30m]) > 0
+  #               or (chi_clickhouse_event_KafkaConsumerErrors > 0 unless chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Kafka engine consumer is erroring"
+  #             description: "The Kafka engine on host chi-prod3-cluster-0-0 (CHI prod3) reported 1 consumer error(s) in the last 30m. While consumers are erroring the materialized views behind those Kafka tables stop ingesting, so the destination tables fall behind the topic and consumer lag grows until the broker's retention drops messages that were never read."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkaconsumererrors"
+
+  # # ============================================================
+  # # ClickHouseKafkaConsumerErrors: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 35m
+  #       alertname: ClickHouseKafkaConsumerErrors
+  #       exp_alerts: []
+
+  # # ============================================================
+  # # ClickHouseKafkaCommitFailures: positive — the counter appears for the
+  # # first time at t=5m and never moves again.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '_ _ _ _ _ 1+0x40'
+  #   alert_rule_test:
+  #     - eval_time: 16m
+  #       alertname: ClickHouseKafkaCommitFailures
+  #       exp_alerts:
+  #         - exp_labels:
+  #             sourceType: "metric"
+  #             severity: "warning"
+  #             priority: "P2"
+  #             tech_stack: "clickhouse"
+  #             signal: "symptom"
+  #             category: "data"
+  #             runbook: "runbooks/databases/clickhouse.md"
+  #             query: |
+  #               increase(chi_clickhouse_event_KafkaCommitFailures[30m]) > 0
+  #               or (chi_clickhouse_event_KafkaCommitFailures > 0 unless chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #             chi: "prod3"
+  #             hostname: "chi-prod3-cluster-0-0"
+  #           exp_annotations:
+  #             summary: "ClickHouse Kafka engine cannot commit offsets"
+  #             description: "The Kafka engine on host chi-prod3-cluster-0-0 (CHI prod3) failed to commit offsets 1 time(s) in the last 30m. Uncommitted offsets are re-read after the next rebalance, so the same messages are inserted again — duplicate rows in the destination table — and the consumer group may rebalance repeatedly instead of making progress."
+  #             runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkacommitfailures"
+
+  # # ============================================================
+  # # ClickHouseKafkaCommitFailures: negative — the counter has been sitting at
+  # # the same nonzero value for longer than one window, so nothing
+  # # new has happened.
+  # # ============================================================
+  # - interval: 1m
+  #   input_series:
+  #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '7+0x60'
+  #   alert_rule_test:
+  #     - eval_time: 35m
+  #       alertname: ClickHouseKafkaCommitFailures
+  #       exp_alerts: []
