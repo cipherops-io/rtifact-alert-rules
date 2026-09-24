@@ -18,7 +18,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: absent(clickhouse_operator_chi)
         annotations:
           summary: "clickhouse-operator is exporting no metrics"
@@ -26,7 +26,7 @@ groups:
             deployment is down or its metrics endpoint is unreachable. While this is firing, every other ClickHouse operator
             alert is blind: reconcile failures, aborted reconciles, and host restarts will go undetected, and CHI spec
             changes may not be applied to the cluster at all."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatormetricsabsent"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatormetricsabsent"
 
       - alert: ClickHouseOperatorHostReconcileErrors
         expr: increase(clickhouse_operator_host_reconciles_errors[15m]) > 0
@@ -38,7 +38,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: increase(clickhouse_operator_host_reconciles_errors[15m]) > 0
         annotations:
           summary: "clickhouse-operator is failing to reconcile a ClickHouse host"
@@ -46,7 +46,7 @@ groups:
             CHI {{ $labels.chi }} in namespace {{ $labels.namespace }}. The desired StatefulSet/ConfigMap/service state is
             not being applied to at least one host, so recent CHI changes (image, settings, resources, topology) may be
             partially or entirely unapplied while the cluster still reports as running."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorhostreconcileerrors"
 
       - alert: ClickHouseOperatorHostReconcileErrorsSustained
         expr: increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5
@@ -58,7 +58,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5
         annotations:
           summary: "clickhouse-operator cannot converge a ClickHouse host"
@@ -66,7 +66,7 @@ groups:
             {{ $labels.chi }} in namespace {{ $labels.namespace }} — it is retrying and failing, not making progress. The
             cluster is stuck between its current and desired state; a rolling upgrade may be halted midway, leaving hosts
             on mixed configurations or mixed versions."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileerrorssustained"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorhostreconcileerrorssustained"
 
       - alert: ClickHouseOperatorCHIReconcileAborted
         expr: increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0
@@ -78,7 +78,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0
         annotations:
           summary: "A ClickHouseInstallation reconcile was aborted"
@@ -86,7 +86,7 @@ groups:
             namespace {{ $labels.namespace }}. An aborted reconcile never reaches completion, so the CHI spec on the cluster
             is not what is committed in Git/the CRD. Common causes: the CHI was edited again mid-reconcile, the operator
             restarted, or a host became unreachable partway through the rollout."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcileaborted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorchireconcileaborted"
 
       - alert: ClickHouseOperatorCHIReconcileStuck
         expr: |
@@ -102,7 +102,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))
             - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))
@@ -114,7 +114,7 @@ groups:
             started in the last hour and have neither completed nor aborted — the rollout is hung. Hosts may be sitting
             partially updated, and subsequent CHI edits will queue behind this one. A healthy reconcile finishes in seconds
             to a few minutes; anything pending for over 15 minutes is stuck."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorchireconcilestuck"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorchireconcilestuck"
 
       - alert: ClickHouseOperatorHostReconcileSlow
         expr: |
@@ -129,7 +129,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(clickhouse_operator_host_reconciles_timings_sum[1h])
             / increase(clickhouse_operator_host_reconciles_timings_count[1h])
@@ -140,7 +140,7 @@ groups:
             {{ $value | humanizeDuration }} over the last hour (threshold 10m). Slow reconciles stretch rolling upgrades far
             beyond their maintenance window and usually mean hosts are slow to become ready — long ClickHouse startup,
             replica resync after restart, image pull delays, or pods stuck Pending on scheduling/PVC binding."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostreconcileslow"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorhostreconcileslow"
 
       - alert: ClickHouseOperatorHostRestartsHigh
         expr: increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2
@@ -152,7 +152,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2
         annotations:
           summary: "clickhouse-operator is repeatedly restarting a ClickHouse host"
@@ -161,7 +161,7 @@ groups:
             drops in-flight queries, breaks client connections, and forces the replica to resync on startup. Repeated
             restarts point at a crash-looping ClickHouse container, a failing readiness probe, or a reconcile loop that
             keeps deciding the host needs to be recreated."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorhostrestartshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorhostrestartshigh"
 
       - alert: ClickHouseOperatorPodsDisappearing
         expr: |
@@ -176,7 +176,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))
             - sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))
@@ -187,7 +187,7 @@ groups:
             delete than pod add event(s) over the last 30m — the cluster is losing hosts rather than cycling them. During a
             healthy rolling restart deletes and adds balance out within minutes. A sustained deficit means pods are being
             evicted, descheduled, or failing to be recreated, which reduces replica count and query capacity."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseoperatorpodsdisappearing"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseoperatorpodsdisappearing"
 
   - name: clickhouse-server.rules
     interval: 30s
@@ -227,7 +227,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"} > 0
         annotations:
           summary: "ClickHouse server is not answering queries"
@@ -235,7 +235,7 @@ groups:
             {{ $labels.hostname }} (CHI {{ $labels.chi }}) for over 2 minutes — the server is not answering queries on its
             native port. Clients routed to this host get connection errors or timeouts. If this is the only live replica
             of its shard, that shard's data cannot be read or written, and distributed queries that touch it fail."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseserverdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseserverdown"
 
       - alert: ClickHouseServerMetricsAbsent
         expr: absent(chi_clickhouse_metric_Uptime)
@@ -247,7 +247,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: absent(chi_clickhouse_metric_Uptime)
         annotations:
           summary: "No ClickHouse server metrics are being scraped"
@@ -255,7 +255,7 @@ groups:
             container is down, it cannot reach any ClickHouse host, or the scrape config no longer matches its endpoint.
             While this is firing every ClickHouse server alert is blind: a readonly replica, rejected inserts, replication
             lag, or a filling disk will all go undetected."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseservermetricsabsent"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseservermetricsabsent"
 
       - alert: ClickHouseMetricsFetchErrors
         expr: chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"} > 0
@@ -267,7 +267,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"} > 0
         annotations:
           summary: "metrics-exporter cannot fetch part of the ClickHouse metric set"
@@ -276,7 +276,7 @@ groups:
             the server is up but one metric family is missing. Whichever alerts depend on that family (parts, mutations,
             disks, detached parts or replicas) are blind until it recovers. Common causes: the exporter user lacks
             SELECT on that system table, or the query times out on a cluster with very many tables."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemetricsfetcherrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousemetricsfetcherrors"
 
       - alert: ClickHouseServerRestarted
         expr: chi_clickhouse_metric_Uptime < 300
@@ -288,7 +288,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_Uptime < 300
         annotations:
           summary: "ClickHouse server restarted recently"
@@ -296,7 +296,7 @@ groups:
             {{ $value | humanizeDuration }}. A restart drops every in-flight query and open connection, and the replica
             has to reload its parts and catch up on its replication queue before it serves complete results. Expect this
             during a planned rolling upgrade; outside one, check whether the container was OOMKilled or crashed."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouseserverrestarted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouseserverrestarted"
 
       # --------------------------------------------------------------------------
       # Replication and Keeper/ZooKeeper coordination
@@ -312,7 +312,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_ReadonlyReplica > 0
         annotations:
           summary: "ClickHouse has replicated tables stuck in read-only mode"
@@ -321,7 +321,7 @@ groups:
             ZooKeeper/Keeper session or cannot find its metadata there, and while it is read-only every INSERT, ALTER and
             merge on those tables is rejected. Writes routed to this host fail outright; reads still work but drift
             further behind the other replicas the longer this lasts."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereadonlyreplica"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereadonlyreplica"
 
       - alert: ClickHouseReplicationLagHigh
         expr: chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300
@@ -333,7 +333,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300
         annotations:
           summary: "ClickHouse replication is lagging"
@@ -342,7 +342,7 @@ groups:
             — rows written elsewhere are simply missing — and if the leader is lost now, everything still in this
             replica's queue is at risk. Usual causes: merges and fetches saturating the host, a slow or full disk, or a
             Keeper/ZooKeeper ensemble that is not keeping up."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationlaghigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicationlaghigh"
 
       - alert: ClickHouseReplicationQueueHigh
         expr: chi_clickhouse_metric_ReplicasMaxQueueSize > 100
@@ -354,7 +354,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_ReplicasMaxQueueSize > 100
         annotations:
           summary: "ClickHouse replication queue is backing up"
@@ -362,7 +362,7 @@ groups:
             {{ $value | humanize }} entries (threshold 100) and has not drained for 15 minutes. The replica is being
             handed fetches, merges and mutations faster than it can apply them; replication lag and part count grow from
             here, and a queue entry that keeps failing will retry forever and block everything queued behind it."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicationqueuehigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicationqueuehigh"
 
       # DISABLED: chi_clickhouse_event_ReplicatedDataLoss is not exported in either
       # environment (see the note at the top of this group).
@@ -379,7 +379,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: symptom
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_ReplicatedDataLoss[10m]) > 0
       #       or (chi_clickhouse_event_ReplicatedDataLoss > 0 unless chi_clickhouse_event_ReplicatedDataLoss offset 10m)
@@ -390,7 +390,7 @@ groups:
       #       ZooKeeper/Keeper that exists on no replica at all — those rows are gone unless they can be re-ingested from
       #       the source. This normally follows a Keeper data loss, a restore from a stale Keeper snapshot, or replicas
       #       being wiped while their metadata survived."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicateddataloss"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicateddataloss"
 
       - alert: ClickHouseReplicatedPartFetchFailures
         expr: |
@@ -405,7 +405,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
             or (chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
@@ -415,7 +415,7 @@ groups:
             in the last 15m. Every failed fetch is a part this replica still does not have, so it stays behind on those
             tables and its replication queue keeps retrying. Look for an unreachable or overloaded source replica, the
             interserver port being blocked, or a full disk on either side."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousereplicatedpartfetchfailures"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicatedpartfetchfailures"
 
       # DISABLED: chi_clickhouse_event_DataAfterMergeDiffersFromReplica is not exported in either
       # environment (see the note at the top of this group).
@@ -432,7 +432,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: cause
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_DataAfterMergeDiffersFromReplica[15m]) > 0
       #       or (chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
@@ -443,7 +443,7 @@ groups:
       #       other copy. The cluster self-heals, but the divergence itself is the warning: replicas running different
       #       ClickHouse versions, non-deterministic expressions in the table's ORDER BY/materialized columns, or silent
       #       storage corruption on one host."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedataaftermergediffersfromreplica"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousedataaftermergediffersfromreplica"
 
       - alert: ClickHouseKeeperSessionUnstable
         expr: chi_clickhouse_metric_ZooKeeperSession > 1
@@ -455,7 +455,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_ZooKeeperSession > 1
         annotations:
           summary: "ClickHouse holds more than one Keeper/ZooKeeper session"
@@ -463,7 +463,7 @@ groups:
             Keeper/ZooKeeper sessions for 5 minutes. A healthy server holds exactly one; more than one means it is
             re-establishing sessions because the old ones expired, and reads through those sessions can see stale
             metadata. Sessions that keep expiring end with replicas going read-only."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeepersessionunstable"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousekeepersessionunstable"
 
       - alert: ClickHouseKeeperHardwareExceptions
         expr: |
@@ -478,7 +478,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
             or (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
@@ -488,7 +488,7 @@ groups:
             hardware exception(s) in the last 10m — connection loss or session timeout, not a logical error. Every
             replicated INSERT, merge assignment and ALTER needs Keeper, so while this continues writes stall and replicas
             drift towards read-only. Check the Keeper/ZooKeeper ensemble before treating this as a ClickHouse problem."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekeeperhardwareexceptions"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousekeeperhardwareexceptions"
 
       # --------------------------------------------------------------------------
       # Ingest path
@@ -507,7 +507,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_event_RejectedInserts[10m]) > 0
             or (chi_clickhouse_event_RejectedInserts > 0 unless chi_clickhouse_event_RejectedInserts offset 10m)
@@ -517,7 +517,7 @@ groups:
             the last 10m with 'Too many parts'. These writes failed outright — the client either retries or loses the
             data. Merges are not keeping up with the insert rate on at least one table, usually because inserts arrive in
             many small batches or the background merge pool is saturated."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouserejectedinserts"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouserejectedinserts"
 
       - alert: ClickHouseDelayedInserts
         expr: |
@@ -532,7 +532,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_event_DelayedInserts[10m]) > 0
             or (chi_clickhouse_event_DelayedInserts > 0 unless chi_clickhouse_event_DelayedInserts offset 10m)
@@ -542,7 +542,7 @@ groups:
             the last 10m. ClickHouse throttles writers once a partition crosses parts_to_delay_insert, so producers are
             already seeing slower INSERTs and ingest lag builds up upstream. This is the stage before outright rejection
             — if the part count keeps climbing, ClickHouseRejectedInserts follows."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedelayedinserts"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousedelayedinserts"
 
       - alert: ClickHouseMaxPartCountForPartition
         expr: chi_clickhouse_metric_MaxPartCountForPartition > 100
@@ -554,7 +554,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_MaxPartCountForPartition > 100
         annotations:
           summary: "ClickHouse has too many parts in a single partition"
@@ -563,7 +563,7 @@ groups:
             over that partition has to open all of those parts, so reads get slower as the count grows, and once it
             reaches parts_to_delay_insert / parts_to_throw_insert the server starts throttling and then rejecting
             writes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemaxpartcountforpartition"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousemaxpartcountforpartition"
 
       - alert: ClickHouseDistributedFilesToInsertHigh
         expr: chi_clickhouse_metric_DistributedFilesToInsert > 50
@@ -575,7 +575,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_DistributedFilesToInsert > 50
         annotations:
           summary: "ClickHouse distributed inserts are queueing on disk"
@@ -584,7 +584,7 @@ groups:
             sitting on local disk and are not queryable on their target shards yet, so reads return incomplete results
             and the backlog is lost if this host's volume is lost. Usual cause: one shard is down, slow, or rejecting
             writes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedfilestoinserthigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousedistributedfilestoinserthigh"
 
       - alert: ClickHouseSmallInsertBatches
         expr: |
@@ -600,7 +600,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_event_InsertQuery[30m]) > 100
             and
@@ -612,7 +612,7 @@ groups:
             generate parts far faster than merges can consume them — this is the root cause behind most
             ClickHouseMaxPartCountForPartition, ClickHouseDelayedInserts and ClickHouseRejectedInserts incidents. Batch
             on the client side or put async_insert in front of these writers."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousesmallinsertbatches"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousesmallinsertbatches"
 
       # DISABLED: chi_clickhouse_event_StorageBufferErrorOnFlush is not exported in either
       # environment (see the note at the top of this group).
@@ -629,7 +629,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: symptom
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_StorageBufferErrorOnFlush[15m]) > 0
       #       or (chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
@@ -639,7 +639,7 @@ groups:
       #       {{ $value | humanize }} time(s) in the last 15m. Buffer tables hold rows in memory, so a flush that never
       #       succeeds means those rows are dropped when the buffer is discarded or the server restarts — this is silent
       #       data loss from the client's point of view, because the INSERT already returned success."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousestoragebuffererroronflush"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousestoragebuffererroronflush"
 
       # --------------------------------------------------------------------------
       # Query path
@@ -659,7 +659,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             ((chi_clickhouse_metric_Query - chi_clickhouse_metric_PendingAsyncInsert) or chi_clickhouse_metric_Query) > 80
         annotations:
@@ -668,7 +668,7 @@ groups:
             concurrent queries for 5 minutes (threshold 80). Queries are arriving faster than they complete, so latency
             rises for everyone on this host, memory pressure grows with each concurrent query, and once
             max_concurrent_queries is reached new queries are rejected outright."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanyrunningqueries"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousetoomanyrunningqueries"
 
       - alert: ClickHouseLongestRunningQuery
         expr: chi_clickhouse_metric_LongestRunningQuery > 600
@@ -680,7 +680,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_LongestRunningQuery > 600
         annotations:
           summary: "A ClickHouse query has been running for too long"
@@ -688,7 +688,7 @@ groups:
             {{ $value | humanizeDuration }} (threshold 10m). It holds its memory and thread slots for as long as it runs,
             crowding out other queries, and a client that has already timed out will not consume the result. Usually a
             missing PREWHERE/partition filter, a runaway JOIN, or an unbounded ad-hoc query."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhouselongestrunningquery"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhouselongestrunningquery"
 
       - alert: ClickHouseQueryPreempted
         expr: chi_clickhouse_metric_QueryPreempted > 0
@@ -700,7 +700,7 @@ groups:
           tech_stack: clickhouse
           signal: symptom
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_QueryPreempted > 0
         annotations:
           summary: "ClickHouse queries are being preempted"
@@ -709,7 +709,7 @@ groups:
             progress while they wait, so low-priority workloads (reports, backfills) can stall indefinitely whenever the
             high-priority workload is busy. Either the priority settings are too aggressive or the host is simply
             oversubscribed."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousequerypreempted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousequerypreempted"
 
       - alert: ClickHouseTooManyConnections
         expr: |
@@ -724,7 +724,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"}) > 100
         annotations:
@@ -734,7 +734,7 @@ groups:
             costs a server thread and memory, and once max_connections is reached new clients are refused. A count that
             only grows usually means a client pool that opens connections without closing them, or clients retrying
             against a host whose queries are already slow."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanyconnections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousetoomanyconnections"
 
       # --------------------------------------------------------------------------
       # Storage
@@ -751,7 +751,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: storage
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1
         annotations:
           summary: "ClickHouse disk is nearly full"
@@ -760,7 +760,7 @@ groups:
             for the whole output part before it can delete the inputs — so merges stop first, part counts climb, and
             inserts start failing. When the volume fills completely the server cannot write at all and replicas go
             read-only."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskspacelow"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousediskspacelow"
 
       - alert: ClickHouseDiskWillFillWithin24h
         expr: |
@@ -775,7 +775,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: storage
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0
             and chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.3
@@ -785,7 +785,7 @@ groups:
             and, at the rate it has been filling over the last 6 hours, will be full within 24 hours. Act while there is
             still headroom: a PVC resize needs free space to complete, and once the disk is full merges stop and inserts
             fail. The 6h trend also catches a retention policy that has silently stopped deleting old partitions."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousediskwillfillwithin24h"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousediskwillfillwithin24h"
 
       # --------------------------------------------------------------------------
       # Parts and mutations
@@ -801,7 +801,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: data
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"} > 0
         annotations:
           summary: "ClickHouse has detached parts the server did not expect"
@@ -810,7 +810,7 @@ groups:
             parts are excluded from every query, so those rows are missing from results on this replica, and they still
             occupy disk. A reason of broken/unexpected/covered-by-broken points at corruption or a failed merge rather
             than an operator action."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedetachedpartspresent"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousedetachedpartspresent"
 
       # DISABLED: chi_clickhouse_table_mutations is not exported in either
       # environment (see the note at the top of this group).
@@ -824,7 +824,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: cause
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: chi_clickhouse_table_mutations > 100
       #   annotations:
       #     summary: "ClickHouse has too many unfinished mutations"
@@ -832,7 +832,7 @@ groups:
       #       {{ $labels.chi }}) has {{ $value | humanize }} unfinished mutations (threshold 100). Mutations rewrite whole
       #       parts and run in the background pool, so a queue this deep starves merges, inflates disk usage while both
       #       copies of each part exist, and means ALTER UPDATE/DELETE issued now will not take effect for a long time."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousetoomanymutations"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousetoomanymutations"
 
       # DISABLED: chi_clickhouse_table_mutations_parts_to_do is not exported in either
       # environment (see the note at the top of this group).
@@ -849,7 +849,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: cause
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       chi_clickhouse_table_mutations_parts_to_do > 0 and delta(chi_clickhouse_table_mutations_parts_to_do[1h]) >= 0
       #   annotations:
@@ -859,7 +859,7 @@ groups:
       #       in the last hour. The mutation is not progressing — usually it is failing and retrying on one part. Until it
       #       finishes, the ALTER is not applied (deleted rows are still readable, updated values still stale) and every
       #       mutation queued behind it on that table waits."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousemutationsnotprogressing"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousemutationsnotprogressing"
 
       # --------------------------------------------------------------------------
       # Distributed queries and network
@@ -880,7 +880,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: symptom
       #     category: network
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_DistributedConnectionFailAtAll[10m]) > 0
       #       or (chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
@@ -890,7 +890,7 @@ groups:
       #       {{ $value | humanize }} time(s) in the last 10m after exhausting its retries. Distributed queries that need
       #       that shard either fail or, with skip_unavailable_shards enabled, quietly return partial results. Check
       #       whether the shard's pods are running and whether the interserver/native port is reachable between them."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousedistributedconnectionexceptions"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousedistributedconnectionexceptions"
 
       - alert: ClickHouseNetworkErrors
         expr: |
@@ -909,7 +909,7 @@ groups:
           tech_stack: clickhouse
           signal: cause
           category: network
-          runbook: runbooks/databases/clickhouse.md
+          runbook: runbooks/databases/clickhouse.yaml
           query: |
             increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
             or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
@@ -921,7 +921,7 @@ groups:
             resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network
             flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it
             shows up as anything else."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousenetworkerrors"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousenetworkerrors"
 
       # --------------------------------------------------------------------------
       # Kafka table engine — both rules disabled, see below
@@ -942,7 +942,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: symptom
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_KafkaConsumerErrors[30m]) > 0
       #       or (chi_clickhouse_event_KafkaConsumerErrors > 0 unless chi_clickhouse_event_KafkaConsumerErrors offset 30m)
@@ -952,7 +952,7 @@ groups:
       #       {{ $value | humanize }} consumer error(s) in the last 30m. While consumers are erroring the materialized
       #       views behind those Kafka tables stop ingesting, so the destination tables fall behind the topic and consumer
       #       lag grows until the broker's retention drops messages that were never read."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkaconsumererrors"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousekafkaconsumererrors"
 
       # DISABLED: chi_clickhouse_event_KafkaCommitFailures is not exported in either
       # environment (see the note at the top of this group).
@@ -969,7 +969,7 @@ groups:
       #     tech_stack: clickhouse
       #     signal: symptom
       #     category: data
-      #     runbook: runbooks/databases/clickhouse.md
+      #     runbook: runbooks/databases/clickhouse.yaml
       #     query: |
       #       increase(chi_clickhouse_event_KafkaCommitFailures[30m]) > 0
       #       or (chi_clickhouse_event_KafkaCommitFailures > 0 unless chi_clickhouse_event_KafkaCommitFailures offset 30m)
@@ -979,4 +979,4 @@ groups:
       #       {{ $value | humanize }} time(s) in the last 30m. Uncommitted offsets are re-read after the next rebalance, so
       #       the same messages are inserted again — duplicate rows in the destination table — and the consumer group may
       #       rebalance repeatedly instead of making progress."
-      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.md#clickhousekafkacommitfailures"
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousekafkacommitfailures"

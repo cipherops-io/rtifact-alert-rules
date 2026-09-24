@@ -1,0 +1,3006 @@
+tech_stack: clickhouse
+version: "1.0"
+description: >-
+  Runbook for ClickHouse alerts as they are actually emitted by
+  rules/metrics/databases/clickhouse.yml. TWO INDEPENDENT PLANES, and conflating them
+  is the most common RCA error here. (1) CONTROL PLANE — clickhouse_operator_* metrics
+  from the Altinity clickhouse-operator container: they say only whether the operator
+  can converge ClickHouseInstallation (CHI) objects onto the cluster. A broken operator
+  does NOT by itself break a running ClickHouse cluster, and a healthy operator says
+  nothing about server health. (2) DATA PLANE — chi_clickhouse_* metrics that the
+  metrics-exporter container scrapes out of ClickHouse's own system tables: these are
+  the ones that describe queries, inserts, parts, replication, Keeper and disks. Both
+  containers live in the same clickhouse-operator pod, so a pod-level failure blinds
+  both at once — that is a visibility outage, not a database outage, and must be
+  reported as such.
+  LABELS AND SCOPING: every chi_clickhouse_* series carries `chi` (the CHI name) and
+  `hostname` (the ClickHouse host FQDN, e.g.
+  chi-prod3-cluster-0-1.clickhouse.svc.cluster.local — its FIRST dot-segment is the
+  pod name and the second is the workload namespace). Operator series carry
+  `namespace` and `chi`. CRITICAL: ClickHouse's own namespace arrives as
+  `exported_namespace` whenever the scrape target already sets `namespace`, so a
+  `namespace` label on one of these alerts may be the OPERATOR's namespace, not the
+  database's — never assert the workload namespace from that label alone. Because the
+  alert identity here is (chi, hostname) and forge's $service/$pod placeholders are NOT
+  guaranteed to be populated for CHI-scoped alerts, the queries below deliberately stay
+  unfiltered and preserve attribution with `by (chi, hostname)` (plus topk/bottomk where
+  a single offender matters): read the firing chi/hostname off the alert labels and
+  report the matching series, and use the sibling hosts in the same result as the
+  built-in comparison. Queries that do use $namespace are marked as best-effort and must
+  be reported as "not available" if they return nothing rather than being re-scoped by
+  guesswork.
+  EVENT-COUNTER SEMANTICS: chi_clickhouse_event_* counters only exist AFTER the event
+  has happened once since server start — the series is absent until then, and appears
+  already carrying its value. That is why those rules are written as
+  `increase(counter[W]) > 0 or (counter > 0 unless counter offset W)`: the second branch
+  catches a counter that JUST APPEARED. Two consequences for triage — a second-branch
+  firing means the counter is brand new (read the raw counter and the server log at the
+  alert start time), and these alerts SELF-RESOLVE within one window if the event does
+  not recur, so a resolve is not evidence of a fix.
+  OTHER CAVEATS: the fetch_type label spelling is version-dependent (operator <= 0.25.x
+  writes "system.metrics"/"system parts", 0.27.x+ writes "system_metrics"), hence the
+  regex system[._ ]metrics everywhere — use the same regex in ad-hoc queries.
+  ABSENT-metric alerts cannot be instance-scoped (there are no labels on absent()), and
+  "no metrics" means the observability path is blind, NOT that ClickHouse is down —
+  prove the data plane state from whichever plane still reports. Finally, several rules
+  in the rule file are commented out because their metric is not exported in either
+  environment (replicated data loss, merge divergence, Buffer flush errors, mutations,
+  distributed connection failures, Kafka engine): do NOT query those metric names or
+  claim their absence is a healthy signal.
+
+match_keywords:
+  - clickhouse
+  - clickhouse-operator
+  - clickhouseinstallation
+  - chi
+  - altinity
+  - metrics-exporter
+  - replicated merge tree
+  - replication lag
+  - keeper
+  - zookeeper
+  - too many parts
+  - merges
+  - distributed table
+  - detached parts
+  - olap
+
+categories:
+  - DATA
+  - DATABASE
+
+# ── Shared query anchors ──────────────────────────────────────────────────────
+# forge promotes any query flagged `panel: true` into a live graph next to the
+# alert. These anchors hold the views that are useful across many entries. They are
+# ClickHouse-native (chi/hostname attribution) on purpose: CHI alerts do not reliably
+# populate forge's $service/$pod placeholders, so a pod-name-derived selector would
+# render blank. Per-alert queries are declared inline on the step that interprets them.
+
+# server_health_panels: is the data plane reporting at all, and which hosts.
+server_health_panels: &server_health_panels
+  - name: uptime_by_host
+    unit: "s"
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+    panel: true
+    panel_title: "ClickHouse Uptime by Host"
+    panel_id: "ch-uptime-by-host"
+  - name: hosts_reporting_per_chi
+    query: 'count by (chi) (chi_clickhouse_metric_Uptime)'
+    panel: true
+    panel_title: "Hosts Reporting per CHI"
+    panel_id: "ch-hosts-reporting-per-chi"
+  - name: system_metrics_fetch_errors_by_host
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"})'
+    panel: true
+    panel_title: "system.metrics Fetch Errors by Host"
+    panel_id: "ch-system-metrics-fetch-errors"
+
+# operator_panels: control-plane convergence at a glance.
+operator_panels: &operator_panels
+  - name: chi_objects_tracked
+    query: 'sum by (namespace) (clickhouse_operator_chi)'
+    panel: true
+    panel_title: "CHI Objects Tracked by Operator"
+    panel_id: "ch-operator-chi-objects"
+  - name: host_reconcile_errors_1h
+    query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[1h]))'
+    panel: true
+    panel_title: "Host Reconcile Errors (1h)"
+    panel_id: "ch-operator-host-reconcile-errors-1h"
+  - name: chi_reconcile_gap_1h
+    query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))'
+    panel: true
+    panel_title: "CHI Reconciles Started minus Finished (1h)"
+    panel_id: "ch-operator-reconcile-gap-1h"
+
+# replication_panels: Keeper-backed replication state per host.
+replication_panels: &replication_panels
+  - name: readonly_replicas_by_host
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+    panel: true
+    panel_title: "Readonly Replicas by Host"
+    panel_id: "ch-readonly-replicas"
+  - name: replica_delay_seconds_by_host
+    unit: "s"
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+    panel: true
+    panel_title: "Max Replica Delay by Host"
+    panel_id: "ch-replica-delay"
+  - name: replication_queue_by_host
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+    panel: true
+    panel_title: "Max Replication Queue by Host"
+    panel_id: "ch-replication-queue"
+  - name: keeper_sessions_by_host
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+
+# ingest_panels: the parts/merge pressure chain behind every insert problem.
+ingest_panels: &ingest_panels
+  - name: max_parts_per_partition_by_host
+    query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+    panel: true
+    panel_title: "Max Parts per Partition by Host"
+    panel_id: "ch-max-parts-per-partition"
+  - name: delayed_inserts_1h_by_host
+    query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DelayedInserts[1h]))'
+    panel: true
+    panel_title: "Delayed Inserts (1h)"
+    panel_id: "ch-delayed-inserts-1h"
+  - name: rejected_inserts_1h_by_host
+    query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[1h]))'
+    panel: true
+    panel_title: "Rejected Inserts (1h)"
+    panel_id: "ch-rejected-inserts-1h"
+  - name: insert_query_rate_by_host
+    unit: "inserts/s"
+    query: 'sum by (chi, hostname) (rate(chi_clickhouse_event_InsertQuery[5m]))'
+    panel: true
+    panel_title: "INSERT Rate by Host"
+    panel_id: "ch-insert-rate"
+
+# storage_panels: free space is the constraint behind merges, inserts and readonly.
+storage_panels: &storage_panels
+  - name: disk_free_pct_by_host
+    unit: "%"
+    query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+    panel: true
+    panel_title: "Disk Free % by Host"
+    panel_id: "ch-disk-free-pct"
+  - name: worst_disk_free_pct
+    unit: "%"
+    query: 'bottomk(1, 100 * (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes))'
+  - name: disk_free_bytes_by_host
+    unit: "B"
+    query: 'min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes)'
+    panel: true
+    panel_title: "Disk Free Bytes by Host"
+    panel_id: "ch-disk-free-bytes"
+
+# pod_infra_panels: BEST-EFFORT container view of the ClickHouse pods. The workload
+# container is named "clickhouse", but the alert's $namespace may be the OPERATOR's
+# namespace (the exported_namespace rewrite), in which case these return nothing —
+# when that happens, say container-level data is unavailable for this alert and lean on
+# the ClickHouse-native panels instead of re-scoping by guesswork.
+pod_infra_panels: &pod_infra_panels
+  - name: clickhouse_pod_cpu_cores
+    unit: "cores"
+    query: 'sum by (pod) (rate(container_cpu_usage_seconds_total{namespace="$namespace",container="clickhouse"}[5m]))'
+    panel: true
+    panel_title: "ClickHouse Pod CPU"
+    panel_id: "ch-pod-cpu"
+  - name: clickhouse_pod_mem_mib
+    unit: "MiB"
+    query: 'max by (pod) (container_memory_working_set_bytes{namespace="$namespace",container="clickhouse"}) / 1024 / 1024'
+    panel: true
+    panel_title: "ClickHouse Pod Memory"
+    panel_id: "ch-pod-mem"
+  - name: clickhouse_pod_restarts_1h
+    query: 'max by (pod) (increase(kube_pod_container_status_restarts_total{namespace="$namespace",container="clickhouse"}[1h]))'
+    panel: true
+    panel_title: "ClickHouse Pod Restarts (1h)"
+    panel_id: "ch-pod-restarts-1h"
+
+common_alerts:
+  # ==================================================== OPERATOR / CONTROL PLANE
+  - name: "ClickHouseOperatorMetricsAbsent"
+    patterns:
+      [
+        "ClickHouseOperatorMetricsAbsent",
+        "clickhouse-operator is exporting no metrics",
+        "absent(clickhouse_operator_chi)",
+        "clickhouse operator metrics missing",
+        "operator control plane blind",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Separate a control-plane blackout from a cluster outage — which plane still reports?"
+        description: >-
+          The rule is absent(clickhouse_operator_chi), so it has NO labels to scope by: it
+          says only that nothing is exporting operator metrics. Decide impact by looking at
+          what IS still reporting. operator_series_count is how many clickhouse_operator_chi
+          series exist right now; server_hosts_reporting counts ClickHouse hosts still
+          publishing chi_clickhouse_metric_Uptime. Interpret: operator_series_count = 0 but
+          server_hosts_reporting > 0 => ONLY the control plane is blind — the databases are
+          up and serving, no CHI change will be applied, and every other operator alert
+          (reconcile errors, aborted reconciles, host restarts) is undetectable until this
+          clears; that is the P2 case. BOTH zero => the whole clickhouse-operator pod is
+          gone (it hosts the operator AND the metrics-exporter container), so you are blind
+          on both planes — this does not prove the servers are down, and you must confirm
+          the data plane another way before claiming an outage. operator_series_count > 0
+          now => the export has recovered; report it as self-resolved and cite the count.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Whether operator metrics exist at all, and whether the ClickHouse data plane is still reporting independently."
+            params:
+              queries:
+                - name: operator_series_count
+                  query: 'count(clickhouse_operator_chi) or vector(0)'
+                  panel: true
+                  panel_title: "Operator CHI Series Present"
+                  panel_id: "ch-operator-series-count"
+                - name: server_hosts_reporting
+                  query: 'count(chi_clickhouse_metric_Uptime) or vector(0)'
+                  panel: true
+                  panel_title: "ClickHouse Hosts Reporting"
+                  panel_id: "ch-server-hosts-reporting"
+          - tool_id: "tool.query_metrics"
+            description: "Per-host ClickHouse uptime and system.metrics fetch errors — the data-plane view that survives an operator-only failure."
+            params:
+              queries: *server_health_panels
+      - step: 2
+        title: "Find why the export stopped: operator container down vs scrape path broken"
+        description: >-
+          Only two families of cause exist here. Read the clickhouse-operator pod's events
+          and logs. Interpret: restarts / OOMKilled / CrashLoopBackOff on the operator
+          container => the operator itself is failing, so reconciliation has genuinely
+          stopped, not just the metrics. Logs healthy and the process is serving requests
+          => the metrics path is the problem (ServiceMonitor/scrape config no longer matches
+          the endpoint, a relabel dropped the job, or the port changed) — convergence may
+          still be working fine and the incident is purely observability. No logs and no pod
+          => the deployment is scaled to zero, unschedulable, or was deleted, which is a
+          control-plane outage. Say which of the three you found; do not report "operator
+          down" when only the scrape is broken.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "clickhouse-operator pod state: restarts, OOMKills, probe failures, scheduling events."
+          - tool_id: "tool.read_logs"
+            description: "clickhouse-operator / metrics-exporter container logs filtered for panic, restart, connection-refused, auth and listener-bind signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — no automated restart; a mid-reconcile operator restart can leave hosts half-converged
+      - action: "restore_operator_deployment"
+        description: "When step 2 shows the operator container crash-looping or absent: inspect the deployment (image, resources, RBAC, leader election) and restore it. Prefer fixing the cause named in the logs over a blind restart — restarting during an in-flight reconcile is what produces aborted reconciles on the next cycle."
+        tool_id: ""
+        requires_approval: true
+      - action: "repair_metrics_scrape_path"
+        description: "When the operator is healthy but nothing is scraped: fix the ServiceMonitor/PodMonitor selector, port name or relabeling that no longer matches the operator endpoint. No database change is appropriate here."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform / operator owner. Keep at P2 while the data plane still reports — this is a convergence and visibility outage. Raise urgency only if a CHI change (upgrade, resize, topology) is in flight, because that rollout is now unobservable and possibly stalled."
+    follow_up:
+      - "Once metrics return, immediately re-check the operator alerts that were blind: host reconcile errors, aborted/stuck CHI reconciles and host restarts may have accumulated during the blackout."
+      - "If the cause was the scrape path, add an up{}-style check on the operator job so a silent scrape break is caught before all operator alerting goes dark."
+
+  - name: "ClickHouseOperatorHostReconcileErrors"
+    patterns:
+      [
+        "ClickHouseOperatorHostReconcileErrors",
+        "ClickHouseOperatorHostReconcileErrorsSustained",
+        "clickhouse-operator is failing to reconcile a ClickHouse host",
+        "clickhouse-operator cannot converge a ClickHouse host",
+        "host reconcile errors",
+        "clickhouse_operator_host_reconciles_errors",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Establish which tier fired and whether the operator is retrying or genuinely stuck"
+        description: >-
+          Two tiers share this entry. ClickHouseOperatorHostReconcileErrors (P2/warning)
+          fires on increase(clickhouse_operator_host_reconciles_errors[15m]) > 0 — at least
+          one host reconcile failed recently, which a retry may still fix.
+          ClickHouseOperatorHostReconcileErrorsSustained (P1/critical) fires at >= 5 errors
+          in 1h — the operator is retrying and failing, so the CHI cannot converge at all.
+          Read the alert name for which tier you are on and weight impact accordingly.
+          errors_15m and errors_1h give both windows per (namespace, chi); reconcile_gap_1h
+          shows whether reconciles are also failing to finish. Interpret: errors_15m > 0 but
+          errors_1h low and falling => a transient failure, likely already retried — verify
+          before escalating. errors_1h >= 5 and still climbing => no progress is being made;
+          treat as P1 and assume the cluster is stranded between current and desired state,
+          which during a rolling upgrade means mixed versions/settings across hosts.
+          errors_1h flat and nonzero with no recent increase => the failures stopped; report
+          the last error time from step 2's logs rather than implying it is ongoing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Control-plane overview: CHIs tracked, host reconcile errors over 1h, and the started-minus-finished reconcile gap."
+            params:
+              queries: *operator_panels
+          - tool_id: "tool.query_metrics"
+            description: "Host reconcile errors in both rule windows, per namespace and CHI."
+            params:
+              queries:
+                - name: errors_15m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[15m]))'
+                  panel: true
+                  panel_title: "Host Reconcile Errors (15m)"
+                  panel_id: "ch-operator-host-errors-15m"
+                - name: errors_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[1h]))'
+                - name: errors_total
+                  query: 'max by (namespace, chi) (clickhouse_operator_host_reconciles_errors)'
+      - step: 2
+        title: "Decide whether the failure is operator-side or host-side"
+        description: >-
+          A host reconcile fails either because the operator cannot apply the desired state
+          (RBAC, invalid spec, API conflicts) or because the host never becomes ready
+          (crash, pending pod, PVC). Cross the control plane against the data plane:
+          host_restarts_1h shows the operator recycling hosts, pods_add_minus_delete_30m
+          shows whether hosts are actually coming back, and the per-host uptime/fetch-error
+          panels show whether the servers are healthy from ClickHouse's own side.
+          Interpret: restarts elevated AND uptime small on some host => the operator keeps
+          recreating a host that will not stay up — chase the ClickHouse container (OOM,
+          bad config from the new spec, corrupt data) as the root cause, not the operator.
+          Servers all healthy with long uptimes while errors keep accruing => the operator
+          cannot apply its change at all (validation/RBAC/immutable StatefulSet field is the
+          usual answer) — the cluster is fine but frozen at the old spec. Pod deletes
+          exceeding adds => hosts are being lost during reconcile, which turns this into a
+          capacity problem too.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Operator-driven host restarts, pod add/delete balance, and the ClickHouse-side health of the hosts being reconciled."
+            params:
+              queries:
+                - name: host_restarts_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_restarts[1h]))'
+                  panel: true
+                  panel_title: "Operator Host Restarts (1h)"
+                  panel_id: "ch-operator-host-restarts-1h"
+                - name: pods_add_minus_delete_30m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m])) - sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))'
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-by-host-reconcile"
+      - step: 3
+        title: "Read the operator's own error text — it names the object and the reason"
+        description: >-
+          The metric counts failures; only the log says why. Pull the operator container log
+          and quote the failing object verbatim. Interpret: 'forbidden'/'cannot get/update'
+          => RBAC or a namespace the operator is not scoped to. 'is invalid' / 'field is
+          immutable' => the CHI asks for a change StatefulSet cannot take in place (volume
+          size, selector) and the rollout will never succeed without manual intervention.
+          Timeouts waiting for the host to become ready => the failure is really the
+          ClickHouse pod's, so go back to step 2's host evidence. Nothing but generic
+          retries => report that the error text is uninformative rather than inventing a
+          cause, and escalate with the CHI name.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "clickhouse-operator container logs filtered for reconcile/error/forbidden/invalid/timeout signatures naming the CHI and host."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — CHI edits and StatefulSet recreation are disruptive
+      - action: "fix_chi_spec_or_permissions"
+        description: "When step 3 names an invalid/immutable field or an RBAC denial: correct the CHI spec (or the operator's RBAC) so the desired state is applicable. An immutable-field change usually needs a planned StatefulSet recreation — schedule it, do not force it mid-incident."
+        tool_id: ""
+        requires_approval: true
+      - action: "repair_the_failing_host"
+        description: "When step 2 shows the host itself never becomes ready: fix that pod (OOM headroom, PVC binding, scheduling, bad setting introduced by the new spec) and let the operator retry — the reconcile succeeds once the host can start."
+        tool_id: ""
+        requires_approval: true
+      - action: "pause_or_roll_back_the_rollout"
+        description: "If the sustained tier is firing mid-upgrade and hosts are on mixed versions/settings: consider reverting the CHI to the last known-good spec so the cluster converges on one configuration instead of staying split."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform / operator owner. Escalate immediately on the sustained (P1) tier, or on either tier when step 2 shows hosts restarting or missing — the cluster is then losing capacity, not just drifting from spec."
+    follow_up:
+      - "Confirm errors_1h returns to zero and the started-minus-finished reconcile gap drains after the fix."
+      - "If a spec change was the trigger, check every host converged on the intended image/settings — a partially applied rollout leaves silent version skew."
+
+  - name: "ClickHouseOperatorCHIReconcileAborted"
+    patterns:
+      [
+        "ClickHouseOperatorCHIReconcileAborted",
+        "A ClickHouseInstallation reconcile was aborted",
+        "chi reconcile aborted",
+        "clickhouse_operator_chi_reconciles_aborted",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the abort and check whether a later reconcile already completed"
+        description: >-
+          An aborted reconcile never reaches completion, so the live cluster is not
+          necessarily what the CHI spec says. The question is whether a subsequent reconcile
+          fixed that. aborted_15m is the firing signal; completed_1h and started_1h show
+          whether the operator has since run a reconcile to completion for the same
+          (namespace, chi). Interpret: aborted_15m > 0 with completed_1h > 0 AFTER it =>
+          the operator recovered on retry — verify the spec is applied and close as
+          self-healed. aborted_15m > 0 and completed_1h = 0 => nothing has converged since
+          the abort; the CHI is still drifted and a subsequent edit will queue behind it.
+          started_1h much larger than completed_1h + aborted_1h => reconciles are also
+          hanging, which is the stuck-reconcile failure mode rather than a clean abort.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Control-plane overview: CHIs tracked, host reconcile errors, started-minus-finished gap."
+            params:
+              queries: *operator_panels
+          - tool_id: "tool.query_metrics"
+            description: "Aborted, started and completed CHI reconciles per namespace and CHI."
+            params:
+              queries:
+                - name: aborted_15m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[15m]))'
+                  panel: true
+                  panel_title: "CHI Reconciles Aborted (15m)"
+                  panel_id: "ch-operator-aborted-15m"
+                - name: started_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))'
+                - name: completed_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))'
+      - step: 2
+        title: "Identify the abort trigger: re-edit, operator restart, or a host that went away"
+        description: >-
+          Three causes produce aborts. operator_restarted_recently (an operator process
+          restart resets its reconcile loop), host_restarts_1h and host_errors_1h (a host
+          became unreachable or failed mid-rollout), and repeated CHI edits (visible as
+          started_1h climbing with several aborts). Interpret: aborts coinciding with a
+          spike in host errors/restarts => the rollout hit a broken host — fix the host and
+          the next reconcile completes. Aborts with clean host metrics and a jump in
+          started_1h => the CHI was edited again while a reconcile was running, which is
+          benign as long as the final reconcile completes. Neither pattern => suspect an
+          operator restart (leader election change, OOM, deploy) and confirm from its pod
+          events in step 3's diagnostics.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Host-side turbulence during the reconcile window, and per-host ClickHouse uptime for the CHI."
+            params:
+              queries:
+                - name: host_errors_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[1h]))'
+                - name: host_restarts_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_restarts[1h]))'
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-by-host-aborted"
+          - tool_id: "tool.capture_diagnostics"
+            description: "clickhouse-operator pod restarts and events in the abort window (an operator restart is itself an abort cause)."
+    remediation: # suggestion-only
+      - action: "retrigger_convergence"
+        description: "If nothing has completed since the abort and the spec is correct: let the operator retry (a no-op annotation touch on the CHI is the usual nudge) and watch completed_1h increase. Avoid repeated edits while a reconcile is running — that is itself an abort cause."
+        tool_id: ""
+        requires_approval: true
+      - action: "stabilise_the_operator_or_host_first"
+        description: "If step 2 attributed the abort to an operator restart or a failing host, fix that first — retriggering a reconcile into the same condition just aborts again."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform / operator owner. Escalate if no reconcile has completed since the abort and a functional change (version, settings, topology) is pending — the cluster is running an unintended configuration."
+    follow_up:
+      - "Verify the CHI's live state matches the committed spec (image, settings, replica count) once a reconcile completes."
+      - "If aborts repeat, look for automation that edits the CHI on every sync loop — that pattern aborts reconciles indefinitely."
+
+  - name: "ClickHouseOperatorCHIReconcileStuck"
+    patterns:
+      [
+        "ClickHouseOperatorCHIReconcileStuck",
+        "A ClickHouseInstallation reconcile started but never finished",
+        "chi reconcile stuck",
+        "reconcile hung",
+        "clickhouse_operator_chi_reconciles_started",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Quantify the hang: how many reconciles started and never finished, and for how long"
+        description: >-
+          The rule computes started - completed - aborted over 1h per (namespace, chi), so a
+          positive value means reconciles are in flight far longer than the seconds-to-minutes
+          a healthy one takes. reconcile_gap_1h reproduces that number; started_1h and
+          completed_1h show the raw flow. Interpret: gap = 1 with started_1h = 1 => one
+          rollout is hung — the usual case; find the host it is waiting on in step 2. gap
+          growing over time => every new reconcile also hangs, so the CHI is effectively
+          frozen and subsequent edits will queue behind it. gap positive but completed_1h
+          rising => reconciles ARE finishing and the gap is a window artifact of a long
+          rollout; note that before declaring it stuck. gap back to zero => the rollout
+          finished; report as self-resolved.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Control-plane overview: CHIs tracked, host reconcile errors, started-minus-finished gap."
+            params:
+              queries: *operator_panels
+          - tool_id: "tool.query_metrics"
+            description: "The exact started/completed/aborted flow behind the stuck-reconcile expression."
+            params:
+              queries:
+                - name: reconcile_gap_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))'
+                  panel: true
+                  panel_title: "Unfinished CHI Reconciles (1h)"
+                  panel_id: "ch-operator-stuck-gap"
+                - name: started_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h]))'
+                - name: completed_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h]))'
+      - step: 2
+        title: "Find the host the rollout is waiting on"
+        description: >-
+          A CHI reconcile walks hosts one at a time and blocks on the current one becoming
+          ready. avg_host_reconcile_seconds_1h is the mean host reconcile duration (the same
+          ratio the slow-reconcile rule uses), host_errors_1h shows failures, and per-host
+          uptime shows which host recently restarted or never came back. Interpret: one host
+          with a very small uptime, or missing entirely from the uptime result while its
+          siblings report => that is the host the rollout is stuck on; its readiness is the
+          blocker (long parts loading, replication catch-up, crash loop, Pending pod).
+          avg_host_reconcile_seconds_1h very large with no errors => hosts are slow, not
+          failing — usually startup/resync time or image pulls. host_errors_1h > 0 => this
+          is really a reconcile-failure incident; use the host-reconcile-errors entry.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Average host reconcile duration, host reconcile errors, and per-host ClickHouse uptime/fetch-error state for the CHI."
+            params:
+              queries:
+                - name: avg_host_reconcile_seconds_1h
+                  unit: "s"
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_timings_sum[1h])) / sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_timings_count[1h]))'
+                  panel: true
+                  panel_title: "Avg Host Reconcile Duration (1h)"
+                  panel_id: "ch-operator-host-reconcile-avg"
+                - name: host_errors_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[1h]))'
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-by-host-stuck"
+      - step: 3
+        title: "Confirm from the operator log which phase it is blocked in"
+        description: >-
+          The log names the host and the wait. Interpret: repeated 'waiting for host to
+          become ready/online' on one host => readiness is the blocker; the fix is on that
+          pod, not the operator. Waiting on a StatefulSet update that never rolls => the pod
+          is Pending (scheduling/PVC) or the image cannot be pulled. No progress lines at all
+          since the start entry => the operator process may have lost its loop (restart,
+          leader change) even though it is running — say so and check its pod events.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "clickhouse-operator logs filtered for reconcile start/wait/ready/timeout lines naming the CHI and host."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only
+      - action: "unblock_the_waiting_host"
+        description: "Fix whatever keeps the named host from becoming ready — scheduling, PVC binding, image pull, a crashing container, or a very long parts load. The reconcile resumes on its own once the host reports ready."
+        tool_id: ""
+        requires_approval: true
+      - action: "reset_the_reconcile_loop"
+        description: "Only when the operator itself has lost the loop while its hosts are healthy: restart the operator deployment, accepting that the in-flight reconcile will be restarted from the beginning."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform / operator owner; loop in the workload owner if the blocked host is stuck for capacity reasons (scheduling, PVC). Escalate if the hang spans a maintenance window with hosts left on mixed configuration."
+    follow_up:
+      - "Confirm reconcile_gap_1h returns to zero and the CHI reports the intended spec on every host."
+      - "If rollouts routinely exceed the maintenance window, review startup time per host (parts count, replication catch-up) before the next upgrade."
+
+  - name: "ClickHouseOperatorHostReconcileSlow"
+    patterns:
+      [
+        "ClickHouseOperatorHostReconcileSlow",
+        "clickhouse-operator host reconciles are taking too long",
+        "slow host reconcile",
+        "clickhouse_operator_host_reconciles_timings",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the average and check it is not one outlier host dragging the mean"
+        description: >-
+          The rule divides increase(clickhouse_operator_host_reconciles_timings_sum[1h]) by
+          increase(..._count[1h]) and fires above 600s. avg_host_reconcile_seconds_1h is that
+          average; reconciles_counted_1h is the denominator. Interpret: reconciles_counted_1h
+          = 1 or 2 => the "average" is one or two rollouts, so a single slow host explains it
+          — do not describe it as a systemic slowdown. Many reconciles all averaging over 10m
+          => host startup is genuinely slow across the CHI and every future rolling upgrade
+          will overrun its window. Average falling while reconciles continue => the rollout
+          is recovering. Note this is a P3 efficiency signal: nothing is broken yet, but a
+          multi-host upgrade at this rate takes hours.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Control-plane overview: CHIs tracked, host reconcile errors, started-minus-finished gap."
+            params:
+              queries: *operator_panels
+          - tool_id: "tool.query_metrics"
+            description: "Average host reconcile duration and how many reconciles that average is computed over."
+            params:
+              queries:
+                - name: avg_host_reconcile_seconds_1h
+                  unit: "s"
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_timings_sum[1h])) / sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_timings_count[1h]))'
+                  panel: true
+                  panel_title: "Avg Host Reconcile Duration (1h)"
+                  panel_id: "ch-operator-host-reconcile-slow"
+                - name: reconciles_counted_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_timings_count[1h]))'
+      - step: 2
+        title: "Attribute the slowness: slow ClickHouse startup vs slow Kubernetes"
+        description: >-
+          Reconcile time is dominated by how long a host takes to become ready. Cross-check
+          the data plane: hosts with small uptime are the ones that just restarted, and their
+          replication queue/delay after restart shows how much catch-up work startup implies.
+          Interpret: restarted hosts showing a large replication queue or delay while they
+          come back => ClickHouse startup is the cost (parts loading plus replication
+          catch-up) — reduce part counts or accept longer windows. Hosts healthy and quick to
+          report but reconciles still slow => the delay is Kubernetes-side (image pull,
+          scheduling, PVC attach) and the ClickHouse metrics will look unremarkable; say so
+          instead of blaming the database. Errors present alongside slowness => treat as the
+          reconcile-error case, where retries inflate the timing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime plus post-restart replication catch-up work (queue and delay) for the CHI."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime and reconcile errors to separate slow-but-working from slow-because-retrying."
+            params:
+              queries:
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-by-host-slow"
+                - name: host_errors_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_errors[1h]))'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+    remediation: # suggestion-only — capacity/config tuning, nothing urgent
+      - action: "reduce_startup_cost"
+        description: "If startup dominates: bring part counts down (bigger insert batches, healthy merges) so parts loading is shorter, and make sure replicas are not restarted while far behind — each restart then pays a long catch-up."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_kubernetes_side_delays"
+        description: "If the delay is image pull, scheduling or PVC attach: pre-pull images to the nodes, ensure resource headroom so pods schedule immediately, and check storage-class attach times before the next rolling upgrade."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner, non-urgent. Escalate only when a maintenance window is imminent and the current rate implies the rollout cannot finish inside it."
+    follow_up:
+      - "Re-measure the average after the next rollout and compare against the 10m threshold to confirm the tuning worked."
+      - "Record the observed per-host reconcile time in the upgrade plan so windows are sized from evidence."
+
+  - name: "ClickHouseOperatorHostRestartsHigh"
+    patterns:
+      [
+        "ClickHouseOperatorHostRestartsHigh",
+        "clickhouse-operator is repeatedly restarting a ClickHouse host",
+        "host restarts high",
+        "clickhouse_operator_host_reconciles_restarts",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the restart count and find which hosts actually bounced"
+        description: >-
+          The rule fires above 2 operator-driven host restarts in 1h, which is more than a
+          planned rolling upgrade needs. host_restarts_1h is the firing value per
+          (namespace, chi); uptime_by_host names the hosts whose ClickHouse process is young.
+          Interpret: restarts ~= the host count and all uptimes are similarly small => this
+          looks like a legitimate rolling upgrade — check whether a CHI change is in flight
+          before calling it an incident. Restarts concentrated with ONE host showing
+          repeatedly tiny uptime => that host is crash-looping or failing readiness and the
+          operator keeps recycling it. Restarts high while uptimes are long => the operator
+          counted restarts that did not translate into process restarts (recreated pods that
+          never started), which points at scheduling/PVC problems.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Operator-driven host restarts and per-host ClickHouse uptime."
+            params:
+              queries:
+                - name: host_restarts_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_restarts[1h]))'
+                  panel: true
+                  panel_title: "Operator Host Restarts (1h)"
+                  panel_id: "ch-operator-restarts-1h"
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-by-host-restarts"
+                - name: hosts_reporting_per_chi
+                  query: 'count by (chi) (chi_clickhouse_metric_Uptime)'
+      - step: 2
+        title: "Measure what the restarts cost the data plane"
+        description: >-
+          Every restart drops in-flight queries and forces replication catch-up. Use the
+          replication panels plus fetch errors to state real impact. Interpret: replication
+          queue and delay spiking after each restart => the replica is repeatedly thrown into
+          catch-up and may never fully drain — reads from it are stale. ReadonlyReplica > 0
+          on the restarting host => restarts are also costing Keeper sessions, so writes to
+          those tables fail. system.metrics fetch errors appearing for the host during the
+          window => it was unreachable, i.e. the restarts are real outages, not clean
+          handovers. All clean => the restarts are disruptive but the cluster absorbed them;
+          keep at P2 and focus on the cause.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host — the cost of repeated restarts."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Per-host system.metrics fetch errors during the restart window."
+            params:
+              queries:
+                - name: system_metrics_fetch_errors_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"})'
+                  panel: true
+                  panel_title: "system.metrics Fetch Errors by Host"
+                  panel_id: "ch-fetch-errors-restarts"
+      - step: 3
+        title: "Get the restart reason from the pod and the operator"
+        description: >-
+          Interpret the evidence in this order: OOMKilled in the container's last state =>
+          the ClickHouse container needs more memory or the workload needs limiting — the
+          single most common answer. Readiness probe failures with a healthy process => the
+          probe's timeout is too tight for this host's startup time, so the operator recycles
+          a host that was about to become ready. Operator logs showing it decided the host
+          must be recreated on every loop => a spec/status mismatch is driving a reconcile
+          loop, which is an operator-side bug or a spec the cluster cannot satisfy. If none
+          of these appear, say the reason is not visible in logs rather than guessing.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "ClickHouse pod restarts, last-state/OOM information and probe events."
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse container and operator logs filtered for OOM, exit, probe-failure and 'restart host' signatures."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — restarts are already happening; do not add more
+      - action: "address_the_crash_cause"
+        description: "OOMKilled => raise the container memory limit or cap query memory (max_memory_usage / max_server_memory_usage_to_ram_ratio). Crash on startup => fix the configuration or data problem named in the logs. Do not restart the pod again manually; it is already being recycled."
+        tool_id: ""
+        requires_approval: true
+      - action: "loosen_readiness_for_slow_startup"
+        description: "If the process is healthy but fails readiness during a long parts load or replication catch-up: extend the readiness/startup probe budget so the operator stops recycling hosts that simply need more time."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner. Escalate if the restarts leave a shard with a single live replica, or if step 2 shows replication never drains between restarts — the cluster is then losing redundancy and serving stale reads."
+    follow_up:
+      - "Confirm restarts stop and uptime on the affected host grows past the startup window."
+      - "If restarts were OOM-driven, review the memory headroom for merges and concurrent queries, not just the idle footprint."
+
+  - name: "ClickHouseOperatorPodsDisappearing"
+    patterns:
+      [
+        "ClickHouseOperatorPodsDisappearing",
+        "ClickHouse pods are being deleted and not coming back",
+        "pod delete events exceed add events",
+        "clickhouse_operator_pod_delete_events",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the deficit and whether it is still growing"
+        description: >-
+          The rule subtracts pod add events from pod delete events over 30m per
+          (namespace, chi): during a healthy rolling restart the two balance within minutes,
+          so a sustained positive difference means hosts are being lost rather than cycled.
+          pod_delete_minus_add_30m is the firing value; the raw delete/add rates show the
+          shape. Interpret: deficit stable at 1 and deletes stopped => one pod went away and
+          has not returned — find out whether it is Pending. Deficit growing with a high
+          delete rate => something is actively evicting or descheduling hosts (node drain,
+          preemption, resource pressure) and capacity is dropping fast. Deficit closing =>
+          the pods are coming back; report as recovering and check the cluster is complete.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Pod delete/add balance over the rule window plus the raw event rates."
+            params:
+              queries:
+                - name: pod_delete_minus_add_30m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m])) - sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))'
+                  panel: true
+                  panel_title: "Pod Deletes minus Adds (30m)"
+                  panel_id: "ch-operator-pod-deficit-30m"
+                - name: pod_delete_events_30m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m]))'
+                - name: pod_add_events_30m
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_pod_add_events[30m]))'
+      - step: 2
+        title: "Confirm from the data plane how many hosts the CHI actually has left"
+        description: >-
+          Pod events describe Kubernetes; hosts_reporting_per_chi describes reality.
+          Interpret: hosts_reporting_per_chi lower than the CHI's expected host count =>
+          replicas are genuinely missing; if a shard is down to one replica, the next failure
+          is data unavailability and this becomes urgent. Distributed files queuing on the
+          surviving hosts => writes destined for the missing shard are piling on local disk
+          and their rows are not queryable yet. Replication delay rising on the survivors =>
+          the remaining replicas are absorbing the load and falling behind. Host count intact
+          => the deleted pods were replaced under a different name and only the event
+          accounting looked bad.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Hosts still reporting per CHI, distributed insert backlog on survivors, and replication state."
+            params:
+              queries:
+                - name: hosts_reporting_per_chi
+                  query: 'count by (chi) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "Hosts Reporting per CHI"
+                  panel_id: "ch-hosts-reporting-deficit"
+                - name: distributed_files_to_insert_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+                  panel: true
+                  panel_title: "Distributed Files To Insert"
+                  panel_id: "ch-dist-files-deficit"
+                - name: replica_delay_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+      - step: 3
+        title: "Find why the pods are not coming back"
+        description: >-
+          Interpret the pod events: Pending with 'insufficient cpu/memory' or node-affinity
+          messages => the cluster cannot place the host, so it will not return until capacity
+          or scheduling constraints change. Pending on volume binding => the PVC/PV is the
+          blocker (zone mismatch after rescheduling is the classic ClickHouse case, because
+          the data volume is zone-bound). Evicted / preempted / node drained => an external
+          actor is removing the pods and will keep doing so. No pod object at all => the
+          StatefulSet was scaled down or the CHI's topology changed — check whether this was
+          an intended change before treating it as a failure.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod scheduling/eviction events, PVC binding state and node conditions for the CHI's pods."
+          - tool_id: "tool.read_logs"
+            description: "clickhouse-operator logs filtered for pod delete/add, scale and topology-change lines for this CHI."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — capacity and topology changes need an owner
+      - action: "restore_scheduling_capacity"
+        description: "When pods are Pending for resources or zone-bound volumes: free capacity on the right nodes/zone, relax the constraint, or move the workload — the host cannot return otherwise."
+        tool_id: ""
+        requires_approval: true
+      - action: "stop_the_external_eviction"
+        description: "When pods are being evicted/preempted/drained: protect the CHI with an appropriate PodDisruptionBudget and priority class so cluster maintenance cannot take replicas away faster than they return."
+        tool_id: ""
+        requires_approval: true
+      - action: "confirm_intended_topology"
+        description: "If the CHI was deliberately scaled down, close the alert as expected change after verifying no shard is left without a replica."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner plus the Kubernetes/cluster team when the blocker is scheduling, eviction or storage. Escalate immediately if a shard is down to one replica or has none reporting."
+    follow_up:
+      - "Confirm hosts_reporting_per_chi returns to the expected count and distributed backlogs drain."
+      - "If zone-bound PVCs caused the failure, review the storage class / topology constraints before the next node event."
+
+  # ==================================================== SERVER AVAILABILITY
+  - name: "ClickHouseServerDown"
+    patterns:
+      [
+        "ClickHouseServerDown",
+        "ClickHouse server is not answering queries",
+        "chi_clickhouse_metric_fetch_errors",
+        "clickhouse host unreachable",
+        "system.metrics fetch failing",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm which host is failing and whether it is one host or the whole exporter path"
+        description: >-
+          The rule fires on chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"} > 0
+          — the exporter could not run SELECT ... FROM system.metrics over the native
+          protocol against that host. Note the regex: the fetch_type spelling is
+          "system.metrics" on operator <= 0.25.x and "system_metrics" on 0.27.x+, so always
+          match both. failing_hosts names every host with the error; hosts_reporting_per_chi
+          and uptime_by_host show who still answers. Interpret: ONE host failing while its
+          siblings in the same chi still report Uptime => that host really is down,
+          unreachable or too overloaded to answer — proceed to blast radius. EVERY host of a
+          chi failing at once => a shared cause is far more likely than simultaneous
+          database failure: rotated exporter credentials, a network policy change, or the
+          exporter losing DNS. Say which of the two you see; they have completely different
+          fixes. Host missing from uptime entirely => it has been unreachable long enough for
+          its series to go stale.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime, hosts reporting per CHI and system.metrics fetch errors."
+            params:
+              queries: *server_health_panels
+          - tool_id: "tool.query_metrics"
+            description: "Which hosts are failing the system.metrics fetch, and whether other fetch types fail too."
+            params:
+              queries:
+                - name: failing_hosts
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"})'
+                  panel: true
+                  panel_title: "Hosts Failing system.metrics Fetch"
+                  panel_id: "ch-server-down-hosts"
+                - name: failing_fetch_types
+                  query: 'max by (chi, hostname, fetch_type) (chi_clickhouse_metric_fetch_errors)'
+                - name: uptime_seconds_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+      - step: 2
+        title: "Measure blast radius: is this shard still readable and writable?"
+        description: >-
+          A single dead replica is survivable; the last replica of a shard is an outage.
+          Interpret: surviving hosts of the same chi showing rising DistributedFilesToInsert
+          => rows already accepted from clients are queuing on disk for the missing shard,
+          so reads are incomplete and the backlog is at risk. ReadonlyReplica > 0 on the
+          survivors => the failure also cost Keeper sessions and writes are failing more
+          broadly. Replication delay/queue climbing on survivors => they are carrying the
+          load and drifting. hosts_reporting_per_chi down to one for the shard => treat as a
+          data-availability incident, not a single-host problem.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue across the CHI's surviving hosts."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Distributed insert backlog and live query load on the surviving hosts."
+            params:
+              queries:
+                - name: distributed_files_to_insert_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+                  panel: true
+                  panel_title: "Distributed Files To Insert"
+                  panel_id: "ch-dist-files-server-down"
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                  panel: true
+                  panel_title: "Running Queries by Host"
+                  panel_id: "ch-queries-server-down"
+      - step: 3
+        title: "Establish the pod-level cause — or prove it is only the exporter"
+        description: >-
+          Interpret in this order: CrashLoopBackOff with OOMKilled in the last state => the
+          container is being killed for memory, the most common cause. Pending => scheduling
+          or PVC binding, so the server was never started. Running with 'Loading data parts'
+          in the log => the server is starting and simply not accepting connections yet —
+          wait rather than intervene. Running and serving, with only the exporter failing =>
+          credentials or network between exporter and host; this is a visibility failure, and
+          you must say so rather than declaring a database outage. 'Too many simultaneous
+          queries' in the log => the server is up but refusing new connections, which is the
+          overload path, not a crash.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "ClickHouse pod state for the failing host: phase, restarts, last-state/OOM, probe and scheduling events."
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse container logs (and previous container if it restarted) filtered for OOM, exception, 'Loading data parts', connection-limit and shutdown signatures."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — never restart a ClickHouse host blindly; it may be mid-recovery
+      - action: "recover_the_failed_host"
+        description: "Fix the cause step 3 named: OOM => raise memory or cap query memory; Pending => scheduling/PVC; corrupt-start => the exact exception in the log. If the server is mid-startup loading parts, wait — restarting restarts the load from scratch."
+        tool_id: ""
+        requires_approval: true
+      - action: "take_the_host_out_of_rotation"
+        description: "While the shard has other live replicas, keep this host out of client rotation (readiness already does this for service-routed traffic) so clients stop hitting a host that cannot answer."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_exporter_access"
+        description: "Only when the server answers but the exporter cannot: restore the exporter's ClickHouse user/password or the network path. Changing the database for an exporter credential problem is the wrong fix."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform on-call immediately. Page the data owners too when step 2 shows the shard has no other live replica — its data is unreadable and unwritable until this host returns."
+    follow_up:
+      - "After recovery, confirm the fetch errors clear, Uptime grows and the host's replication queue drains before returning it to rotation."
+      - "If every host failed at once, fix the shared cause (credentials, network policy, DNS) and add a check that catches it before it looks like a database outage."
+
+  - name: "ClickHouseServerMetricsAbsent"
+    patterns:
+      [
+        "ClickHouseServerMetricsAbsent",
+        "No ClickHouse server metrics are being scraped",
+        "absent(chi_clickhouse_metric_Uptime)",
+        "metrics-exporter down",
+        "clickhouse observability blind",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the blackout and prove whether ClickHouse itself is still alive"
+        description: >-
+          absent(chi_clickhouse_metric_Uptime) has no labels, so it cannot be scoped to an
+          instance: it only says the data plane stopped reporting. THIS IS NOT PROOF THAT
+          CLICKHOUSE IS DOWN. server_series_count is how many host series exist now, and
+          operator_series_count tells you whether the sibling container in the same pod still
+          reports. Interpret: server metrics absent but operator metrics present => the
+          metrics-exporter container specifically is failing (crash, bad credentials,
+          cannot reach any host) while the operator container is fine — a visibility
+          incident. Both absent => the whole clickhouse-operator pod is gone; you are blind
+          on both planes and must confirm the databases from outside these metrics entirely.
+          Series back now => report recovered. In all cases state explicitly which ClickHouse
+          alerts are currently undetectable: readonly replicas, rejected inserts, replication
+          lag and disk fill.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Whether any ClickHouse server series or operator series exist right now."
+            params:
+              queries:
+                - name: server_series_count
+                  query: 'count(chi_clickhouse_metric_Uptime) or vector(0)'
+                  panel: true
+                  panel_title: "ClickHouse Host Series Present"
+                  panel_id: "ch-server-series-count"
+                - name: operator_series_count
+                  query: 'count(clickhouse_operator_chi) or vector(0)'
+                  panel: true
+                  panel_title: "Operator CHI Series Present"
+                  panel_id: "ch-operator-series-count-absent"
+          - tool_id: "tool.query_metrics"
+            description: "Control-plane overview — still meaningful when only the exporter is blind."
+            params:
+              queries: *operator_panels
+      - step: 2
+        title: "Separate exporter failure, credential failure and 'no hosts exist'"
+        description: >-
+          Three distinct causes, one alert. Interpret the exporter logs and pod state:
+          restarts/OOM/crash-loop on the metrics-exporter container => the exporter is down,
+          ClickHouse is probably fine. Authentication/access-denied errors against every host
+          => the exporter's ClickHouse user or password is wrong (a rotation is the usual
+          trigger) — again a visibility problem. Connection-refused/timeout to every host, and
+          the operator reporting no hosts => the CHI may genuinely have no running hosts,
+          which IS a database outage; confirm from the pod side before claiming either way.
+          Exporter healthy and serving its endpoint => the scrape config/ServiceMonitor no
+          longer matches, so nothing is collected even though everything works.
+        tool_calls:
+          - tool_id: "tool.capture_diagnostics"
+            description: "clickhouse-operator pod: metrics-exporter container restarts/OOM, plus the state of the CHI's ClickHouse pods."
+          - tool_id: "tool.read_logs"
+            description: "metrics-exporter logs filtered for authentication, connection-refused, timeout and fetch-error signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "restore_metrics_exporter"
+        description: "Fix the exporter: memory/restart cause if it is crash-looping, or its ClickHouse credentials if every fetch is denied. No ClickHouse server change is appropriate for an exporter failure."
+        tool_id: ""
+        requires_approval: true
+      - action: "repair_scrape_configuration"
+        description: "If the exporter is healthy and serving metrics, fix the ServiceMonitor/scrape job that no longer selects it."
+        tool_id: ""
+        requires_approval: true
+      - action: "verify_the_clickhouse_hosts_exist"
+        description: "If the evidence points at a CHI with no running hosts, switch to the server-down path — that is a real outage and needs the platform on-call, not an exporter fix."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner. Treat as P2 observability loss by default, and raise only if you cannot establish that the databases are serving — an unverified blind spot over a production cluster should not sit unattended."
+    follow_up:
+      - "When metrics return, re-check every blind alert family (readonly replicas, parts, disks, replication) for conditions that accumulated during the gap."
+      - "If credentials were the cause, align the exporter's secret with the rotation process so the next rotation does not blind the fleet."
+
+  - name: "ClickHouseMetricsFetchErrors"
+    patterns:
+      [
+        "ClickHouseMetricsFetchErrors",
+        "metrics-exporter cannot fetch part of the ClickHouse metric set",
+        "fetch_type error",
+        "partial clickhouse metric coverage",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Name the failing fetch_type and confirm system.metrics still succeeds"
+        description: >-
+          This rule is the complement of the server-down rule: it matches
+          fetch_type!~"system[._ ]metrics", so the server IS answering and only one metric
+          family is failing. failing_fetch_types names which ones per host;
+          available_fetch_types lists every fetch_type this cluster emits, which also settles
+          the version-dependent spelling (dotted/spaced on operator <= 0.25.x, underscored
+          on 0.27.x+). Interpret: one fetch_type failing on one host => scope it there; the
+          alerts fed by that family are blind for that host only. The SAME fetch_type failing
+          on every host => the exporter's user lacks SELECT on that system table, or the
+          query times out cluster-wide. Then state the consequence explicitly: a failing
+          replicas fetch blinds replication alerts, disks blinds the disk-fill alerts,
+          detached_parts blinds the detached-parts alert, and parts/table sizes blind the
+          parts alerts.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime, hosts reporting per CHI and system.metrics fetch errors."
+            params:
+              queries: *server_health_panels
+          - tool_id: "tool.query_metrics"
+            description: "Which fetch types are failing and which exist at all in this cluster (settles the spelling)."
+            params:
+              queries:
+                - name: failing_fetch_types
+                  query: 'max by (chi, hostname, fetch_type) (chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"})'
+                  panel: true
+                  panel_title: "Failing Fetch Types"
+                  panel_id: "ch-failing-fetch-types"
+                - name: available_fetch_types
+                  query: 'group by (fetch_type) (chi_clickhouse_metric_fetch_errors)'
+                - name: system_metrics_fetch_errors_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"})'
+      - step: 2
+        title: "Check which dependent signals actually went missing"
+        description: >-
+          Prove the blind spot instead of asserting it. Query the families that the failing
+          fetch feeds and see whether their series still exist for the affected host.
+          Interpret: the dependent metric is absent for that host while its siblings report
+          => confirmed blind spot; name the alerts that cannot fire (for example disk-fill
+          alerts if DiskFreeBytes is missing). The dependent metric still reports => the
+          fetch error is intermittent and coverage is partial rather than gone — lower the
+          urgency and say the data may be stale. All families reporting normally => this is
+          a cosmetic/intermittent exporter error with no diagnostic loss today.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Presence of the metric families the failing fetch types feed: disks, replicas, detached parts, parts."
+            params:
+              queries:
+                - name: disk_metric_hosts
+                  query: 'count by (chi, hostname) (chi_clickhouse_metric_DiskFreeBytes)'
+                - name: replica_metric_hosts
+                  query: 'count by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+                - name: detached_parts_hosts
+                  query: 'count by (chi, hostname) (chi_clickhouse_metric_DetachedParts)'
+                - name: parts_metric_hosts
+                  query: 'count by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+      - step: 3
+        title: "Read the exporter's error for the failing fetch"
+        description: >-
+          Interpret: 'Not enough privileges' / 'Access denied' on a system table => grant the
+          exporter user SELECT on it; this is a one-line fix. Query timeouts => the fetch is
+          too slow on a cluster with very many tables/parts, so the fix is reducing table or
+          part counts (or raising the exporter's timeout), not restarting anything. Unknown
+          table/column => an operator/ClickHouse version mismatch where the exporter queries
+          something this server version does not have; note it and treat the family as
+          permanently unavailable until versions align.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "metrics-exporter logs filtered for the failing fetch_type, access-denied, timeout and unknown-table signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "grant_exporter_read_access"
+        description: "When the log shows a privilege error: grant the exporter's ClickHouse user SELECT on the specific system table named. No restart of ClickHouse is needed."
+        tool_id: ""
+        requires_approval: true
+      - action: "reduce_fetch_cost_or_raise_timeout"
+        description: "When the fetch times out: cut the number of tables/parts the query must scan (usually the same part-count problem behind the ingest alerts) or raise the exporter's query timeout."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner, non-urgent (P3) — but flag in the incident channel if the blinded family covers disks or replication, because those alerts are the safety net for real outages."
+    follow_up:
+      - "After the fix, confirm the dependent metric families reappear for the affected hosts."
+      - "Re-check any condition that could have developed unnoticed in the blinded family (for example disk free % if disk metrics were missing)."
+
+  - name: "ClickHouseServerRestarted"
+    patterns:
+      [
+        "ClickHouseServerRestarted",
+        "ClickHouse server restarted recently",
+        "chi_clickhouse_metric_Uptime",
+        "clickhouse uptime low",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the restart and decide whether it was planned"
+        description: >-
+          Uptime below 300s means the process started within the last 5 minutes. uptime_by_host
+          names the restarted host(s); operator_host_restarts_1h and operator_reconcile_gap_1h
+          say whether the operator did it. Interpret: several hosts of the same chi restarting
+          in sequence with operator restarts counted => a rolling upgrade or CHI change is in
+          progress, which is expected and informational. ONE host restarting with no operator
+          restart recorded => the container died on its own (OOM, crash, node event) — that is
+          the case worth chasing. The same host restarting repeatedly (uptime keeps resetting)
+          => a crash loop, which deserves more urgency than this P3 rule implies; say so
+          explicitly and cross-reference the host-restarts path.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime plus operator-side restart and reconcile activity."
+            params:
+              queries:
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-restarted"
+                - name: operator_host_restarts_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_host_reconciles_restarts[1h]))'
+                - name: operator_reconcile_gap_1h
+                  query: 'sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_completed[1h])) - sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_aborted[1h]))'
+      - step: 2
+        title: "Assess recovery: is the restarted host serving complete results yet?"
+        description: >-
+          A freshly started replica reloads parts and drains its replication queue before its
+          answers are complete. Interpret: replication queue and delay elevated on the
+          restarted host => it is still catching up, so queries routed there return stale or
+          missing rows — this is the real user impact of the restart. ReadonlyReplica > 0 on
+          it => it has not re-established Keeper properly and writes will fail; escalate to
+          the readonly path. Queue and delay near zero with Uptime growing => recovery is
+          complete and the alert is purely informational. Note event counters (rejected
+          inserts, Keeper exceptions) reset at restart — their absence after a restart is not
+          evidence that the problem is gone.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host after the restart."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse container logs (including the previous container) filtered for OOM, shutdown, exception and 'Loading data parts' signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — usually no action for a planned restart
+      - action: "close_as_expected_change"
+        description: "If the restart belongs to a rolling upgrade or an approved CHI change and step 2 shows the host caught up, close it as expected — record which host and when."
+        tool_id: ""
+        requires_approval: true
+      - action: "chase_the_unplanned_restart"
+        description: "If no operator activity explains it: treat the pod's last state as the answer (OOMKilled => memory headroom or query memory caps; node event => scheduling/hardware) and watch for repeats before the next alert cycle."
+        tool_id: ""
+        requires_approval: true
+    escalation: "No escalation for a planned rolling restart. Escalate to the ClickHouse platform owner if the same host restarts repeatedly or if step 2 shows it is not catching up."
+    follow_up:
+      - "Confirm the replication queue drains and delay returns to baseline before treating the host as fully healthy."
+      - "If restarts were unplanned, track their frequency — the operator host-restart rule fires above two per hour and is the better signal for a pattern."
+
+  # ==================================================== REPLICATION AND KEEPER
+  - name: "ClickHouseReadonlyReplica"
+    patterns:
+      [
+        "ClickHouseReadonlyReplica",
+        "ClickHouse has replicated tables stuck in read-only mode",
+        "chi_clickhouse_metric_ReadonlyReplica",
+        "replica read-only",
+        "readonly replica",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm how many tables are read-only and on how many hosts"
+        description: >-
+          A replica goes read-only when it loses its Keeper/ZooKeeper session or cannot find
+          its metadata there; while read-only, every INSERT, ALTER and merge on those tables
+          is rejected. readonly_by_host is the count per host; readonly_hosts is how many
+          hosts are affected. Interpret: one host affected while siblings are clean => writes
+          routed there fail but the shard still has a writable replica — bad, recoverable.
+          Several or all hosts affected => the Keeper/ZooKeeper ensemble is the common cause
+          and the cluster is effectively read-only; this is a full write outage. Count still
+          rising => more tables are losing their sessions as you look. Zero now => it
+          recovered (a session was re-established); say so and still find the cause, because
+          it will recur.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Readonly table counts and how widely they are spread across the CHI."
+            params:
+              queries:
+                - name: readonly_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+                  panel: true
+                  panel_title: "Readonly Replicas by Host"
+                  panel_id: "ch-readonly-by-host"
+                - name: readonly_hosts
+                  query: 'count(max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica) > 0) or vector(0)'
+                - name: hosts_reporting_per_chi
+                  query: 'count by (chi) (chi_clickhouse_metric_Uptime)'
+      - step: 2
+        title: "Confirm the Keeper/ZooKeeper cause — this is almost always coordination, not ClickHouse"
+        description: >-
+          keeper_sessions_by_host should be exactly 1 on a healthy server;
+          keeper_hw_exceptions_10m counts connection-loss/session-timeout events (remember the
+          counter only exists after the first occurrence, so a brand-new nonzero value is
+          itself meaningful). Interpret: sessions > 1 or hardware exceptions increasing =>
+          the host keeps losing and re-establishing its Keeper session, which is exactly what
+          drives tables read-only — the investigation belongs on the Keeper/ZooKeeper
+          ensemble (quorum, disk, GC pauses, network). Sessions = 1 and no exceptions =>
+          the session is fine now, so the read-only state is likely stale metadata or a
+          table whose ZooKeeper path is missing/mismatched — that needs per-table inspection
+          on the host. Network errors also elevated => a network-layer problem is dropping
+          Keeper connections; treat the network as the root cause.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Keeper session count, Keeper hardware exceptions and network/DNS errors per host."
+            params:
+              queries:
+                - name: keeper_sessions_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+                  panel: true
+                  panel_title: "Keeper Sessions by Host"
+                  panel_id: "ch-keeper-sessions-readonly"
+                - name: keeper_hw_exceptions_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]))'
+                  panel: true
+                  panel_title: "Keeper Hardware Exceptions (10m)"
+                  panel_id: "ch-keeper-hw-exceptions-readonly"
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+      - step: 3
+        title: "State the write-path impact and read the server log for the failing table"
+        description: >-
+          Interpret: rejected/delayed inserts rising on the affected host => producers are
+          already failing, so the incident has user-visible write loss unless clients retry
+          elsewhere. DistributedFilesToInsert climbing on OTHER hosts => writes aimed at this
+          host's shard are backing up on their disks. The ClickHouse log names the table and
+          the reason ('Cannot get ZooKeeper', 'session expired', 'No node' for a missing
+          path): a missing node means the table's metadata in Keeper is gone, which is a
+          restore-from-Keeper-backup situation, not a transient session drop. Quote the
+          table names from the log; the metric only gives counts.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Insert rejection/delay and distributed backlog — the write-path consequence of read-only tables."
+            params:
+              queries: *ingest_panels
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse container logs filtered for ZooKeeper/Keeper session, 'readonly', 'No node' and table-attach failures."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — never drop/recreate replicated tables without an owner
+      - action: "restore_keeper_availability"
+        description: "Primary path when step 2 shows session loss: fix the Keeper/ZooKeeper ensemble (quorum, slow disk, GC pauses, network). Replicas leave read-only on their own once sessions are stable — no ClickHouse change is needed."
+        tool_id: ""
+        requires_approval: true
+      - action: "restart_the_affected_replica_last"
+        description: "Only if sessions are healthy but a table stays read-only: a targeted restart (or SYSTEM RESTART REPLICA on that table) can force re-attachment. This drops in-flight queries and pays a catch-up cost, so do it after Keeper is confirmed healthy."
+        tool_id: ""
+        requires_approval: true
+      - action: "route_writes_to_a_writable_replica"
+        description: "While the state persists, point producers at a writable replica/shard so inserts stop failing. Do not increase retry pressure against the read-only host."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform on-call plus the Keeper/ZooKeeper owner immediately. Page the data producers if step 3 shows inserts failing — their writes are being lost or queued."
+    follow_up:
+      - "Confirm ReadonlyReplica returns to 0 and the replication queue drains afterwards; a replica that leaves read-only still has catch-up to do."
+      - "If Keeper session loss caused it, review the ensemble's resourcing — repeated session expiry will put replicas back into read-only."
+
+  - name: "ClickHouseReplicationLagHigh"
+    patterns:
+      [
+        "ClickHouseReplicationLagHigh",
+        "ClickHouse replication is lagging",
+        "chi_clickhouse_metric_ReplicasMaxAbsoluteDelay",
+        "replica delay",
+        "stale replica reads",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the lag, its direction, and which host is behind"
+        description: >-
+          ReplicasMaxAbsoluteDelay is the delay of the most-delayed replicated table on the
+          host, and the rule fires above 300s. delay_by_host names the lagging host(s);
+          delay_trend_30m shows whether it is growing or draining. Interpret: delay growing
+          => the replica is losing ground and stale reads get worse — treat as active.
+          Delay flat and high => it is stuck rather than slow, usually one queue entry that
+          keeps failing (step 2). Delay falling => it is catching up after an event (restart,
+          network blip) and will resolve; state the drain rate. Several hosts lagging at once
+          => a shared cause (Keeper, network, or a huge merge/mutation wave), not a per-host
+          problem.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Current delay per host and its trend over the last 30 minutes."
+            params:
+              queries:
+                - name: delay_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+                  panel: true
+                  panel_title: "Replica Delay by Host"
+                  panel_id: "ch-replica-delay-lag"
+                - name: delay_trend_30m
+                  unit: "s"
+                  query: 'delta(chi_clickhouse_metric_ReplicasMaxAbsoluteDelay[30m])'
+                - name: worst_lagging_host
+                  unit: "s"
+                  query: 'topk(1, chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+      - step: 2
+        title: "Identify the bottleneck: queue backlog, failing fetches, Keeper, or disk"
+        description: >-
+          Four causes produce lag and they have different fixes. Interpret: queue large and
+          growing alongside the delay => the replica is being handed work faster than it
+          applies it (merges/fetches saturating the host). failed_fetches_15m > 0 => parts
+          cannot be pulled from the source replica, so the queue retries forever — chase the
+          source replica, interserver port or disk space on either side. Keeper sessions > 1
+          or hardware exceptions => coordination instability is stalling queue execution.
+          Disk free % low on the lagging host => it physically cannot write the fetched parts
+          — fix space first, nothing else will help. If all four look normal, the replica is
+          simply slow (CPU/IO) and the load evidence in step 3 is the answer.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Queue depth, failed part fetches, Keeper state and free disk on the lagging hosts."
+            params:
+              queries:
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+                  panel: true
+                  panel_title: "Replication Queue by Host"
+                  panel_id: "ch-queue-lag"
+                - name: failed_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))'
+                - name: keeper_sessions_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+      - step: 3
+        title: "Check whether load on the lagging host explains it"
+        description: >-
+          Replication competes with queries and merges for the same host. Interpret: running
+          queries high or a very long-running query present => reads are starving the
+          background pool, so shedding query load helps replication catch up. Part counts
+          high with heavy insert rate => merges are consuming the background pool and
+          fetches wait behind them — the fix is the ingest pattern, not replication.
+          Container CPU pinned (when the pod panels resolve) => the host is simply saturated
+          and needs capacity. Load unremarkable => go back to step 2's failing-fetch or
+          Keeper path rather than blaming load.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Query concurrency, longest query and part/insert pressure on the lagging host."
+            params:
+              queries:
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+                - name: insert_query_rate_by_host
+                  unit: "inserts/s"
+                  query: 'sum by (chi, hostname) (rate(chi_clickhouse_event_InsertQuery[5m]))'
+    remediation: # suggestion-only
+      - action: "relieve_the_lagging_host"
+        description: "Shift read traffic away from the lagging replica while it catches up (clients get stale results from it anyway), and pause non-urgent heavy queries/backfills so the background pool can drain the queue."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_the_named_bottleneck"
+        description: "Apply the fix step 2 identified: free disk space, repair the source replica or interserver connectivity for failing fetches, or stabilise Keeper. Raising fetch/merge pool sizes only helps when the host has spare CPU and IO."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner; involve consumers of this replica if stale reads matter to them. Escalate if the delay keeps growing or the lagging replica is the only one likely to survive a failover."
+    follow_up:
+      - "Confirm delay returns under the 300s threshold and the queue drains, not just that the alert cleared."
+      - "If lag followed a restart, size future maintenance windows to include catch-up time."
+
+  - name: "ClickHouseReplicationQueueHigh"
+    patterns:
+      [
+        "ClickHouseReplicationQueueHigh",
+        "ClickHouse replication queue is backing up",
+        "chi_clickhouse_metric_ReplicasMaxQueueSize",
+        "replication queue not draining",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the queue depth and whether it is draining at all"
+        description: >-
+          The rule fires above 100 entries held for 15 minutes. queue_by_host is the current
+          depth; queue_trend_30m is the direction. Interpret: queue growing => the replica
+          receives fetches/merges/mutations faster than it applies them; delay and part
+          counts will follow. Queue flat at a high value => a single entry is failing and
+          retrying forever, blocking everything behind it — that is the stuck case and step 2
+          confirms it. Queue falling => it is draining; report the rate and the time to
+          empty rather than escalating. Multiple hosts => the whole cluster is behind, which
+          usually means Keeper or a large schema/mutation change.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Queue depth, its 30m trend, and the resulting replica delay."
+            params:
+              queries:
+                - name: queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+                  panel: true
+                  panel_title: "Replication Queue by Host"
+                  panel_id: "ch-queue-high"
+                - name: queue_trend_30m
+                  query: 'delta(chi_clickhouse_metric_ReplicasMaxQueueSize[30m])'
+                - name: delay_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+      - step: 2
+        title: "Separate 'blocked entry' from 'not enough throughput'"
+        description: >-
+          Interpret: failed_fetches_15m > 0 while the queue is flat => a specific fetch keeps
+          failing, which is the classic head-of-line block; the source replica, the
+          interserver path or disk space on either side is the target. Keeper sessions
+          unstable or hardware exceptions present => queue execution cannot commit its
+          coordination steps, so nothing drains regardless of throughput. Disk free % low =>
+          fetched parts cannot be written; fix space first. None of those, with high insert
+          rates and part counts => the host is genuinely saturated and this is a throughput
+          problem, which means reducing incoming work rather than chasing an error.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Failed part fetches, Keeper stability, free disk and ingest pressure on the affected host."
+            params:
+              queries:
+                - name: failed_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))'
+                  panel: true
+                  panel_title: "Failed Part Fetches (15m)"
+                  panel_id: "ch-failed-fetches-queue"
+                - name: keeper_hw_exceptions_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]))'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+      - step: 3
+        title: "Read the log for the repeatedly failing queue entry"
+        description: >-
+          The queue metric is a count; the log names the entry. Interpret: repeated
+          'Not found part'/'Cannot fetch' lines for the same part => that entry is the
+          blocker and it needs an explicit decision (re-fetch from another replica or drop
+          the entry), not more waiting. 'No active replica has part' => no source has the
+          data, which is a data-availability question for the owners. Checksum/corruption
+          errors => the source part is damaged. Nothing repeating => the queue is simply
+          long, so treat it as throughput and go back to step 2's load evidence.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for replication queue entries, 'Cannot fetch', 'No active replica' and checksum errors."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — queue surgery is destructive and needs an owner
+      - action: "unblock_the_failing_entry"
+        description: "When one entry blocks the queue: restore the source (repair the replica, free its disk, fix interserver connectivity) so the fetch can succeed. Dropping or skipping a queue entry loses the part on this replica and must be an explicit, approved decision."
+        tool_id: ""
+        requires_approval: true
+      - action: "reduce_incoming_work"
+        description: "When it is a throughput problem: slow the insert/merge pressure (bigger batches, pause backfills/mutations) so the background pool can catch up, and only then consider raising fetch/merge pool sizes if CPU and IO allow."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner. Escalate if the queue is blocked on parts no replica has, or if the queue growth is also driving replication lag past the point where a failover would lose data."
+    follow_up:
+      - "Confirm the queue drains to near zero and replica delay recovers — a cleared alert with a still-deep queue is not a fix."
+      - "If the block was a missing part, verify the affected tables are consistent across replicas afterwards."
+
+  - name: "ClickHouseReplicatedPartFetchFailures"
+    patterns:
+      [
+        "ClickHouseReplicatedPartFetchFailures",
+        "ClickHouse is failing to fetch parts from its replicas",
+        "chi_clickhouse_event_ReplicatedPartFailedFetches",
+        "failed part fetch",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the failures are ongoing and not a just-appeared counter"
+        description: >-
+          This rule has two branches: increase(...[15m]) > 0, or the counter being nonzero
+          and absent one window earlier. That second branch exists because a
+          chi_clickhouse_event_* series does not exist until the event first happens — so a
+          firing alert may represent a single historical failure that only just became
+          visible. failed_fetches_15m is the recent rate; failed_fetches_total is the
+          cumulative counter since server start. Interpret: failed_fetches_15m > 0 and
+          repeating => fetches are actively failing now; continue. failed_fetches_15m = 0
+          with a nonzero total => the counter just appeared (or the failures stopped), so
+          report the total and the time of the event instead of implying an ongoing problem;
+          the alert will self-resolve within the window whether or not anything was fixed.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Failed fetch rate in the rule window and the cumulative counter per host."
+            params:
+              queries:
+                - name: failed_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))'
+                  panel: true
+                  panel_title: "Failed Part Fetches (15m)"
+                  panel_id: "ch-failed-fetches-15m"
+                - name: failed_fetches_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_event_ReplicatedPartFailedFetches)'
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+      - step: 2
+        title: "Find the failing side: source replica, network, or disk"
+        description: >-
+          Interpret: another host of the same chi missing from the uptime list or showing
+          system.metrics fetch errors => the source replica is down or unreachable, which is
+          the direct cause. Network/DNS errors elevated on either host => the interserver
+          path is flaky (ClickHouse resolves replica hostnames on every new connection, so
+          DNS problems surface here first). Disk free % low on the fetching host => it has no
+          room to write the incoming part; on the source, a full disk can block serving it.
+          All clean => the source is likely overloaded and timing out, so look at its query
+          load and part counts rather than assuming a hard failure.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Peer-host availability, network/DNS errors and free disk on both sides of the fetch."
+            params:
+              queries:
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-fetch-failures"
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+                - name: dns_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DNSError[10m]))'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+      - step: 3
+        title: "Confirm the impact on data completeness and read the error text"
+        description: >-
+          Interpret: replica delay rising with the fetch failures => the replica is missing
+          parts it will not get, so its query results are incomplete — that is the real
+          impact to report. Queue flat while fetches fail => head-of-line blocking; the same
+          entry retries forever. The log text is decisive: 'No active replica has part'
+          means the data exists nowhere reachable; connection errors mean the interserver
+          port or network policy; checksum mismatch means the source part is corrupt. Quote
+          the part and table names from the log.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for fetch failures, interserver connection errors, 'No active replica' and checksum mismatches."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only
+      - action: "restore_the_source_replica"
+        description: "Bring the source replica back (or free its disk / fix its overload) so fetches can succeed. This clears both the fetch failures and the replication queue behind them."
+        tool_id: ""
+        requires_approval: true
+      - action: "repair_interserver_connectivity"
+        description: "When the log shows connection or DNS failures: check network policies, the interserver port and cluster DNS between the hosts — the replicas are healthy but cannot talk."
+        tool_id: ""
+        requires_approval: true
+      - action: "free_space_on_the_fetching_host"
+        description: "When free disk is low: reclaim space (drop old partitions per retention, resize the PVC) so incoming parts can be written."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner; involve the network team if the log shows interserver connectivity or DNS failures. Escalate if a part is unavailable on every replica — that is potential data loss and needs the data owners."
+    follow_up:
+      - "Confirm fetch failures stop accruing and replica delay/queue recover; remember the alert self-resolves within its window even if nothing was fixed."
+      - "If DNS/network flakiness was the cause, expect correlated Keeper and distributed-query symptoms and fix the shared path."
+
+  - name: "ClickHouseKeeperSessionUnstable"
+    patterns:
+      [
+        "ClickHouseKeeperSessionUnstable",
+        "ClickHouse holds more than one Keeper/ZooKeeper session",
+        "chi_clickhouse_metric_ZooKeeperSession",
+        "zookeeper session unstable",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the session count and how long it has been above one"
+        description: >-
+          A healthy ClickHouse server holds exactly one Keeper/ZooKeeper session; more than
+          one means it is re-establishing sessions because the previous ones expired.
+          sessions_by_host is the current count; sessions_max_1h shows the peak. Interpret:
+          count stuck above 1 on one host => that host keeps losing its session; reads
+          through the stale session can see outdated metadata and replicas drift toward
+          read-only. Count above 1 on every host => the ensemble itself is unstable (quorum
+          loss, slow disk, GC pauses) and the whole cluster's replication is at risk. Count
+          back to 1 now => the churn stopped; still explain what caused it, because session
+          expiry recurs.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Keeper session counts now and their peak over the last hour."
+            params:
+              queries:
+                - name: sessions_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+                  panel: true
+                  panel_title: "Keeper Sessions by Host"
+                  panel_id: "ch-keeper-sessions"
+                - name: sessions_max_1h
+                  query: 'max_over_time(chi_clickhouse_metric_ZooKeeperSession[1h])'
+                - name: hosts_with_multiple_sessions
+                  query: 'count(max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession) > 1) or vector(0)'
+      - step: 2
+        title: "Correlate with connection-level failures and downstream damage"
+        description: >-
+          Interpret: keeper_hw_exceptions_10m rising => sessions are being dropped by
+          connection loss or timeout, so the cause is the Keeper path (network, ensemble
+          load), not ClickHouse logic. Network/DNS errors elevated too => the shared network
+          layer is the root cause and the Keeper symptom is secondary. ReadonlyReplica > 0
+          => session churn has already cost you write availability; escalate to the readonly
+          path immediately. Replication queue/delay growing => queue execution cannot commit
+          its Keeper operations, so replication is stalling as a consequence. No downstream
+          damage yet => this is an early warning worth fixing before it becomes the readonly
+          incident.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Keeper hardware exceptions, network/DNS errors and the replication consequences per host."
+            params:
+              queries:
+                - name: keeper_hw_exceptions_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]))'
+                  panel: true
+                  panel_title: "Keeper Hardware Exceptions (10m)"
+                  panel_id: "ch-keeper-hw-exceptions-session"
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+                - name: readonly_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for ZooKeeper/Keeper session expiry, reconnect and timeout lines."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — the fix is usually on the ensemble, not the database
+      - action: "stabilise_the_keeper_ensemble"
+        description: "Check the Keeper/ZooKeeper ensemble for quorum, slow disk (fsync latency), memory/GC pauses and session-timeout settings. Sessions stabilise from the ensemble side; restarting ClickHouse does not fix an unhealthy ensemble."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_the_network_path"
+        description: "If network/DNS errors accompany the churn: investigate the path between ClickHouse and Keeper (policies, MTU, node-level packet loss, CoreDNS health) before touching either service."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Keeper/ZooKeeper owner with the ClickHouse platform owner. Escalate urgently if replicas have already gone read-only or replication has stalled."
+    follow_up:
+      - "Confirm the session count returns to exactly 1 on every host and stays there."
+      - "Review Keeper session timeouts against observed network latency so a brief blip stops expiring sessions."
+
+  - name: "ClickHouseKeeperHardwareExceptions"
+    patterns:
+      [
+        "ClickHouseKeeperHardwareExceptions",
+        "ClickHouse cannot talk to Keeper/ZooKeeper reliably",
+        "chi_clickhouse_event_ZooKeeperHardwareExceptions",
+        "zookeeper connection loss",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the exceptions are recurring rather than a counter that just appeared"
+        description: >-
+          Hardware exceptions are connection loss / session timeout — transport failures, not
+          logical errors. The rule uses increase(...[10m]) > 0 OR the counter being nonzero
+          and absent 10m ago, because the series does not exist until the first event.
+          exceptions_10m is the recent count; exceptions_total is cumulative since server
+          start. Interpret: exceptions_10m climbing across scrapes => Keeper connectivity is
+          actively failing, so replicated INSERTs, merge assignment and ALTERs are stalling
+          right now. exceptions_10m = 0 with a nonzero total => the counter just became
+          visible or the failures stopped; report the total and the timestamp, and note the
+          alert will clear on its own within the window regardless of any fix. Multiple hosts
+          affected => ensemble-side; one host => that host's network path.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Readonly replicas, replication delay and queue per host."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Keeper hardware exceptions in the rule window, cumulative totals, and session counts."
+            params:
+              queries:
+                - name: exceptions_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]))'
+                  panel: true
+                  panel_title: "Keeper Hardware Exceptions (10m)"
+                  panel_id: "ch-keeper-hw-exceptions"
+                - name: exceptions_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_event_ZooKeeperHardwareExceptions)'
+                - name: sessions_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+      - step: 2
+        title: "Decide whether this is a Keeper problem or a network problem, and state the write impact"
+        description: >-
+          Interpret: network/DNS errors rising together with the exceptions => the shared
+          network path is the root cause; fixing Keeper alone will not help. Exceptions
+          without network errors => the ensemble is the suspect (overloaded, losing quorum,
+          slow fsync). Then quantify impact: ReadonlyReplica > 0 means writes are already
+          failing on those tables; rejected/delayed inserts rising means producers are
+          feeling it; replication queue growth means merges and fetches cannot be assigned.
+          If none of those moved, say the exceptions have not yet caused damage and treat
+          this as a leading indicator — which is exactly why the rule is a warning.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Network/DNS errors, readonly replicas and ingest impact alongside the Keeper exceptions."
+            params:
+              queries:
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+                - name: dns_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DNSError[10m]))'
+                - name: readonly_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+                  panel: true
+                  panel_title: "Readonly Replicas by Host"
+                  panel_id: "ch-readonly-keeper-exceptions"
+                - name: rejected_inserts_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[10m]))'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for ZooKeeper connection-loss, operation-timeout and 'Cannot get ZooKeeper' lines."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "investigate_the_keeper_ensemble"
+        description: "Check quorum, per-node latency, fsync/disk performance and resource pressure on the Keeper/ZooKeeper nodes. Treat this as a Keeper incident before treating it as a ClickHouse one."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_the_shared_network_path"
+        description: "When network/DNS errors accompany the exceptions: chase packet loss, network policies or CoreDNS health — the same path also breaks part fetches and distributed queries."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Keeper/ZooKeeper owner first, with the ClickHouse platform owner. Escalate urgently once replicas go read-only or inserts start failing — at that point it is a write outage."
+    follow_up:
+      - "Confirm exceptions stop accruing and session counts return to 1; a self-resolved alert here proves nothing on its own."
+      - "If the ensemble was under-resourced, fix that capacity rather than waiting for the next session expiry."
+
+  # ==================================================== INGEST PATH
+  - name: "ClickHouseRejectedInserts"
+    patterns:
+      [
+        "ClickHouseRejectedInserts",
+        "ClickHouseDelayedInserts",
+        "ClickHouse is rejecting inserts",
+        "ClickHouse is throttling inserts",
+        "too many parts",
+        "chi_clickhouse_event_RejectedInserts",
+        "chi_clickhouse_event_DelayedInserts",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Establish which tier fired — throttled writes or failed writes"
+        description: >-
+          Two tiers of the same failure share this entry. ClickHouseDelayedInserts
+          (P2/warning) means ClickHouse crossed parts_to_delay_insert and is THROTTLING
+          writers: inserts still succeed, but slowly, and ingest lag builds upstream.
+          ClickHouseRejectedInserts (P1/critical) means it crossed parts_to_throw_insert and
+          is REJECTING writes outright with 'Too many parts' — those writes failed and the
+          client either retries or loses the data. Read the alert name for the tier. Both
+          rules use increase(counter[10m]) > 0 OR counter-just-appeared, so check whether the
+          counters are still climbing. Interpret: rejected_10m > 0 and rising => active data
+          loss risk, treat as P1. delayed_10m > 0 with rejected_10m = 0 => you are one step
+          away from rejection; fixing it now prevents the P1. Counters flat with nonzero
+          totals => the event happened and stopped; report the totals and note the alert
+          self-resolves within its window regardless.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Parts pressure, delayed/rejected insert history and insert rate per host."
+            params:
+              queries: *ingest_panels
+          - tool_id: "tool.query_metrics"
+            description: "Rejected and delayed inserts in the rule window plus their cumulative counters."
+            params:
+              queries:
+                - name: rejected_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[10m]))'
+                  panel: true
+                  panel_title: "Rejected Inserts (10m)"
+                  panel_id: "ch-rejected-inserts-10m"
+                - name: delayed_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DelayedInserts[10m]))'
+                  panel: true
+                  panel_title: "Delayed Inserts (10m)"
+                  panel_id: "ch-delayed-inserts-10m"
+                - name: rejected_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_event_RejectedInserts)'
+                - name: delayed_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_event_DelayedInserts)'
+      - step: 2
+        title: "Confirm the parts backlog and find whether merges or writers are at fault"
+        description: >-
+          Both tiers are driven by part count in one partition outgrowing merges. Interpret:
+          max_parts_per_partition high and rising => merges are behind; the question is why.
+          rows_per_insert well under 1000 with a high insert rate => the writers are sending
+          many tiny batches, which manufactures parts faster than any merge pool can consume
+          them — the root cause is client-side batching, and adding server capacity will not
+          fix it. rows_per_insert healthy but parts still climbing => merges are constrained
+          (CPU/IO saturation, low disk space, or the background pool busy with mutations/
+          fetches) — check disk free % here, because merges need room for the whole output
+          part before they can delete the inputs. Part counts normal while inserts are
+          rejected => look for a specific table/partition rather than a host-wide problem.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Rows per insert, insert rate, part counts and free disk on the affected host."
+            params:
+              queries:
+                - name: rows_per_insert_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertedRows[30m])) / sum by (chi, hostname) (increase(chi_clickhouse_event_InsertQuery[30m]))'
+                  panel: true
+                  panel_title: "Rows per INSERT (30m)"
+                  panel_id: "ch-rows-per-insert-rejected"
+                - name: insert_query_rate_by_host
+                  unit: "inserts/s"
+                  query: 'sum by (chi, hostname) (rate(chi_clickhouse_event_InsertQuery[5m]))'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+      - step: 3
+        title: "Check for competing pressure and name the downstream impact"
+        description: >-
+          Interpret: running queries high or a long-running query present => reads are
+          competing with merges for the same host resources, so shedding query load buys
+          merge throughput. Replication queue large => fetches and merges are queued behind
+          each other, and the part backlog will not clear until it drains. Distributed
+          backlog climbing on other hosts => rows destined for this host's shard are stacking
+          up elsewhere, so the ingest problem is spreading across the cluster. For impact,
+          state plainly whether writes are failing (rejected tier) or merely slow (delayed
+          tier), and on which host.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Query load, replication queue and distributed backlog competing with merges."
+            params:
+              queries:
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+                - name: distributed_files_to_insert_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for 'Too many parts', 'parts_to_delay_insert', merge failures and the table names involved."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — the durable fix is on the writers, not the server
+      - action: "batch_the_writers"
+        description: "Primary fix when rows per insert is small: batch on the client (tens of thousands of rows or a time-based flush) or put async_insert in front of those writers. This is the root cause of most too-many-parts incidents and the only fix that holds."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_merge_pressure"
+        description: "Short-term: free disk space if merges are blocked for room, pause backfills/mutations competing for the background pool, and shed heavy query load. Raising parts_to_throw_insert only hides the problem and makes the eventual failure worse."
+        tool_id: ""
+        requires_approval: true
+      - action: "review_partitioning"
+        description: "If one partition always dominates: revisit the PARTITION BY granularity — over-fine partitioning multiplies parts and makes this recur no matter how well writers batch."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning data-producer team first (batching is theirs to fix) plus the ClickHouse platform owner. Page immediately on the rejected tier — writes are failing and data may be lost if clients do not retry."
+    follow_up:
+      - "Confirm part counts fall and both counters stop increasing; a self-resolving event alert is not proof of a fix."
+      - "If throttling recurs, track rows-per-insert as a standing metric for the writers so regressions are caught before rejection."
+
+  - name: "ClickHouseMaxPartCountForPartition"
+    patterns:
+      [
+        "ClickHouseMaxPartCountForPartition",
+        "ClickHouse has too many parts in a single partition",
+        "chi_clickhouse_metric_MaxPartCountForPartition",
+        "parts per partition high",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the part count and its direction — this is the early warning before throttling"
+        description: >-
+          The rule fires above 100 active parts in the busiest partition. parts_by_host is
+          the current value, parts_trend_1h the direction. Interpret: rising => merges are
+          losing to inserts and you are heading for delayed and then rejected inserts; act
+          now. Flat and high => merges keep pace but never catch up, so queries stay slow
+          (every query over that partition opens all those parts) without getting worse.
+          Falling => merges are winning; report the drain rate and the expected recovery.
+          Already accompanied by delayed inserts => throttling has begun and this is no
+          longer an early warning.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Parts pressure, delayed/rejected insert history and insert rate per host."
+            params:
+              queries: *ingest_panels
+          - tool_id: "tool.query_metrics"
+            description: "Current parts per partition, its 1h trend, and whether throttling has started."
+            params:
+              queries:
+                - name: parts_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+                  panel: true
+                  panel_title: "Max Parts per Partition"
+                  panel_id: "ch-parts-per-partition"
+                - name: parts_trend_1h
+                  query: 'delta(chi_clickhouse_metric_MaxPartCountForPartition[1h])'
+                - name: delayed_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DelayedInserts[10m]))'
+      - step: 2
+        title: "Attribute it: small batches, blocked merges, or competing background work"
+        description: >-
+          Interpret: rows_per_insert_30m under ~1000 with a meaningful insert rate => small
+          batches are manufacturing parts; the fix belongs to the writers. Disk free % low =>
+          merges cannot run because a merge needs room for the whole output part before
+          deleting its inputs — free space first, everything else is secondary. Replication
+          queue deep => fetches/mutations are consuming the same background pool that merges
+          need. None of these, with a large insert volume => raw ingest rate exceeds what
+          this host can merge, which is a capacity/partitioning question. Name which of the
+          four you found; they have different owners.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Batch size, insert volume, free disk and background-pool competition on the affected host."
+            params:
+              queries:
+                - name: rows_per_insert_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertedRows[30m])) / sum by (chi, hostname) (increase(chi_clickhouse_event_InsertQuery[30m]))'
+                  panel: true
+                  panel_title: "Rows per INSERT (30m)"
+                  panel_id: "ch-rows-per-insert-parts"
+                - name: inserts_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertQuery[30m]))'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+      - step: 3
+        title: "Name the table and partition from the log"
+        description: >-
+          The metric is a per-host maximum with no table label, so the specific table must
+          come from the server log (merge activity, 'Too many parts' warnings and merge
+          failures all name database.table). Interpret: repeated merge failures for one table
+          => merges are erroring, not merely slow — that error text is the root cause.
+          Frequent small-part creation for one table => that is the writer to fix. No
+          relevant log lines => report that the specific table could not be identified from
+          metrics and logs, and that a system.parts query on the host is the next step, rather
+          than guessing a table name.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for merge selection/failure lines, 'Too many parts' and the database.table names involved."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only
+      - action: "fix_writer_batching"
+        description: "When batches are small: batch client-side or enable async_insert for those writers. This is the durable fix; merge tuning only buys time."
+        tool_id: ""
+        requires_approval: true
+      - action: "unblock_merges"
+        description: "Free disk space, pause mutations/backfills competing for the background pool, and reduce heavy query load so merges get CPU and IO. Only consider raising background pool sizes when the host has headroom."
+        tool_id: ""
+        requires_approval: true
+      - action: "revisit_partitioning"
+        description: "If one partition consistently dominates, coarsen PARTITION BY (for example monthly instead of daily/hourly) so parts consolidate instead of multiplying."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner and the owning data-producer team. Escalate if delayed or rejected inserts have started — the cluster is already throttling writes."
+    follow_up:
+      - "Confirm the part count falls back under the threshold and query latency over that partition improves."
+      - "Track rows-per-insert for the top writers so a batching regression is visible before parts pile up."
+
+  - name: "ClickHouseDistributedFilesToInsertHigh"
+    patterns:
+      [
+        "ClickHouseDistributedFilesToInsertHigh",
+        "ClickHouse distributed inserts are queueing on disk",
+        "chi_clickhouse_metric_DistributedFilesToInsert",
+        "distributed insert backlog",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the backlog and whether it is draining"
+        description: >-
+          Distributed tables accept rows locally and forward them to the target shards
+          asynchronously; a backlog means rows that clients believe were written are not
+          queryable on their shard yet, and they are lost if this host's volume is lost. The
+          rule fires above 50 pending files. backlog_by_host is the current depth;
+          backlog_trend_30m is the direction. Interpret: growing => a target shard is not
+          accepting writes and the backlog (and data-at-risk window) grows — act now.
+          Flat => forwarding is keeping pace with arrivals but never catching up. Falling =>
+          the shard recovered and the queue is draining; report the drain rate. Several
+          hosts backlogged simultaneously => the failing shard is common to all of them,
+          which points directly at one target.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime, hosts reporting per CHI and system.metrics fetch errors."
+            params:
+              queries: *server_health_panels
+          - tool_id: "tool.query_metrics"
+            description: "Distributed insert backlog per host and its trend."
+            params:
+              queries:
+                - name: backlog_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+                  panel: true
+                  panel_title: "Distributed Files To Insert"
+                  panel_id: "ch-dist-files-backlog"
+                - name: backlog_trend_30m
+                  query: 'delta(chi_clickhouse_metric_DistributedFilesToInsert[30m])'
+                - name: worst_backlog_host
+                  query: 'topk(1, chi_clickhouse_metric_DistributedFilesToInsert)'
+      - step: 2
+        title: "Find the target shard that cannot take the writes"
+        description: >-
+          Interpret: a host of the same chi missing from the uptime result, or showing
+          system.metrics fetch errors => that shard is down or unreachable and is the
+          destination the backlog is waiting on. A peer showing rejected/delayed inserts or a
+          readonly replica => the shard is up but refusing writes (too many parts, or lost
+          Keeper) — fix that condition and the backlog drains by itself. Network/DNS errors
+          on the sending host => the forwarding path is broken rather than the destination.
+          All peers healthy => suspect the sending host's own disk or an overly aggressive
+          insert rate, and check free space there.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Peer-host availability, write-refusal signals on peers, and network errors on the sender."
+            params:
+              queries:
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                  panel: true
+                  panel_title: "ClickHouse Uptime by Host"
+                  panel_id: "ch-uptime-dist-backlog"
+                - name: rejected_inserts_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[10m]))'
+                - name: readonly_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+      - step: 3
+        title: "Quantify the risk and confirm from the log which shard is failing"
+        description: >-
+          Interpret: free disk % falling on the sending host while the backlog grows => the
+          queue is consuming the data volume and will eventually take the host down with it —
+          that combination raises urgency sharply. The log names the destination: repeated
+          'Cannot send'/'Connection refused' lines for one shard address identify the target
+          definitively. Timeouts rather than refusals mean the shard is up but too slow to
+          accept. Report explicitly that the backlogged rows are NOT yet queryable on their
+          shard, so current query results are incomplete.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Free disk on the backlogged host — the queue lives on this volume."
+            params:
+              queries: *storage_panels
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for Distributed send failures, connection refusals/timeouts and the target shard addresses."
+            params:
+              tail_lines: 250
+    remediation: # suggestion-only — never delete the queued files casually, they are unsent rows
+      - action: "restore_the_target_shard"
+        description: "Bring the failing shard back or clear whatever makes it refuse writes (too many parts, readonly replica, connectivity). The backlog drains automatically once the destination accepts writes again."
+        tool_id: ""
+        requires_approval: true
+      - action: "protect_the_sending_host"
+        description: "If disk on the sending host is being consumed by the queue: free space urgently and consider pausing the producers writing through the Distributed table — losing that volume loses the unsent rows."
+        tool_id: ""
+        requires_approval: true
+      - action: "reconsider_async_distributed_inserts"
+        description: "Longer term: for critical data, writing directly to shard-local tables (or using synchronous distributed inserts) avoids an at-risk local queue — a design change to weigh with the data owners."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner plus the data owners — their rows are accepted but not yet stored on the target shard. Escalate urgently if the backlog is growing and disk on the sending host is falling."
+    follow_up:
+      - "Confirm the backlog drains to zero and spot-check that the delayed rows are now present on the target shard."
+      - "If one shard repeatedly causes this, address its stability rather than the symptom on the senders."
+
+  - name: "ClickHouseSmallInsertBatches"
+    patterns:
+      [
+        "ClickHouseSmallInsertBatches",
+        "ClickHouse is being written to in very small batches",
+        "chi_clickhouse_event_InsertedRows",
+        "rows per insert low",
+        "small batch inserts",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the batch size and the insert volume behind it"
+        description: >-
+          The rule requires both increase(chi_clickhouse_event_InsertQuery[30m]) > 100 AND
+          an average under 1000 rows per INSERT, so it only fires when the pattern is real
+          rather than a couple of tiny test writes. rows_per_insert_30m is the average;
+          inserts_30m is the volume; inserted_rows_30m is total throughput. Interpret:
+          rows_per_insert very small (tens) with a high insert count => classic
+          row-at-a-time writing, which creates a part per insert and is the root cause behind
+          most part-count, delayed-insert and rejected-insert incidents. rows_per_insert near
+          1000 with modest volume => borderline; note it as a trend rather than an incident.
+          High total rows with small batches => the workload is significant and batching will
+          materially reduce merge pressure.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Parts pressure, delayed/rejected insert history and insert rate per host."
+            params:
+              queries: *ingest_panels
+          - tool_id: "tool.query_metrics"
+            description: "Average rows per insert, insert count and total rows over the rule window."
+            params:
+              queries:
+                - name: rows_per_insert_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertedRows[30m])) / sum by (chi, hostname) (increase(chi_clickhouse_event_InsertQuery[30m]))'
+                  panel: true
+                  panel_title: "Rows per INSERT (30m)"
+                  panel_id: "ch-rows-per-insert-small"
+                - name: inserts_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertQuery[30m]))'
+                  panel: true
+                  panel_title: "INSERT Count (30m)"
+                  panel_id: "ch-insert-count-30m"
+                - name: inserted_rows_30m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_InsertedRows[30m]))'
+      - step: 2
+        title: "Show whether the merge pipeline is already paying for it"
+        description: >-
+          This rule is a cause alert; its value is in predicting the symptom alerts.
+          Interpret: parts per partition already elevated and climbing => the small batches
+          are actively overwhelming merges — raise the practical urgency above P3 and treat
+          it as the root cause of any concurrent part-count or insert-throttling alerts.
+          Delayed inserts present => throttling has begun. Nothing else elevated => the
+          cluster is absorbing the pattern today, so this is a hygiene item to schedule with
+          the writers before ingest grows. Also check free disk: a host with little headroom
+          cannot merge its way out of a small-batch workload.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Part counts, insert throttling and free disk — the consequences of small batches."
+            params:
+              queries:
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+                  panel: true
+                  panel_title: "Max Parts per Partition"
+                  panel_id: "ch-parts-small-batches"
+                - name: delayed_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DelayedInserts[10m]))'
+                - name: rejected_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[10m]))'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for frequent small-part creation and the table names receiving them."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only — the fix is in the writers
+      - action: "batch_on_the_client"
+        description: "Accumulate rows in the producer and insert in large batches (tens of thousands of rows, or a time-based flush). This is the direct fix and it reduces parts, merges, CPU and disk churn at once."
+        tool_id: ""
+        requires_approval: true
+      - action: "enable_async_insert"
+        description: "Where client batching is impractical (many independent producers): enable async_insert with a suitable busy timeout/size so ClickHouse batches server-side instead of creating a part per statement."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning data-producer team — this is an application write pattern, not a server fault. Involve the ClickHouse platform owner if part counts are already elevated."
+    follow_up:
+      - "Confirm rows-per-insert rises above the threshold after the change and part counts fall in response."
+      - "Consider making rows-per-insert a standing dashboard metric for the main writers, since this pattern reappears with every new producer."
+
+  # ==================================================== QUERY PATH
+  - name: "ClickHouseTooManyRunningQueries"
+    patterns:
+      [
+        "ClickHouseTooManyRunningQueries",
+        "ClickHouse is running too many concurrent queries",
+        "chi_clickhouse_metric_Query",
+        "query concurrency high",
+        "max_concurrent_queries",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm real query concurrency, excluding pending async inserts"
+        description: >-
+          The rule subtracts PendingAsyncInsert from Query where both exist (falling back to
+          Query alone), because pending async inserts otherwise inflate the count. Reproduce
+          that exact arithmetic: effective_running_queries is the rule's value,
+          raw_query_count and pending_async_inserts show the split. Interpret:
+          effective_running_queries above 80 and rising => queries arrive faster than they
+          complete, latency is rising for everyone on the host, and new queries are rejected
+          once max_concurrent_queries is hit. raw_query_count high but effective value low =>
+          the load is really async-insert backlog, not queries; investigate the ingest path
+          instead. One host far above its siblings => routing or a hot shard, not a fleet-wide
+          surge.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "The rule's effective concurrency plus its raw components, per host."
+            params:
+              queries:
+                - name: effective_running_queries
+                  query: '(max by (chi, hostname) (chi_clickhouse_metric_Query) - max by (chi, hostname) (chi_clickhouse_metric_PendingAsyncInsert)) or max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                  panel: true
+                  panel_title: "Effective Running Queries"
+                  panel_id: "ch-effective-running-queries"
+                - name: raw_query_count
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                - name: pending_async_inserts
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_PendingAsyncInsert)'
+      - step: 2
+        title: "Separate 'more queries arriving' from 'queries finishing slower'"
+        description: >-
+          Concurrency is arrival rate times duration, so both directions matter. Interpret:
+          longest_query_seconds large and connections high => queries are piling up because
+          they are slow, not because there are more of them; a few heavy queries are holding
+          slots and everything queues behind them. Connections high and climbing with normal
+          longest-query time => genuine traffic growth or a client pool storm. Preempted
+          queries > 0 => priority settings are stalling low-priority work, which inflates
+          concurrency further. Insert-path pressure elevated at the same time => merges and
+          queries are competing for the same host, so fixing ingest also relieves this.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Longest query, client connections, preempted queries and ingest pressure on the host."
+            params:
+              queries:
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                  panel: true
+                  panel_title: "Longest Running Query"
+                  panel_id: "ch-longest-query-concurrency"
+                - name: client_connections_by_host
+                  query: 'sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})'
+                - name: preempted_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_QueryPreempted)'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+      - step: 3
+        title: "Check the host has resources left, and get query identity from the log"
+        description: >-
+          Interpret: container CPU pinned or memory near the limit (when the pod panels
+          resolve) => the host is saturated and further concurrency will start failing
+          queries with memory-limit exceptions; note that an OOM here restarts the server and
+          drops everything. Panels empty => say container data is unavailable for this alert
+          rather than guessing the namespace. The log supplies what the metrics cannot: the
+          actual query text/users behind the load, plus 'Too many simultaneous queries' or
+          'Memory limit exceeded' lines that prove rejection has begun. If the log gives no
+          query identity, say the per-query attribution needs system.query_log on the host.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for 'Too many simultaneous queries', 'Memory limit exceeded' and long-running query signatures."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — killing queries is disruptive
+      - action: "shed_or_reschedule_load"
+        description: "Pause or reschedule the non-critical workload driving the concurrency (backfills, ad-hoc reports, dashboard refresh storms). If a few heavy queries are holding slots, cancelling those specific queries is the targeted action — confirm ownership first."
+        tool_id: ""
+        requires_approval: true
+      - action: "apply_query_limits"
+        description: "Set per-user/profile limits (max_execution_time, max_memory_usage, max_concurrent_queries_for_user) so one workload cannot consume the whole host. Raising max_concurrent_queries without resource headroom just converts rejection into slowness."
+        tool_id: ""
+        requires_approval: true
+      - action: "spread_the_read_traffic"
+        description: "If one host carries much more than its siblings, rebalance client routing across replicas or add read capacity."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning query/application teams first (the workload is theirs) plus the ClickHouse platform owner. Escalate if the host is at resource limits — the next step is query rejection or an OOM restart."
+    follow_up:
+      - "Confirm concurrency falls below the threshold and the longest-query time returns to normal."
+      - "If a recurring workload causes this, give it its own user profile with explicit limits rather than relying on the alert."
+
+  - name: "ClickHouseLongestRunningQuery"
+    patterns:
+      [
+        "ClickHouseLongestRunningQuery",
+        "A ClickHouse query has been running for too long",
+        "chi_clickhouse_metric_LongestRunningQuery",
+        "long running query",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the query is still running and whether it is one query or a pattern"
+        description: >-
+          LongestRunningQuery is the age of the oldest running query on the host; the rule
+          fires above 600s. longest_query_seconds_by_host is the current value;
+          longest_query_max_1h shows whether this has happened repeatedly. Interpret: value
+          still climbing => the same query is still running and holding memory and thread
+          slots; a client that already timed out will never consume the result. Value reset
+          to small => the query finished or was cancelled; report it as resolved and use the
+          1h max for context. Repeated peaks over the hour => a recurring heavy query (a
+          scheduled report or backfill), which is a workload design issue rather than a
+          one-off.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Longest query age now and its peak over the last hour, per host."
+            params:
+              queries:
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                  panel: true
+                  panel_title: "Longest Running Query"
+                  panel_id: "ch-longest-query"
+                - name: longest_query_max_1h
+                  unit: "s"
+                  query: 'max_over_time(chi_clickhouse_metric_LongestRunningQuery[1h])'
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+      - step: 2
+        title: "Decide whether it is harming the host or merely long"
+        description: >-
+          A long query is only a problem if it crowds others out. Interpret: concurrency
+          also high and preempted queries > 0 => the long query is consuming slots others
+          need — real impact. Container CPU/memory near limits (when panels resolve) => risk
+          of a memory-limit exception or an OOM that restarts the server and kills every
+          query. Replication delay or part counts rising on the same host => background work
+          is being starved by the query. Everything else calm => this is an inefficient query
+          with little collateral damage; report it as a tuning item, not an incident.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Concurrency, preemption and background-work health alongside the long query."
+            params:
+              queries:
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                - name: preempted_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_QueryPreempted)'
+                - name: replica_delay_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxAbsoluteDelay)'
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for long-running query execution, memory-limit and timeout signatures to identify the query and its user."
+            params:
+              tail_lines: 250
+    remediation: # suggestion-only — cancelling someone's query needs their agreement
+      - action: "tune_or_cancel_the_query"
+        description: "Identify the query and its owner from the log, then either fix it (add a partition/PREWHERE filter, bound the JOIN, add a LIMIT) or cancel it if it is abandoned. Cancelling an unattended query frees memory and slots immediately but must be an approved decision."
+        tool_id: ""
+        requires_approval: true
+      - action: "enforce_execution_limits"
+        description: "Give ad-hoc/reporting users a profile with max_execution_time and max_memory_usage so a runaway query is stopped by the server instead of by an alert."
+        tool_id: ""
+        requires_approval: true
+    escalation: "The query's owning team. Escalate to the ClickHouse platform owner only if the query is destabilising the host (memory pressure, starved background work, rising concurrency)."
+    follow_up:
+      - "Confirm the longest-query time returns to normal after the fix or cancellation."
+      - "If the same heavy query recurs on a schedule, move it off peak hours or onto a dedicated replica."
+
+  - name: "ClickHouseQueryPreempted"
+    patterns:
+      [
+        "ClickHouseQueryPreempted",
+        "ClickHouse queries are being preempted",
+        "chi_clickhouse_metric_QueryPreempted",
+        "query priority starvation",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm queries are actually stalled and for how long"
+        description: >-
+          QueryPreempted counts queries stopped and waiting because higher-priority queries
+          are running; the rule requires that to persist 10 minutes. preempted_by_host is the
+          current count, preempted_max_1h the peak. Interpret: a steady nonzero count =>
+          low-priority workloads (reports, backfills) are making no progress and may stall
+          indefinitely while the high-priority workload is busy. Count spiking and clearing
+          repeatedly => normal prioritisation under bursty load; note it and lower urgency.
+          Count rising together with overall concurrency => the host is simply
+          oversubscribed and priorities are doing what they were configured to do — the fix
+          is capacity or scheduling, not priority tuning.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Preempted query count and peak, with overall concurrency for context."
+            params:
+              queries:
+                - name: preempted_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_QueryPreempted)'
+                  panel: true
+                  panel_title: "Preempted Queries"
+                  panel_id: "ch-preempted-queries"
+                - name: preempted_max_1h
+                  query: 'max_over_time(chi_clickhouse_metric_QueryPreempted[1h])'
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                  panel: true
+                  panel_title: "Running Queries by Host"
+                  panel_id: "ch-queries-preempted"
+      - step: 2
+        title: "Decide between too-aggressive priorities and an oversubscribed host"
+        description: >-
+          Interpret: concurrency well below the 80-query threshold while queries are still
+          preempted => the priority configuration is starving low-priority work even though
+          the host has room; that is a settings problem. Concurrency high, longest-query time
+          large, container CPU pinned => the host is genuinely oversubscribed and preemption
+          is the symptom; adding priority tiers will not help. Preemption on one host only =>
+          routing is uneven, so rebalancing read traffic may be the cheapest fix. Also note
+          the practical consequence: preempted queries hold their resources while waiting, so
+          long starvation wastes capacity as well as stalling users.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Concurrency, longest query and connection counts across hosts to judge oversubscription and routing balance."
+            params:
+              queries:
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                - name: client_connections_by_host
+                  query: 'sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})'
+                - name: effective_running_queries
+                  query: '(max by (chi, hostname) (chi_clickhouse_metric_Query) - max by (chi, hostname) (chi_clickhouse_metric_PendingAsyncInsert)) or max by (chi, hostname) (chi_clickhouse_metric_Query)'
+    remediation: # suggestion-only
+      - action: "rebalance_query_priorities"
+        description: "When the host has headroom: soften the priority settings for the starved profile (or give it a guaranteed share) so low-priority work still progresses instead of waiting indefinitely."
+        tool_id: ""
+        requires_approval: true
+      - action: "separate_or_reschedule_heavy_workloads"
+        description: "When the host is oversubscribed: move reporting/backfill workloads off peak or onto a dedicated replica so they are not competing with interactive queries at all."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning teams of the starved workload plus the ClickHouse platform owner. Non-urgent unless a business-critical batch job is being starved past its deadline."
+    follow_up:
+      - "Confirm the preempted count returns to zero and the starved workload completes within its expected window."
+      - "Document which profiles carry which priority so the next starvation is diagnosed from configuration rather than metrics."
+
+  - name: "ClickHouseTooManyConnections"
+    patterns:
+      [
+        "ClickHouseTooManyConnections",
+        "ClickHouse has too many client connections",
+        "chi_clickhouse_metric_TCPConnection",
+        "chi_clickhouse_metric_HTTPConnection",
+        "connection limit",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the total and break it down by protocol"
+        description: >-
+          The rule sums the HTTP, TCP (native), MySQL and PostgreSQL connection gauges with
+          sum without (__name__) and fires above 100 held for 10 minutes. total_connections
+          reproduces that; connections_by_protocol splits it. Interpret: the total dominated
+          by HTTPConnection => an HTTP client pool (BI tools, dashboards, app HTTP clients) is
+          responsible. Dominated by TCPConnection => native-protocol clients, usually
+          application drivers or other ClickHouse nodes. A protocol you did not expect to be
+          in use (MySQL/PostgreSQL) carrying connections => an unexpected client path worth
+          naming. Total growing monotonically and never falling => a pool that opens
+          connections without closing them, which ends at max_connections refusing clients.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Best-effort container view of the ClickHouse pods (CPU, memory, restart count). May be empty if the alert namespace is the operator's."
+            params:
+              queries: *pod_infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Total client connections and the per-protocol breakdown, per host."
+            params:
+              queries:
+                - name: total_connections
+                  query: 'sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})'
+                  panel: true
+                  panel_title: "Total Client Connections"
+                  panel_id: "ch-total-connections"
+                - name: connections_by_protocol
+                  query: 'sum by (chi, hostname, __name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})'
+                  panel: true
+                  panel_title: "Connections by Protocol"
+                  panel_id: "ch-connections-by-protocol"
+                - name: connections_trend_1h
+                  query: 'delta(sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})[1h:5m])'
+      - step: 2
+        title: "Separate a leak from retry pressure caused by slow queries"
+        description: >-
+          Interpret: connections climbing while query concurrency stays flat and the longest
+          query is normal => connections are being opened and not closed (a pool leak), and
+          each one costs a thread and memory even while idle. Connections climbing WITH
+          concurrency and long query times => clients are retrying against a host whose
+          queries are already slow, so the connection count is a symptom and the query
+          slowness is the cause — fix that first or the retries continue. Connection count
+          high on one host only => routing imbalance. Note the endpoint: this metric has no
+          client identity, so naming the offending client requires the application side or
+          system.processes on the host; say that rather than guessing.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Query concurrency and duration alongside the connection count, to tell a leak from retry pressure."
+            params:
+              queries:
+                - name: running_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_Query)'
+                  panel: true
+                  panel_title: "Running Queries by Host"
+                  panel_id: "ch-queries-connections"
+                - name: longest_query_seconds_by_host
+                  unit: "s"
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_LongestRunningQuery)'
+                - name: preempted_queries_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_QueryPreempted)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for connection-limit, 'Too many simultaneous queries' and client-disconnect signatures."
+            params:
+              tail_lines: 200
+    remediation: # suggestion-only
+      - action: "fix_the_client_pool"
+        description: "When the pattern is a leak: cap and reuse connections in the offending client (bounded pool size, idle timeout, ensure connections are closed). ClickHouse connections are expensive per thread — fewer, reused connections are strictly better."
+        tool_id: ""
+        requires_approval: true
+      - action: "address_query_slowness_first"
+        description: "When retries are driving the count: fix the slow queries or shed load, because raising limits while queries are slow simply lets more clients wait."
+        tool_id: ""
+        requires_approval: true
+      - action: "raise_max_connections_last"
+        description: "Only with memory and thread headroom, and only after the above: raise max_connections. This is a capacity decision, not a fix."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning application teams (pools are theirs) plus the ClickHouse platform owner. Escalate if the count approaches max_connections — new clients will be refused outright."
+    follow_up:
+      - "Confirm the connection count stabilises well below the limit after the pool fix."
+      - "If the count is normally close to the threshold, agree a per-service pool budget so the sum cannot creep back up."
+
+  # ==================================================== STORAGE
+  - name: "ClickHouseDiskSpaceLow"
+    patterns:
+      [
+        "ClickHouseDiskSpaceLow",
+        "ClickHouseDiskWillFillWithin24h",
+        "ClickHouse disk is nearly full",
+        "ClickHouse disk will be full within 24 hours",
+        "chi_clickhouse_metric_DiskFreeBytes",
+        "clickhouse disk full",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Establish which tier fired, the free space now, and the fill trend"
+        description: >-
+          Two tiers share this entry. ClickHouseDiskSpaceLow (P1/critical) fires when free
+          space is under 10% of total — merges are already at risk. ClickHouseDiskWillFillWithin24h
+          (P2/warning) fires when the disk is under 30% free AND predict_linear over a 6h
+          window says it reaches zero within 24h — there is still headroom, but act while a
+          PVC resize can still complete. Read the alert name for the tier.
+          disk_free_pct_by_host gives current free percentage per (host, disk);
+          predicted_free_bytes_24h reproduces the prediction; free_bytes_trend_6h shows the
+          real slope. Interpret: free % under 10 and falling => imminent write failure, treat
+          as P1 regardless of which tier fired. Prediction negative but the 6h trend has
+          flattened => the forecast is driven by an earlier burst; say so instead of raising
+          a false alarm. Free % low but stable for hours => steady-state tightness, plan a
+          resize rather than an emergency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Free disk percentage and bytes per host and disk, plus the worst offender."
+            params:
+              queries: *storage_panels
+          - tool_id: "tool.query_metrics"
+            description: "Current free ratio, the 24h prediction and the observed 6h trend."
+            params:
+              queries:
+                - name: disk_free_pct
+                  unit: "%"
+                  query: '100 * (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+                  panel: true
+                  panel_title: "Disk Free %"
+                  panel_id: "ch-disk-free-pct-alert"
+                - name: predicted_free_bytes_24h
+                  unit: "B"
+                  query: 'predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600)'
+                  panel: true
+                  panel_title: "Predicted Free Bytes in 24h"
+                  panel_id: "ch-disk-predict-24h"
+                - name: free_bytes_trend_6h
+                  unit: "B"
+                  query: 'delta(chi_clickhouse_metric_DiskFreeBytes[6h])'
+      - step: 2
+        title: "Explain the growth: ingest, stalled retention, or merge/queue overhead"
+        description: >-
+          Interpret: insert rate and inserted rows up sharply over the last day => genuine
+          data growth; capacity must grow or retention must tighten. Insert rate flat while
+          free space falls steadily => retention/TTL has stopped deleting old partitions,
+          which the 6h trend is specifically good at catching — verify before buying more
+          disk. Part counts high => merge overhead is inflating usage (both input and output
+          parts exist during a merge) and the backlog itself consumes space. Distributed
+          backlog large on this host => unsent rows are sitting on this volume. Detached
+          parts present => space is held by parts no query can even read.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Ingest volume, part counts, distributed backlog and detached parts on the filling host."
+            params:
+              queries:
+                - name: inserted_rows_rate
+                  unit: "rows/s"
+                  query: 'sum by (chi, hostname) (rate(chi_clickhouse_event_InsertedRows[30m]))'
+                  panel: true
+                  panel_title: "Inserted Rows Rate"
+                  panel_id: "ch-inserted-rows-rate-disk"
+                - name: max_parts_per_partition_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_MaxPartCountForPartition)'
+                - name: distributed_files_to_insert_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+                - name: detached_parts_by_host
+                  query: 'sum by (chi, hostname) (chi_clickhouse_metric_DetachedParts)'
+      - step: 3
+        title: "State what has already broken, in the order ClickHouse breaks it"
+        description: >-
+          The failure order is fixed and makes the impact statement precise: merges stop
+          first (a merge needs room for its whole output part before deleting inputs), part
+          counts then climb, inserts get delayed and then rejected, and when the volume fills
+          completely the server cannot write at all and replicas go read-only. Interpret:
+          delayed/rejected inserts already nonzero => you are past the merge-stall stage and
+          writes are affected. ReadonlyReplica > 0 => the volume has effectively filled for
+          replicated tables. Replication queue growing => fetched parts cannot be written, so
+          this host is also falling behind its replicas. None of these yet => you still have
+          the window the warning tier is designed to give you; act inside it.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Insert throttling, readonly replicas and replication queue — the downstream effects of a full disk."
+            params:
+              queries:
+                - name: delayed_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DelayedInserts[10m]))'
+                - name: rejected_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_RejectedInserts[10m]))'
+                - name: readonly_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReadonlyReplica)'
+                  panel: true
+                  panel_title: "Readonly Replicas by Host"
+                  panel_id: "ch-readonly-disk"
+                - name: replication_queue_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ReplicasMaxQueueSize)'
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for 'Not enough space', merge failures, readonly and write-error signatures."
+            params:
+              tail_lines: 250
+    remediation: # suggestion-only — deleting data is irreversible; resizing needs headroom
+      - action: "reclaim_space_safely"
+        description: "Drop partitions that are already past retention (verify with the data owners), and remove detached parts only after confirming they are not needed for recovery. Do not delete files from the volume directly — ClickHouse must be the one to remove parts."
+        tool_id: ""
+        requires_approval: true
+      - action: "expand_the_volume"
+        description: "Resize the PVC if the storage class allows online expansion. Start this while free space remains — a resize needs the filesystem to complete its grow step, and it is much harder once the volume is completely full."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_retention_or_reduce_ingest"
+        description: "If step 2 showed retention stopped deleting: repair the TTL/retention job — that is the cause, and more disk only postpones it. If growth is genuine, reduce ingest or plan capacity with the data owners."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform on-call immediately on the critical tier, with the data owners for any retention decision. On the warning tier, escalate within the working day — the value of the prediction is the lead time."
+    follow_up:
+      - "Confirm free space recovers above the thresholds and that merges resume (part counts fall) after the space is reclaimed."
+      - "If retention was the cause, add a check that partition deletion is actually running rather than relying on the disk trend to reveal it."
+
+  # ==================================================== PARTS
+  - name: "ClickHouseDetachedPartsPresent"
+    patterns:
+      [
+        "ClickHouseDetachedPartsPresent",
+        "ClickHouse has detached parts the server did not expect",
+        "chi_clickhouse_metric_DetachedParts",
+        "detached parts",
+        "broken parts",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the count and read the reason label — it decides everything"
+        description: >-
+          The rule excludes reason="detached_by_user", so what fired is a part the server
+          detached on its own. detached_by_reason breaks the count down by reason, database
+          and table. Interpret: reason 'broken' or 'unexpected' => data corruption or a
+          failed merge/fetch; those rows are excluded from every query on this replica, so
+          results here are incomplete while other replicas may still have the data.
+          'covered-by-broken' => collateral of another broken part. 'ignored'/'clone' style
+          reasons => less severe but still unqueryable space. A steadily rising count =>
+          something is actively breaking parts (bad disk, repeated failed merges) rather than
+          a one-off historical event — that distinction drives the urgency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Parts pressure, delayed/rejected insert history and insert rate per host."
+            params:
+              queries: *ingest_panels
+          - tool_id: "tool.query_metrics"
+            description: "Detached parts by reason, database and table, plus the trend."
+            params:
+              queries:
+                - name: detached_by_reason
+                  query: 'sum by (chi, hostname, database, table, reason) (chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"})'
+                  panel: true
+                  panel_title: "Detached Parts by Reason"
+                  panel_id: "ch-detached-by-reason"
+                - name: detached_total_by_host
+                  query: 'sum by (chi, hostname) (chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"})'
+                - name: detached_trend_6h
+                  query: 'delta(chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"}[6h])'
+      - step: 2
+        title: "Check whether the other replicas still have the data"
+        description: >-
+          Detached parts on one replica are recoverable if a sibling replica holds the rows.
+          Interpret: other hosts of the same chi healthy, with no replication lag and no
+          failed fetches => the data almost certainly exists elsewhere and this replica can
+          re-fetch it; the impact is limited to queries that landed here. Failed fetches or a
+          deep queue on this host => it is already trying and failing to get those parts
+          back, which is a harder problem. Detached parts on MULTIPLE replicas of the same
+          table => the data may genuinely be gone from the cluster; that is a data-loss
+          conversation with the owners, not a routine cleanup. Also note whether this host
+          recently restarted — parts broken at startup usually point at storage.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Peer replica health, fetch failures and uptime around the detachment."
+            params:
+              queries: *replication_panels
+          - tool_id: "tool.query_metrics"
+            description: "Failed part fetches and host uptime to judge recoverability and timing."
+            params:
+              queries:
+                - name: failed_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))'
+                - name: uptime_by_host
+                  unit: "s"
+                  query: 'min by (chi, hostname) (chi_clickhouse_metric_Uptime)'
+                - name: disk_free_pct_by_host
+                  unit: "%"
+                  query: '100 * min by (chi, hostname, disk) (chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes)'
+      - step: 3
+        title: "Find what detached them"
+        description: >-
+          Interpret the log: checksum mismatch / 'Part is broken' at startup => storage-level
+          corruption; the disk or the node is the suspect and the same host will keep
+          producing these. Failed merge followed by detachment => the merge path is the
+          cause, often after an out-of-space event — correlate with the free-space evidence.
+          'Unexpected part' after a restore or a replica rebuild => metadata and data
+          disagree, usually from a Keeper restore or a manual intervention. No clear log
+          evidence => say the trigger is not visible and that a system.detached_parts
+          inspection on the host is the next step; do not attribute corruption without
+          evidence.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for 'Part is broken', checksum mismatch, 'Detaching' and merge-failure signatures with table names."
+            params:
+              tail_lines: 300
+    remediation: # suggestion-only — attaching or dropping parts changes data; never automatic
+      - action: "recover_rows_from_a_healthy_replica"
+        description: "Preferred path when siblings have the data: let the replica re-fetch the affected parts (or drop the broken part on this replica so it refetches). Confirm the other replicas are complete BEFORE removing anything here."
+        tool_id: ""
+        requires_approval: true
+      - action: "investigate_the_storage"
+        description: "If the log shows checksum/corruption at the storage level: check the node's disk health and the PVC before reattaching anything — otherwise new parts will break the same way."
+        tool_id: ""
+        requires_approval: true
+      - action: "clean_up_after_verification"
+        description: "Once the rows are confirmed present elsewhere, remove the detached parts to reclaim disk. This is irreversible, so it needs explicit approval from the data owners."
+        tool_id: ""
+        requires_approval: true
+    escalation: "ClickHouse platform owner; involve the data owners whenever the same table has detached parts on more than one replica, because that is potential data loss."
+    follow_up:
+      - "Confirm the detached count stops growing; a stable historical count is a cleanup task, a growing one is an active fault."
+      - "If storage corruption was involved, check whether other tables on the same volume are affected before closing."
+
+  # ==================================================== NETWORK
+  - name: "ClickHouseNetworkErrors"
+    patterns:
+      [
+        "ClickHouseNetworkErrors",
+        "ClickHouse is hitting network or DNS errors",
+        "chi_clickhouse_metric_SystemErrors_NETWORK_ERROR",
+        "chi_clickhouse_event_DNSError",
+        "clickhouse dns errors",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm which of the two signals fired and whether it is ongoing"
+        description: >-
+          The rule ORs four branches: increase over 10m of NETWORK_ERROR in system.errors or
+          DNSError in system.events, plus the just-appeared branch for each (these counters
+          do not exist until the first occurrence). network_errors_10m and dns_errors_10m
+          show recent activity; the *_total series show cumulative values since server start.
+          Interpret: network errors rising without DNS errors => connection-level failures
+          (policy, packet loss, a peer refusing connections). DNS errors present =>
+          resolution itself is failing, which matters disproportionately because ClickHouse
+          resolves replica and shard hostnames on every new connection. Rates at zero with
+          nonzero totals => the counters just became visible or the errors stopped; report
+          the totals and note the alert clears on its own within the window.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-host uptime, hosts reporting per CHI and system.metrics fetch errors."
+            params:
+              queries: *server_health_panels
+          - tool_id: "tool.query_metrics"
+            description: "Network and DNS error rates in the rule window plus their cumulative counters."
+            params:
+              queries:
+                - name: network_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]))'
+                  panel: true
+                  panel_title: "Network Errors (10m)"
+                  panel_id: "ch-network-errors-10m"
+                - name: dns_errors_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_DNSError[10m]))'
+                  panel: true
+                  panel_title: "DNS Errors (10m)"
+                  panel_id: "ch-dns-errors-10m"
+                - name: network_errors_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR)'
+                - name: dns_errors_total
+                  query: 'max by (chi, hostname) (chi_clickhouse_event_DNSError)'
+      - step: 2
+        title: "Find what the flakiness has already broken — this alert is usually the earliest symptom"
+        description: >-
+          Network and DNS problems surface as failed fetches, dropped Keeper sessions and
+          failed distributed queries before they surface as anything else, so check those
+          first. Interpret: failed part fetches rising => replication is already affected and
+          the incident is bigger than a P3 network warning. Keeper hardware exceptions or
+          session counts above 1 => coordination is being disrupted, which leads to read-only
+          replicas — escalate. Distributed backlog growing => shard-to-shard traffic is
+          failing and query results are incomplete. Nothing downstream yet => this is
+          genuinely an early warning; fix the network path before it becomes one of the
+          others.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Replication, Keeper and distributed-path symptoms that accompany network flakiness."
+            params:
+              queries:
+                - name: failed_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))'
+                - name: keeper_hw_exceptions_10m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]))'
+                - name: keeper_sessions_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_ZooKeeperSession)'
+                - name: distributed_files_to_insert_by_host
+                  query: 'max by (chi, hostname) (chi_clickhouse_metric_DistributedFilesToInsert)'
+                  panel: true
+                  panel_title: "Distributed Files To Insert"
+                  panel_id: "ch-dist-files-network"
+      - step: 3
+        title: "Scope it: one host or the whole cluster, and what the log says"
+        description: >-
+          Interpret: errors on one host only => that host's node or network path is the
+          suspect (node-level packet loss, a policy applied to one pod). Errors across every
+          host of the chi => a shared dependency is failing — cluster DNS (CoreDNS) is the
+          most common, followed by a network policy change. The log text distinguishes them:
+          'Host not found'/'Temporary failure in name resolution' is DNS,
+          'Connection refused'/'Connection reset'/timeouts are transport. If the errors
+          cluster around a specific peer address, name that peer — it is likelier to be the
+          failing endpoint than the network as a whole.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "ClickHouse logs filtered for DNS resolution failures, connection refused/reset, and timeouts naming peer addresses."
+            params:
+              tail_lines: 250
+    remediation: # suggestion-only
+      - action: "fix_cluster_dns"
+        description: "When DNS errors dominate: check CoreDNS health, capacity and the pods' resolver configuration. ClickHouse resolves peers on every new connection, so DNS instability produces broad, confusing symptoms."
+        tool_id: ""
+        requires_approval: true
+      - action: "repair_the_network_path"
+        description: "When transport errors dominate: check network policies, the interserver/native ports between hosts, node-level packet loss and any recent CNI or firewall change."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Network/platform team, with the ClickHouse platform owner. Escalate beyond P3 immediately if step 2 shows Keeper sessions or part fetches failing — the network problem has then become a replication incident."
+    follow_up:
+      - "Confirm both counters stop increasing; remember this alert self-resolves within its window even without a fix."
+      - "If the same peer or host recurs, treat it as a node/network defect rather than closing each occurrence separately."
+
+escalation: >-
+  Route by PLANE first. clickhouse_operator_* alerts (metrics absent, reconcile
+  errors/aborted/stuck/slow, host restarts, pods disappearing) go to the ClickHouse
+  platform / operator owner: they describe convergence, and by themselves they do not
+  mean the databases are unhealthy — say so explicitly instead of paging database
+  owners. chi_clickhouse_* alerts describe the data plane: server down, readonly
+  replicas, rejected inserts and a nearly-full disk are the pageable ones, because each
+  means writes are failing or a shard's data is at risk. Keeper/ZooKeeper symptoms
+  (unstable sessions, hardware exceptions, and most readonly-replica incidents) belong
+  with the Keeper ensemble owner first — ClickHouse is the victim there, not the cause.
+  Ingest-shape problems (small batches, too many parts, delayed/rejected inserts) and
+  query-path problems (concurrency, long-running queries, connection counts) belong with
+  the owning producer/consumer teams, because the durable fix is in their batching,
+  queries and pools. For any *MetricsAbsent* alert, escalate as a VISIBILITY outage and
+  state which alert families are currently blind, rather than asserting an outage you
+  cannot see.
+
+follow_up:
+  - "Event-counter alerts (rejected/delayed inserts, Keeper hardware exceptions, failed part fetches, network/DNS errors) self-resolve within their window whether or not anything was fixed — always confirm the underlying counter stopped increasing before closing."
+  - "Both *MetricsAbsent* alerts hide every other alert in their plane. After either clears, re-check the conditions that could have developed during the blackout (disk fill, readonly replicas, part counts, replication lag)."
+  - "Alert identity here is (chi, hostname) for server alerts and (namespace, chi) for operator alerts, and ClickHouse's own namespace may arrive as exported_namespace — never assert the workload namespace from the alert's namespace label alone, and use by (chi, hostname) attribution to name the offending host."
+  - "Eight rules in clickhouse.yml are commented out because their metrics are not exported in either environment (replicated data loss, merge divergence, Buffer flush errors, unfinished/stuck mutations, distributed connection failures, Kafka consumer errors and commit failures). Those failure modes are currently undetectable — re-check with count by (__name__) ({__name__=~\"chi_clickhouse_event_.*\"}) and enable the rules once the counters appear."
+  - "Per-query, per-table attribution (which query, which table, which partition) is not available from chi_clickhouse_* metrics — name the host and the family from metrics, then say the exact object needs system.query_log / system.parts / system.detached_parts on the host rather than guessing."
