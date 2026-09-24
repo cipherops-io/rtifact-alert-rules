@@ -33,6 +33,29 @@
 | `ClickHouseOperatorHostReconcileSlow` | warning | P3 | 15m | cause | `increase(clickhouse_operator_host_reconciles_timings_sum[1h]) / increase(clickh…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
 | `ClickHouseOperatorHostRestartsHigh` | warning | P2 | 5m | symptom | `increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2` | [clickhouse.md](runbooks/databases/clickhouse.md) |
 | `ClickHouseOperatorPodsDisappearing` | warning | P2 | 10m | symptom | `sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m])) …` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseServerDown` | critical | P1 | 2m | symptom | `chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseServerMetricsAbsent` | warning | P2 | 15m | cause | `absent(chi_clickhouse_metric_Uptime)` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseMetricsFetchErrors` | warning | P3 | 15m | cause | `chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseServerRestarted` | info | P3 | 1m | symptom | `chi_clickhouse_metric_Uptime < 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseReadonlyReplica` | critical | P1 | 5m | symptom | `chi_clickhouse_metric_ReadonlyReplica > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseReplicationLagHigh` | warning | P2 | 10m | symptom | `chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseReplicationQueueHigh` | warning | P2 | 15m | cause | `chi_clickhouse_metric_ReplicasMaxQueueSize > 100` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseReplicatedPartFetchFailures` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0 or (chi_cli…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseKeeperSessionUnstable` | warning | P2 | 5m | cause | `chi_clickhouse_metric_ZooKeeperSession > 1` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseKeeperHardwareExceptions` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0 or (chi_cli…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseRejectedInserts` | critical | P1 | 2m | symptom | `increase(chi_clickhouse_event_RejectedInserts[10m]) > 0 or (chi_clickhouse_even…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseDelayedInserts` | warning | P2 | 5m | symptom | `increase(chi_clickhouse_event_DelayedInserts[10m]) > 0 or (chi_clickhouse_event…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseMaxPartCountForPartition` | warning | P2 | 15m | cause | `chi_clickhouse_metric_MaxPartCountForPartition > 100` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseDistributedFilesToInsertHigh` | warning | P2 | 15m | symptom | `chi_clickhouse_metric_DistributedFilesToInsert > 50` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseSmallInsertBatches` | warning | P3 | 15m | cause | `increase(chi_clickhouse_event_InsertQuery[30m]) > 100 and increase(chi_clickhou…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseTooManyRunningQueries` | warning | P2 | 5m | symptom | `( (chi_clickhouse_metric_Query - chi_clickhouse_metric_PendingAsyncInsert) or c…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseLongestRunningQuery` | warning | P3 | 5m | cause | `chi_clickhouse_metric_LongestRunningQuery > 600` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseQueryPreempted` | warning | P3 | 10m | symptom | `chi_clickhouse_metric_QueryPreempted > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseTooManyConnections` | warning | P3 | 10m | cause | `sum without (__name__) ( {__name__=~"chi_clickhouse_metric_(HTTPConnection\|TCPC…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseDiskSpaceLow` | critical | P1 | 10m | cause | `chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseDiskWillFillWithin24h` | warning | P2 | 30m | cause | `predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0 and chi_…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseDetachedPartsPresent` | warning | P2 | 15m | cause | `chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseNetworkErrors` | warning | P3 | 5m | cause | `increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
 
 ### `rules/metrics/databases/cnpg.yml`
 
@@ -474,8 +497,9 @@
 ## runbooks without alert rules
 
 - [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
+- [service-error-logs.yaml](runbooks/logs/service-error-logs.yaml)
 - [service-latency.yaml](runbooks/observability/service-latency.yaml)
 
 ---
 
-_321 alerts across 29 files in 8 categories._
+_331 alerts across 29 files in 8 categories._
