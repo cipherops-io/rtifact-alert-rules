@@ -25,37 +25,37 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ClickHouseOperatorMetricsAbsent` | warning | P2 | 10m | cause | `absent(clickhouse_operator_chi)` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorHostReconcileErrors` | warning | P2 | 5m | cause | `increase(clickhouse_operator_host_reconciles_errors[15m]) > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorHostReconcileErrorsSustained` | critical | P1 | 10m | cause | `increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorCHIReconcileAborted` | warning | P2 | 5m | cause | `increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorCHIReconcileStuck` | warning | P2 | 15m | cause | `sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorHostReconcileSlow` | warning | P3 | 15m | cause | `increase(clickhouse_operator_host_reconciles_timings_sum[1h]) / increase(clickh…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorHostRestartsHigh` | warning | P2 | 5m | symptom | `increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseOperatorPodsDisappearing` | warning | P2 | 10m | symptom | `sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m])) …` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseServerDown` | critical | P1 | 2m | symptom | `chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseServerMetricsAbsent` | warning | P2 | 15m | cause | `absent(chi_clickhouse_metric_Uptime)` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseMetricsFetchErrors` | warning | P3 | 15m | cause | `chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseServerRestarted` | info | P3 | 1m | symptom | `chi_clickhouse_metric_Uptime < 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseReadonlyReplica` | critical | P1 | 5m | symptom | `chi_clickhouse_metric_ReadonlyReplica > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseReplicationLagHigh` | warning | P2 | 10m | symptom | `chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseReplicationQueueHigh` | warning | P2 | 15m | cause | `chi_clickhouse_metric_ReplicasMaxQueueSize > 100` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseReplicatedPartFetchFailures` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0 or (chi_cli…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseKeeperSessionUnstable` | warning | P2 | 5m | cause | `chi_clickhouse_metric_ZooKeeperSession > 1` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseKeeperHardwareExceptions` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0 or (chi_cli…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseRejectedInserts` | critical | P1 | 2m | symptom | `increase(chi_clickhouse_event_RejectedInserts[10m]) > 0 or (chi_clickhouse_even…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDelayedInserts` | warning | P2 | 5m | symptom | `increase(chi_clickhouse_event_DelayedInserts[10m]) > 0 or (chi_clickhouse_event…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseMaxPartCountForPartition` | warning | P2 | 15m | cause | `chi_clickhouse_metric_MaxPartCountForPartition > 100` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDistributedFilesToInsertHigh` | warning | P2 | 15m | symptom | `chi_clickhouse_metric_DistributedFilesToInsert > 50` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseSmallInsertBatches` | warning | P3 | 15m | cause | `increase(chi_clickhouse_event_InsertQuery[30m]) > 100 and increase(chi_clickhou…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseTooManyRunningQueries` | warning | P2 | 5m | symptom | `( (chi_clickhouse_metric_Query - chi_clickhouse_metric_PendingAsyncInsert) or c…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseLongestRunningQuery` | warning | P3 | 5m | cause | `chi_clickhouse_metric_LongestRunningQuery > 600` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseQueryPreempted` | warning | P3 | 10m | symptom | `chi_clickhouse_metric_QueryPreempted > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseTooManyConnections` | warning | P3 | 10m | cause | `sum without (__name__) ( {__name__=~"chi_clickhouse_metric_(HTTPConnection\|TCPC…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDiskSpaceLow` | critical | P1 | 10m | cause | `chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDiskWillFillWithin24h` | warning | P2 | 30m | cause | `predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0 and chi_…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseDetachedPartsPresent` | warning | P2 | 15m | cause | `chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"} > 0` | [clickhouse.md](runbooks/databases/clickhouse.md) |
-| `ClickHouseNetworkErrors` | warning | P3 | 5m | cause | `increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase…` | [clickhouse.md](runbooks/databases/clickhouse.md) |
+| `ClickHouseOperatorMetricsAbsent` | warning | P2 | 10m | cause | `absent(clickhouse_operator_chi)` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorHostReconcileErrors` | warning | P2 | 5m | cause | `increase(clickhouse_operator_host_reconciles_errors[15m]) > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorHostReconcileErrorsSustained` | critical | P1 | 10m | cause | `increase(clickhouse_operator_host_reconciles_errors[1h]) >= 5` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorCHIReconcileAborted` | warning | P2 | 5m | cause | `increase(clickhouse_operator_chi_reconciles_aborted[15m]) > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorCHIReconcileStuck` | warning | P2 | 15m | cause | `sum by (namespace, chi) (increase(clickhouse_operator_chi_reconciles_started[1h…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorHostReconcileSlow` | warning | P3 | 15m | cause | `increase(clickhouse_operator_host_reconciles_timings_sum[1h]) / increase(clickh…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorHostRestartsHigh` | warning | P2 | 5m | symptom | `increase(clickhouse_operator_host_reconciles_restarts[1h]) > 2` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseOperatorPodsDisappearing` | warning | P2 | 10m | symptom | `sum by (namespace, chi) (increase(clickhouse_operator_pod_delete_events[30m])) …` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseServerDown` | critical | P1 | 2m | symptom | `chi_clickhouse_metric_fetch_errors{fetch_type=~"system[._ ]metrics"} > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseServerMetricsAbsent` | warning | P2 | 15m | cause | `absent(chi_clickhouse_metric_Uptime)` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseMetricsFetchErrors` | warning | P3 | 15m | cause | `chi_clickhouse_metric_fetch_errors{fetch_type!~"system[._ ]metrics"} > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseServerRestarted` | info | P3 | 1m | symptom | `chi_clickhouse_metric_Uptime < 300` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseReadonlyReplica` | critical | P1 | 5m | symptom | `chi_clickhouse_metric_ReadonlyReplica > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseReplicationLagHigh` | warning | P2 | 10m | symptom | `chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseReplicationQueueHigh` | warning | P2 | 15m | cause | `chi_clickhouse_metric_ReplicasMaxQueueSize > 100` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseReplicatedPartFetchFailures` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0 or (chi_cli…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseKeeperSessionUnstable` | warning | P2 | 5m | cause | `chi_clickhouse_metric_ZooKeeperSession > 1` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseKeeperHardwareExceptions` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0 or (chi_cli…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseRejectedInserts` | critical | P1 | 2m | symptom | `increase(chi_clickhouse_event_RejectedInserts[10m]) > 0 or (chi_clickhouse_even…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseDelayedInserts` | warning | P2 | 5m | symptom | `increase(chi_clickhouse_event_DelayedInserts[10m]) > 0 or (chi_clickhouse_event…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseMaxPartCountForPartition` | warning | P2 | 15m | cause | `chi_clickhouse_metric_MaxPartCountForPartition > 100` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseDistributedFilesToInsertHigh` | warning | P2 | 15m | symptom | `chi_clickhouse_metric_DistributedFilesToInsert > 50` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseSmallInsertBatches` | warning | P3 | 15m | cause | `increase(chi_clickhouse_event_InsertQuery[30m]) > 100 and increase(chi_clickhou…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseTooManyRunningQueries` | warning | P2 | 5m | symptom | `( (chi_clickhouse_metric_Query - chi_clickhouse_metric_PendingAsyncInsert) or c…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseLongestRunningQuery` | warning | P3 | 5m | cause | `chi_clickhouse_metric_LongestRunningQuery > 600` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseQueryPreempted` | warning | P3 | 10m | symptom | `chi_clickhouse_metric_QueryPreempted > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseTooManyConnections` | warning | P3 | 10m | cause | `sum without (__name__) ( {__name__=~"chi_clickhouse_metric_(HTTPConnection\|TCPC…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseDiskSpaceLow` | critical | P1 | 10m | cause | `chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseDiskWillFillWithin24h` | warning | P2 | 30m | cause | `predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0 and chi_…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseDetachedPartsPresent` | warning | P2 | 15m | cause | `chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"} > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseNetworkErrors` | warning | P3 | 5m | cause | `increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 
 ### `rules/metrics/databases/cnpg.yml`
 
