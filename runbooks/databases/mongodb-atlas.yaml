@@ -1,0 +1,610 @@
+tech_stack: mongodb-atlas
+version: "1.0"
+description: >-
+  Runbook for MongoDB Atlas (managed) alerts delivered by the Atlas webhook
+  integration (RTI-1132: dev3, prod3, tcprod). Titles arrive as
+  "[MongoAtlas] <cluster>: <Atlas event text>", e.g.
+  "[MongoAtlas] Cluster0: System: Memory usage % has gone above 85", and the alert
+  carries the firing object in impacted_entities: cluster (Atlas cluster name,
+  case-sensitive, e.g. "Cluster0"), replicaSet (e.g. "atlas-122fn1-shard-0"), host
+  (the member, e.g. "atlas-122fn1-shard-00-02.9euth.mongodb.net:27017") and metric
+  (e.g. SYSTEM_MEMORY_PERCENT_USED). Atlas clusters are NOT in the tenant's
+  Kubernetes/VictoriaMetrics — every step reads Atlas itself through the
+  integration service's MongoDB Atlas tools (tool_id mcp.mongodb-atlas.<action>):
+  list_projects, list_alerts, inspect_cluster, get_performance_advisor. All are
+  read-only. PROJECT RESOLUTION: every Atlas tool needs the project (group) id. When
+  the alert carries groupId it is used as-is; otherwise step 1 finds it with
+  list_projects, matching the project by name ($projectName) — or, when the Atlas
+  key sees exactly one project, that one. If neither resolves, later steps are NOT
+  RUN ("unresolved placeholder(s) $groupId"): say the Atlas project could not be
+  identified for this alert rather than guessing one. Report every finding against
+  the alert's OWN cluster ($cluster) and host — list_alerts is project-wide, so
+  ignore open alerts that belong to other clusters/hosts except as blast-radius
+  context. There is NO Atlas time-series (measurements) tool yet: do not invent a
+  trend, peak or duration that no tool returned.
+
+match_keywords:
+  - mongoatlas
+  - mongodb atlas
+  - atlas cluster
+  - atlas
+
+categories:
+  - DATA
+  - DATABASE
+
+available_tools:
+  - "mcp.mongodb-atlas.list_projects — projects visible to the Atlas key (id, name, clusterCount); resolves $groupId"
+  - "mcp.mongodb-atlas.list_alerts — OPEN Atlas alerts in the project: event type, host, metric, currentValue, since when"
+  - "mcp.mongodb-atlas.inspect_cluster — cluster state, tier (instanceSize), node count, disk size/IOPS, compute + disk autoscaling config, version"
+  - "mcp.mongodb-atlas.get_performance_advisor — slow query shapes (namespace, avgMs, count, inefficiency) and suggested indexes"
+
+# ── Reusable tool calls ────────────────────────────────────────────────────────
+resolve_project: &resolve_project
+  tool_id: "mcp.mongodb-atlas.list_projects"
+  description: "Atlas projects visible to the integration's key; binds $groupId (the alert's project id) for the later steps."
+  params:
+    arguments: {}
+    bind:
+      groupId:
+        from: "results"
+        match: { name: "$projectName" }
+        pick: "id"
+    fields:
+      - "results[*].name"
+      - "results[*].id"
+      - "results[*].clusterCount"
+      - "totalCount"
+
+open_alerts: &open_alerts
+  tool_id: "mcp.mongodb-atlas.list_alerts"
+  description: "OPEN Atlas alerts in the project — confirms this alert is still open, its live currentValue, and what else is firing on the same cluster/host."
+  params:
+    arguments: { projectId: "$groupId", status: "OPEN" }
+    fields:
+      - "totalCount"
+      - "results[*].metricName"
+      - "results[*].currentValue"
+      - "results[*].hostnameAndPort"
+      - "results[*].eventTypeName"
+      - "results[*].clusterName"
+      - "results[*].replicaSetName"
+      - "results[*].created"
+      - "results[*].status"
+
+cluster_config: &cluster_config
+  tool_id: "mcp.mongodb-atlas.inspect_cluster"
+  description: "The alert's cluster: state, tier, node count, disk, compute/disk autoscaling, version."
+  params:
+    arguments: { projectId: "$groupId", clusterName: "$cluster" }
+    fields:
+      - "name"
+      - "stateName"
+      - "paused"
+      - "clusterType"
+      - "mongoDBVersion"
+      - "diskSizeGB"
+      - "replicationSpecs[*].numShards"
+      - "replicationSpecs[*].regionConfigs[*].providerName"
+      - "replicationSpecs[*].regionConfigs[*].regionName"
+      - "replicationSpecs[*].regionConfigs[*].electableSpecs"
+      - "replicationSpecs[*].regionConfigs[*].autoScaling"
+      - "effectiveReplicationSpecs[*].regionConfigs[*].electableSpecs"
+
+query_workload: &query_workload
+  tool_id: "mcp.mongodb-atlas.get_performance_advisor"
+  description: "Performance Advisor for the cluster: slow query shapes (namespace, avgMs, count, inefficiency) and the indexes Atlas suggests."
+  params:
+    arguments: { projectId: "$groupId", clusterName: "$cluster" }
+    timeout: 45  # observed ~20s on dev3
+    fields:
+      - "suggestedIndexes.content.suggestedIndexes[*].namespace"
+      - "suggestedIndexes.content.suggestedIndexes[*].index"
+      - "suggestedIndexes.content.suggestedIndexes[*].weight"
+      - "suggestedIndexes.content.shapes[*].namespace"
+      - "suggestedIndexes.content.shapes[*].avgMs"
+      - "suggestedIndexes.content.shapes[*].count"
+      - "suggestedIndexes.content.shapes[*].inefficiencyScore"
+      - "dropIndexSuggestions.content"
+      - "slowQueryLogs.content.slowQueries[*].namespace"
+      - "schemaSuggestions.content.recommendations[*].description"
+
+common_alerts:
+  # ============================================================ RESOURCE SATURATION
+  - name: "MongoAtlasMemoryUsageHigh"
+    patterns:
+      [
+        "System: Memory usage %",
+        "Memory usage % has gone above",
+        "SYSTEM_MEMORY_PERCENT_USED",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm the memory alert is still open on the alert's host"
+        description: >-
+          Atlas "System: Memory usage % above N" (configured at 85 and 90; fires after
+          10 min, re-notifies every 30 min) measures the whole member's RAM use, not
+          just mongod's cache. From list_alerts, find the OPEN OUTSIDE_METRIC_THRESHOLD
+          entry for SYSTEM_MEMORY_PERCENT_USED on the alert's host and cite its
+          currentValue. Interpret: no matching open entry => the condition has already
+          cleared; say it self-resolved. currentValue far above the threshold (e.g. >95)
+          => genuine memory exhaustion risk. Other OPEN alerts on the SAME host/cluster
+          matter: CPU (User) or Query Targeting open together => an inefficient query
+          workload is pulling data into memory (step 3); Connections % open together
+          => a connection surge (each connection costs ~1 MB) is consuming RAM.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check the cluster's tier and whether compute autoscaling can absorb the load"
+        description: >-
+          From inspect_cluster: electableSpecs.instanceSize is the tier that fixes
+          the RAM (M10 2 GB, M20 4 GB, M30 8 GB, M40 16 GB, M50 32 GB ...);
+          effectiveReplicationSpecs shows the tier actually running after autoscaling;
+          autoScaling.compute.enabled / maxInstanceSize show headroom. Interpret:
+          compute autoscaling DISABLED => nothing will relieve this automatically; the
+          tier is the cap. Autoscaling enabled but effective tier already equals
+          maxInstanceSize => autoscaling is maxed out; raise the max or reduce load.
+          Autoscaling enabled with headroom => Atlas may scale up on its own (it reacts
+          to sustained load) — say so and weigh urgency accordingly. stateName other
+          than IDLE (e.g. UPDATING) => a scaling or maintenance operation is already in
+          progress and can explain transient memory pressure.
+        tool_calls:
+          - *cluster_config
+      - step: 3
+        title: "Attribute memory pressure to the query workload"
+        description: >-
+          Performance Advisor lists slow query shapes and suggested indexes for the
+          cluster. Interpret: shapes with high count and high avgMs on a namespace, or a
+          suggested index with high weight => unindexed/inefficient queries are
+          scanning collections and pushing the working set beyond RAM — NAME the
+          namespace(s) and the suggested index. No slow shapes and no suggestions =>
+          the working set has simply outgrown the tier (data growth), so capacity, not
+          queries, is the fix. Honest gap: there is no Atlas measurements tool yet, so
+          the memory trend, WiredTiger cache fill and page-fault rate are not available
+          — do not invent them.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "add_suggested_indexes"
+        description: "ONLY if step 3 named slow shapes or suggested indexes: create the Performance Advisor's suggested index on the named namespace (rolling build) so those queries stop scanning — the most direct way to shrink the working set."
+        tool_id: ""
+        requires_approval: true
+      - action: "scale_cluster_tier"
+        description: "If step 2 shows compute autoscaling disabled or already at maxInstanceSize and step 3 found no query cause: move the cluster to the next tier (more RAM) or raise autoscaling.compute.maxInstanceSize."
+        tool_id: ""
+        requires_approval: true
+      - action: "reduce_connection_memory"
+        description: "If Connections % is open on the same host: cap client connection pools (maxPoolSize) — each idle connection holds memory."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for query/index fixes; platform/DB owner for tier or autoscaling changes. Escalate urgently when currentValue > 95 or it is open together with CPU / disk alerts on the primary."
+    follow_up:
+      - "After the fix confirm the SYSTEM_MEMORY_PERCENT_USED alert closes in Atlas (list_alerts no longer shows it OPEN)."
+      - "Add an Atlas measurements tool (host SYSTEM_MEMORY_PERCENT_USED / cache fill history) to show the trend instead of a single currentValue."
+
+  - name: "MongoAtlasCPUUserHigh"
+    patterns:
+      [
+        "System: CPU (User) %",
+        "CPU (User) % has gone above",
+        "SYSTEM_NORMALIZED_CPU_USER",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm the CPU alert and its severity band"
+        description: >-
+          Atlas "System: CPU (User) % above N" is configured twice: above 90 (fires
+          after 5 min, re-notifies 30 min) and above 95 (fires after 10 min,
+          re-notifies 10 min) — the 95 variant is the more severe, sustained one. From
+          list_alerts cite the OPEN CPU entry's currentValue on the alert's host.
+          Interpret: no matching open entry => cleared. Query Targeting open on the
+          same host => CPU is burnt scanning documents for inefficient queries (step
+          3). Memory % open together => the working set no longer fits and the CPU is
+          spent on cache eviction / disk reads. CPU high on the PRIMARY only => write
+          or primary-read load; on a secondary => replication apply or
+          secondary-preferred reads.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check the tier and compute autoscaling headroom"
+        description: >-
+          From inspect_cluster: instanceSize / effective tier fixes the vCPU count;
+          autoScaling.compute.enabled and maxInstanceSize show whether Atlas can scale
+          out of this. Interpret: autoscaling disabled or already at the max =>
+          sustained CPU needs a tier change or a workload fix. Burstable low tiers
+          (M10/M20) exhaust CPU credits under sustained load — call that out. stateName
+          not IDLE => an operation (scaling, index build, maintenance) is in progress
+          and may be the CPU consumer.
+        tool_calls:
+          - *cluster_config
+      - step: 3
+        title: "Find the query shapes consuming the CPU"
+        description: >-
+          From Performance Advisor: NAME the namespace and shape with the highest
+          count × avgMs, and any suggested index. Interpret: a high-weight suggested
+          index or high inefficiencyScore shapes => collection scans are the CPU cost;
+          indexing is the fix. No slow shapes => the load is legitimate volume (more
+          requests), so capacity or read distribution is the fix. Honest gap: without
+          a measurements/currentOp tool the exact running operation and the CPU trend
+          are unavailable — say so rather than guess.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "index_or_fix_hot_query"
+        description: "ONLY if step 3 named a hot shape or suggested index: add the suggested index / rewrite the named query so it stops scanning."
+        tool_id: ""
+        requires_approval: true
+      - action: "scale_or_enable_compute_autoscaling"
+        description: "If step 2 shows no autoscaling headroom and the load is legitimate: move to the next tier or enable/raise compute autoscaling; for read-heavy load consider secondary reads."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for the named query; platform/DB owner when CPU > 95 is sustained on the primary and user latency is affected."
+    follow_up:
+      - "Confirm the CPU (User) alert closes in Atlas after the fix."
+      - "A currentOp / profiler read tool would name the exact running operation — deferred."
+
+  # ============================================================ AVAILABILITY
+  - name: "MongoAtlasReplicaSetNoPrimary"
+    patterns:
+      [
+        "Replica set has no primary",
+        "has no primary",
+        "NO_PRIMARY",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm no-primary is still open"
+        description: >-
+          "Replica set has no primary" (fires after 3 min, re-notifies every 10 min)
+          means the replica set ($replicaSet) cannot accept WRITES — applications
+          writing to it are failing. From list_alerts: is the NO_PRIMARY entry for
+          this replica set still OPEN? Interpret: not open => an election completed
+          and a primary exists again; report a transient failover and how long the
+          alert lasted if list_alerts shows it. Still open => active write outage.
+          Host-down / other availability alerts on members of the same replica set
+          => members are unreachable, so a majority cannot be formed for an election.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check whether Atlas itself is changing the cluster"
+        description: >-
+          From inspect_cluster: stateName and paused. Interpret: paused = true => the
+          cluster was PAUSED (no primary by design) — say so plainly. stateName
+          UPDATING / REPAIRING => a tier change, version upgrade, maintenance or
+          node replacement is rolling through the members; a no-primary window during
+          that is expected to be short. stateName IDLE with no-primary still open =>
+          not a planned operation — members are unhealthy or partitioned; escalate to
+          Atlas support. Report electableSpecs.nodeCount (how many electable members
+          exist) — a 3-node set needs 2 healthy members for a primary.
+        tool_calls:
+          - *cluster_config
+    remediation:
+      - action: "confirm_atlas_operation_or_open_support"
+        description: "If step 2 shows a planned operation (UPDATING/maintenance), monitor until the election completes. If stateName is IDLE and no primary persists, open an Atlas support case — members are unhealthy and Atlas-managed nodes cannot be repaired from our side."
+        tool_id: ""
+        requires_approval: true
+      - action: "check_application_write_retries"
+        description: "Confirm the applications use retryable writes and a replica-set connection string so they recover automatically once a primary is elected."
+        tool_id: ""
+        requires_approval: true
+    escalation: "P1 — immediate DB owner + Atlas support when the alert stays open beyond a few minutes on a production cluster; writes are failing for every client of $replicaSet."
+    follow_up:
+      - "After recovery confirm the NO_PRIMARY alert closed and the replica set has one primary."
+      - "Review Atlas project activity for the maintenance/scaling event that triggered the election."
+
+  - name: "MongoAtlasNoActiveMongos"
+    patterns:
+      [
+        "no active mongos",
+        "Cluster has no active mongos processes",
+        "CLUSTER_MONGOS_IS_MISSING",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm the no-mongos alert is still open"
+        description: >-
+          "Cluster has no active mongos processes" (fires after 15 min, re-notifies
+          every 15 min) applies to SHARDED clusters: mongos is the router every client
+          connects through, so with none running the whole cluster is unreachable.
+          From list_alerts: still OPEN for $cluster? Interpret: not open => routers
+          are back; report a transient outage. Open together with host-down alerts =>
+          infrastructure-level failure.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check the cluster type and state"
+        description: >-
+          From inspect_cluster: clusterType must be SHARDED (or GEOSHARDED) for this
+          alert to be meaningful — if it is REPLICASET, say the alert is misconfigured
+          for this cluster. paused = true => the cluster is paused (no mongos by
+          design). stateName UPDATING/REPAIRING => a planned operation is restarting
+          the routers. IDLE while no mongos => not planned; escalate to Atlas support.
+        tool_calls:
+          - *cluster_config
+    remediation:
+      - action: "confirm_atlas_operation_or_open_support"
+        description: "If step 2 shows a planned operation, monitor until mongos returns. Otherwise open an Atlas support case — mongos processes are Atlas-managed."
+        tool_id: ""
+        requires_approval: true
+    escalation: "P1 — DB owner + Atlas support immediately; every client of the sharded cluster is affected."
+    follow_up:
+      - "Confirm the alert closes and clients reconnect through mongos."
+
+  # ============================================================ REPLICATION
+  - name: "MongoAtlasOplogWindowLow"
+    patterns:
+      [
+        "Replication Oplog Window",
+        "Oplog Window has gone below",
+        "OPLOG_MASTER_TIME_ESTIMATE",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm the oplog window value"
+        description: >-
+          "Replication Oplog Window below 1 hour" (fires after 10 min, re-notifies
+          every 15 min): the oplog on $host only holds ~currentValue hours of writes.
+          A secondary (or a backup/restore, or a change stream) that falls further
+          behind than the window must do a full INITIAL SYNC. From list_alerts cite
+          currentValue. Interpret: well below 1h (minutes) => high risk that a lagging
+          or restarting secondary cannot catch up. Replication-lag alerts open on the
+          same replica set => a secondary is already behind — the window is the time
+          left before it is lost. Disk % open together => the oplog cannot be grown on
+          this disk.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check disk and tier — what bounds the oplog here"
+        description: >-
+          From inspect_cluster: diskSizeGB and autoScaling.diskGB.enabled bound how
+          large the oplog can be; the tier bounds write throughput. Interpret: a small
+          disk with disk autoscaling off => the oplog is size-capped low; raising the
+          oplog minimum size (or retention hours) needs disk headroom. A write-heavy
+          workload (step 3) shrinks the window by filling the oplog faster.
+        tool_calls:
+          - *cluster_config
+      - step: 3
+        title: "Look for a write-heavy or inefficient workload filling the oplog"
+        description: >-
+          From Performance Advisor: namespaces with very high operation counts point
+          at the workload generating oplog entries (bulk updates/deletes, TTL
+          sweeps, rewrite-whole-document updates). NAME them. Honest gap: the oplog
+          size, GB/hour write rate and per-secondary replication lag are not exposed
+          by the available tools — say so rather than invent them.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "increase_oplog_size_or_retention"
+        description: "Raise the cluster's minimum oplog size or minimum oplog window (Atlas → Additional Settings) so the window stays above 1h at peak write rate; ensure disk headroom first (step 2)."
+        tool_id: ""
+        requires_approval: true
+      - action: "reduce_oplog_churn"
+        description: "If step 3 named a write-heavy namespace: batch/throttle the bulk job or switch full-document rewrites to targeted $set updates."
+        tool_id: ""
+        requires_approval: true
+    escalation: "DB owner — urgent when replication lag is also open (a secondary is about to need an initial sync)."
+    follow_up:
+      - "Confirm the oplog window alert closes after resizing."
+      - "An Atlas measurements tool (OPLOG_MASTER_TIME, OPLOG_RATE_GB_PER_HOUR) would show the write-rate trend — deferred."
+
+  # ============================================================ STORAGE
+  - name: "MongoAtlasDiskSpaceHigh"
+    patterns:
+      [
+        "Disk space % used on Data Partition",
+        "DISK_PARTITION_SPACE_USED_DATA",
+        "Writes have been blocked",
+        "critically low disk space",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and establish how full the disk is and whether writes are already blocked"
+        description: >-
+          Two alerts share this entry. "Disk space % used on Data Partition above 90"
+          (fires after 3 min, re-notifies 30 min) is the WARNING; "Writes have been
+          blocked on your cluster due to critically low disk space" (once per
+          occurrence) is the OUTAGE — Atlas has made the cluster read-only to protect
+          it and every write is failing. From list_alerts cite the disk currentValue
+          on $host and whether the writes-blocked event is OPEN. Interpret:
+          writes-blocked open => active write outage, treat as P1 regardless of the
+          percentage. Disk % only => time-to-full matters; fix before Atlas blocks
+          writes. Oplog-window alert open together => the oplog is competing for the
+          same disk.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check disk size and disk autoscaling"
+        description: >-
+          From inspect_cluster: diskSizeGB (or electableSpecs.diskSizeGB) and
+          autoScaling.diskGB.enabled. Interpret: disk autoscaling DISABLED => nothing
+          will grow the disk; this is the root configuration gap — say so. Enabled but
+          the alert still fired => growth outpaced autoscaling or the disk is at the
+          tier's maximum storage; the tier must change. stateName UPDATING => a disk
+          resize may already be in progress.
+        tool_calls:
+          - *cluster_config
+      - step: 3
+        title: "Look for reclaimable space and the collections driving growth"
+        description: >-
+          From Performance Advisor: dropIndexSuggestions list unused/redundant indexes
+          (disk that can be reclaimed), and namespaces with heavy write shapes point at
+          what is growing. NAME them. Honest gap: per-collection storage sizes
+          (dbStats/collStats) are not available from the current tools — say which
+          collections to inspect instead of inventing sizes.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "increase_disk_or_enable_disk_autoscaling"
+        description: "Primary fix: increase the cluster's disk size now (and enable autoScaling.diskGB) — when writes are already blocked this is the only immediate way to restore writes."
+        tool_id: ""
+        requires_approval: true
+      - action: "reclaim_space"
+        description: "After writes are restored: drop the unused indexes step 3 named, add TTL/archival for the growing collection, then compact if needed."
+        tool_id: ""
+        requires_approval: true
+    escalation: "P1 — DB owner immediately when writes are blocked (all clients' writes fail). Warning-only: owning team within the re-notify window."
+    follow_up:
+      - "Confirm the disk alert and any writes-blocked event close after the resize."
+      - "A dbStats/collStats tool would name the largest collections — deferred."
+
+  # ============================================================ QUERY EFFICIENCY
+  - name: "MongoAtlasQueryTargetingHigh"
+    patterns:
+      [
+        "Query Targeting: Scanned Objects / Returned",
+        "Scanned Objects / Returned",
+        "QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm the targeting ratio"
+        description: >-
+          "Query Targeting: Scanned Objects / Returned above 1000" (fires after 10
+          min, re-notifies 30 min): on average queries on $host examine >1000
+          documents per document returned — collection scans or poorly selective
+          indexes. From list_alerts cite currentValue. Interpret: CPU or Memory %
+          open on the same host => the inefficient queries are already costing
+          resources; raise urgency.
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Name the inefficient query shapes and the index that fixes them"
+        description: >-
+          From Performance Advisor: NAME the namespace and query shape with the
+          highest inefficiencyScore / count, and the suggested index for it. Interpret:
+          a suggested index on that namespace => that index is the fix. Shapes but no
+          suggestion => the query is unselective by design (e.g. regex, $ne, large
+          $in) — needs a query/schema change. No shapes => the offending queries ran
+          below the slow-query threshold; say the advisor has no attribution yet.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "add_suggested_index"
+        description: "ONLY if step 2 returned a suggested index: create it (rolling build) on the named namespace."
+        tool_id: ""
+        requires_approval: true
+      - action: "fix_unselective_query"
+        description: "If step 2 shows shapes without a suggestion: rewrite the named query to use a selective indexed predicate or add a compound index matching its filter+sort."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team for the named query."
+    follow_up:
+      - "Confirm the query-targeting alert closes after the index is built."
+
+  - name: "MongoAtlasIndexSuggestions"
+    patterns:
+      [
+        "Host has index suggestions",
+        "index suggestions",
+        "NEW_INDEX_SUGGESTIONS",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and read the suggested indexes"
+        description: >-
+          "Host has index suggestions" (fires immediately, re-notifies every 60 min)
+          is advisory: Performance Advisor found slow queries on $host that a new
+          index would speed up. From get_performance_advisor list EACH suggested index
+          with its namespace and weight, and the query shapes (avgMs, count) it would
+          fix. Interpret: high weight / high count × avgMs => worth building now;
+          low weight => schedule. Mention dropIndexSuggestions when present (removing
+          unused indexes offsets the cost of a new one).
+        tool_calls:
+          - *resolve_project
+          - *query_workload
+      - step: 2
+        title: "Check for resource impact on the same host"
+        description: >-
+          From list_alerts: CPU (User), Memory % or Query Targeting open on the same
+          host => the missing index is already hurting the cluster; raise urgency from
+          advisory to action.
+        tool_calls:
+          - *open_alerts
+    remediation:
+      - action: "build_suggested_index"
+        description: "Create the suggested index(es) step 1 named (rolling build, off-peak for large collections)."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team — advisory unless step 2 shows resource alerts on the same host."
+    follow_up:
+      - "Confirm the suggestion disappears from Performance Advisor after the index is built."
+
+  # ============================================================ CONNECTIONS
+  - name: "MongoAtlasConnectionsHigh"
+    patterns:
+      [
+        "Connections % of configured limit",
+        "% of configured limit",
+        "CONNECTIONS_PERCENT",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the Atlas project and confirm how close the host is to its connection limit"
+        description: >-
+          "Connections % of configured limit above 85" (fires after 5 min, re-notifies
+          every 10 min): at 100% Atlas refuses new connections and clients fail to
+          connect. From list_alerts cite currentValue on $host. Interpret: > 95 =>
+          imminent connection refusals. Memory % open together => connection memory
+          is contributing to RAM pressure. CPU open together => slow queries are
+          holding connections longer (step 3).
+        tool_calls:
+          - *resolve_project
+          - *open_alerts
+      - step: 2
+        title: "Check the tier — it sets the connection limit"
+        description: >-
+          From inspect_cluster: the connection limit is fixed by the tier
+          (instanceSize — e.g. M10 1500, M20 3000, M30 3000, M40 6000 per member).
+          Interpret: a low tier with many application pods => the aggregate client
+          pool sizes exceed the tier's limit; either shrink pools or move up a tier.
+        tool_calls:
+          - *cluster_config
+      - step: 3
+        title: "Check whether slow queries are holding connections"
+        description: >-
+          From Performance Advisor: slow shapes with high avgMs keep connections busy
+          and force pools to open more. NAME them. Honest gap: per-client connection
+          counts (which application holds them) need a currentOp/connection tool that
+          is not available yet — say so rather than naming a client.
+        tool_calls:
+          - *query_workload
+    remediation:
+      - action: "cap_client_pools"
+        description: "Reduce maxPoolSize on the applications connecting to $cluster so the sum of pools stays under the tier's limit; fix connection leaks (clients not reused per process)."
+        tool_id: ""
+        requires_approval: true
+      - action: "scale_tier_for_connection_limit"
+        description: "If the connection count is legitimate for the workload: move to a tier with a higher connection limit."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service teams (pool configuration) + DB owner when currentValue > 95 on the primary."
+    follow_up:
+      - "Confirm the connections alert closes after pool changes."
+      - "A connection-by-client tool (currentOp / $currentOp appName) would name the application holding connections — deferred."
+
+escalation: >-
+  Route Atlas alerts to the owning service team first when the cause is a query,
+  index or connection-pool issue named by the tools; to the platform/DB owner for
+  tier, disk and autoscaling changes; and to Atlas support (via the DB owner) for
+  no-primary / no-mongos conditions that are not explained by a planned Atlas
+  operation — Atlas-managed nodes cannot be repaired from our side.
+
+follow_up:
+  - "Project resolution: ask the Atlas webhook integration to put groupId (and project name) in impacted_entities so $groupId comes from the alert instead of list_projects."
+  - "Add Atlas measurements (host metrics history), currentOp and dbStats/collStats read tools to the integration so trends, the exact running operation and per-collection sizes can be cited."
