@@ -496,6 +496,9 @@
 
 ## runbooks without alert rules
 
+- [clickhouse.md](runbooks/databases/clickhouse.md)
+- [elasticsearch-cloud.yaml](runbooks/databases/elasticsearch-cloud.yaml)
+- [mongodb-atlas.yaml](runbooks/databases/mongodb-atlas.yaml)
 - [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
 - [service-error-logs.yaml](runbooks/logs/service-error-logs.yaml)
 - [service-latency.yaml](runbooks/observability/service-latency.yaml)
