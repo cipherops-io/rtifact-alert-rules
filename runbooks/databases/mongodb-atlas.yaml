@@ -85,7 +85,7 @@ resolve_project:
   params:
     arguments:
       itemsPerPage: 100
-      pageNum: $pageNum
+      pageNum: 1
       includeCount: false
 resolve_cluster:
   tool_id: mcp.mongodb-atlas.list_clusters
@@ -110,7 +110,7 @@ open_alerts:
       projectId: $groupId
       status: OPEN
       itemsPerPage: 100
-      pageNum: $pageNum
+      pageNum: 1
       includeCount: false
     timeout: 20
 tracking_alerts:
@@ -124,7 +124,7 @@ tracking_alerts:
       projectId: $groupId
       status: TRACKING
       itemsPerPage: 100
-      pageNum: $pageNum
+      pageNum: 1
       includeCount: false
     timeout: 20
 closed_alerts:
@@ -140,7 +140,7 @@ closed_alerts:
       projectId: $groupId
       status: CLOSED
       itemsPerPage: 100
-      pageNum: $pageNum
+      pageNum: 1
       includeCount: false
     timeout: 20
 cluster_config:
@@ -314,7 +314,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -493,7 +493,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -673,7 +673,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -781,7 +781,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -884,7 +884,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -989,7 +989,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -1134,7 +1134,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -1319,7 +1319,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -1480,7 +1480,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -1647,7 +1647,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
@@ -1812,7 +1812,7 @@ common_alerts:
                 projectId: $groupId
                 status: OPEN
                 itemsPerPage: 100
-                pageNum: $pageNum
+                pageNum: 1
                 includeCount: false
               timeout: 20
       - step: 2
