@@ -1,733 +1,1668 @@
+# Monitoring-only runbook: 13 alert rules.
 tech_stack: elasticsearch-cloud
-version: "1.0"
-description: >-
-  Runbook for Elastic Cloud (Elasticsearch Service) stack-monitoring alerts
-  (RTI-1133: the 13 recommended Kibana monitoring rules on the commotion tcprod
-  deployments). Titles arrive as "[ElasticCloud] <cluster>: <rule name>", e.g.
-  "[ElasticCloud] izo-es1 (a570d6): Cluster health check" (older alerts:
-  "<cluster> / <node>: <rule name>"); impacted_entities.cluster is the deployment's
-  display name ("izo-es1 (a570d6)") and node-scoped rules add impacted_entities.node
-  ("instance-0000000000").
-  WHERE THE DATA IS: the monitored clusters ship metricbeat stack-monitoring data to a
-  SEPARATE observability deployment (commotion-observability). The integration's
-  Elasticsearch tools are connected to THAT deployment, so every step here reads the
-  alerting cluster's monitoring documents from `.monitoring-es-8-mb` (cluster_stats,
-  node_stats, shard, index metricsets) and the Kibana rules' own alert documents from
-  `.internal.alerts-default.alerts-default-*`. Do NOT use cluster_health / cat_shards /
-  nodes_stats / cluster_allocation_explain for the alerting cluster — they describe
-  the observability deployment itself, not the cluster that fired.
-  CLUSTER RESOLUTION: step 1 finds the latest cluster_stats document whose
-  cluster_settings.cluster.metadata.display_name equals the alert's cluster and binds
-  its elasticsearch.cluster.id ($clusterUuid) for every later query. If step 1
-  returns no document, the cluster has shipped NO monitoring data in the last hour
-  (or the display name changed) — say so; every later step is then NOT RUN
-  ("unresolved placeholder(s) $clusterUuid"), which is the same finding, not a
-  separate failure.
-  TOOL LIMITS: the search tool returns at most 10 hits and no aggregations, so node /
-  shard / index lists are the TOP 10 by the step's sort key — say "at least" when a
-  list is full. Byte values are raw bytes (÷ 1073741824 for GiB). Thread-pool
-  rejected counts are cumulative since node start, not a rate. Report every finding
-  against the alert's OWN cluster and, for node rules, its node.
-
+version: '2.0'
+description: |-
+  Monitoring-only Elasticsearch Cloud RCA runbook. All queries use the existing connection to commotion-observability (observed version 8.19.21). The four source deployments are represented only by their exported documents. No source deployment API calls and no writes. Preserve the tested search_query_dsl wrapper and params.arguments/bind/rows/fields shape. This revision has been statically validated; new queries have NOT been executed against the deployment.
+  The core uses $cluster (exact display name), optional $node (alert node name/ID), and $rtfRunbookResolvedClusterUuid (bound by resolve_cluster). Reserve rtfRunbookResolvedClusterUuid for runbook binding; do not supply it as an alert/context label. Existing clusterUuid labels do not control query scoping. The supplied gateway bind_value requires one distinct UUID and the executor skips calls with unresolved placeholders. Missing $node skips only node-specific calls. Coverage and interpretation guidance in descriptions is not an executable condition.
+  CORE TIME SCOPE: now-relative calls assess current/recent condition; they cannot reconstruct a delayed alert's onset. Preserve incoming alert time, threshold, duration, measured value, node/index and source UUID. For delayed/replayed alerts use the incident window catalog before explaining why the alert originally fired. Record execution time and the observation time/range of every result. Monitoring is not guaranteed to be ten seconds fresh. Measure staleness per metricset against observed/configured cadence. Missing, stale, partial, capped and failed results mean unknown evidence, never healthy/zero.
+  IDENTITY: require an exact display name that resolves to one UUID within the seven-day lookup window. Zero or multiple UUIDs leave dependent queries NOT RUN. An incoming clusterUuid is retained as alert context but is not used for query filters or as a fallback. A disagreement between incoming UUID and resolved identity must be reported as an identity mismatch, not silently treated as reliable incident attribution. Automatic comparison of those two values is not supported by this executor. A missing or renamed display name can therefore produce insufficient evidence. Never remove UUID filters to get results or substitute the monitoring deployment identity for an unresolved source.
+  LIMITS: search returns at most ten hits and its current wrapper drops aggregations. size is explicitly bounded to ten. A full result is possibly truncated; say 'up to ten returned' and do not infer total entities from hit count. Missing nodes/indices in capped lists prove nothing. No DSL aggregations, inner_hits or undocumented response extraction are required. ES|QL response handling is separate from hit-array handling.
+  INTERPRETATION: latest-per-entity queries sort by timestamp; peak queries are labelled peaks. Filtered unhealthy rows are history, not guaranteed latest states. Counter deltas require same UUID/node ID, correct temporal order, matching epoch and no reset; resets can be missed if samples are sparse. No nonzero lifetime counter proves a current failure. Use numeric byte/elapsed-time formulas in the guide. Do not infer percentage scaling from the suffix pct or from a small number. Alert thresholds/durations come from the actual alert, never hard-code sample rule thresholds.
+  RCA OUTPUT: source cluster/UUID and rule/instance; incident and evidence times; coverage/freshness; observed status and impact; evidence-supported likely cause with confidence; alternative causes and missing evidence; owner recommendations; recovery evidence. Distinguish confirmed finding, supported hypothesis and unknown. A correlation between two alerts is not a proven cause. The monitoring-only scope may identify a cause or narrow it down; it cannot guarantee the offending query, exact allocation decider, source ILM policy or Cloud plan history.
 match_keywords:
-  - elasticcloud
-  - elastic cloud
-  - elasticsearch cloud
-  - stack monitoring
-
+- elasticcloud
+- elastic cloud
+- elasticsearch cloud
+- stack monitoring
 categories:
-  - DATA
-  - DATABASE
-  - SEARCH
-
+- DATA
+- DATABASE
+- SEARCH
 available_tools:
-  - "mcp.elasticsearch.search_query_dsl — query DSL search (max 10 hits, no aggregations) over the observability deployment's monitoring data"
-
-# ── Reusable pieces ───────────────────────────────────────────────────────────
-node_source: &node_source
-  - "@timestamp"
-  - "elasticsearch.node.name"
-  - "elasticsearch.node.master"
-  - "elasticsearch.node.roles"
-  - "elasticsearch.node.stats.jvm.mem.heap.used.pct"
-  - "elasticsearch.node.stats.jvm.mem.heap.max.bytes"
-  - "elasticsearch.node.stats.os.cpu.load_avg.1m"
-  - "elasticsearch.node.stats.os.cgroup.cpu.cfs.quota.us"
-  - "elasticsearch.node.stats.os.cgroup.cpu.stat.times_throttled.count"
-  - "elasticsearch.node.stats.fs.summary.total.bytes"
-  - "elasticsearch.node.stats.fs.summary.available.bytes"
-  - "elasticsearch.node.stats.thread_pool.search.rejected.count"
-  - "elasticsearch.node.stats.thread_pool.search.queue.count"
-  - "elasticsearch.node.stats.thread_pool.write.rejected.count"
-  - "elasticsearch.node.stats.thread_pool.write.queue.count"
-  - "elasticsearch.node.stats.indices.store.size.bytes"
-  - "elasticsearch.node.stats.indices.docs.count"
-
-node_fields: &node_fields
-  - "node=elasticsearch.node.name"
-  - "master=elasticsearch.node.master"
-  - "roles=elasticsearch.node.roles"
-  - "heap_pct=elasticsearch.node.stats.jvm.mem.heap.used.pct"
-  - "heap_max_bytes=elasticsearch.node.stats.jvm.mem.heap.max.bytes"
-  - "load_1m=elasticsearch.node.stats.os.cpu.load_avg.1m"
-  - "cpu_quota_us=elasticsearch.node.stats.os.cgroup.cpu.cfs.quota.us"
-  - "cpu_throttled=elasticsearch.node.stats.os.cgroup.cpu.stat.times_throttled.count"
-  - "disk_total_bytes=elasticsearch.node.stats.fs.summary.total.bytes"
-  - "disk_avail_bytes=elasticsearch.node.stats.fs.summary.available.bytes"
-  - "search_rejected=elasticsearch.node.stats.thread_pool.search.rejected.count"
-  - "search_queue=elasticsearch.node.stats.thread_pool.search.queue.count"
-  - "write_rejected=elasticsearch.node.stats.thread_pool.write.rejected.count"
-  - "write_queue=elasticsearch.node.stats.thread_pool.write.queue.count"
-  - "store_bytes=elasticsearch.node.stats.indices.store.size.bytes"
-  - "at=@timestamp"
-
-node_filter: &node_filter
-  - { term: { elasticsearch.cluster.id: "$clusterUuid" } }
-  - { term: { metricset.name: "node_stats" } }
-  - { range: { "@timestamp": { gte: "now-10m" } } }
-
-resolve_cluster: &resolve_cluster
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest cluster_stats document for the alert's cluster (by display name); binds $clusterUuid and reports health, node count, versions, shards, storage, heap and license."
+- mcp.elasticsearch.search_query_dsl — existing tested hit-array adapter; actual MCP name elasticsearch-search-query-dsl-1;
+  all targets on commotion-observability.
+identity_candidates: &identity_candidates
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: 'Identity check, not a current-health query. Exact display-name matches in retained seven-day data;
+    up to ten distinct UUIDs. More than one UUID means ambiguous identity: do not attribute an RCA automatically.'
   params:
     arguments:
-      index: ".monitoring-es-8-mb"
+      index: .monitoring-es-8-mb
       body:
+        size: 10
         query:
           bool:
             filter:
-              - { term: { metricset.name: "cluster_stats" } }
-              - { term: { cluster_settings.cluster.metadata.display_name: "$cluster" } }
-              - { range: { "@timestamp": { gte: "now-1h" } } }
-        sort: [{ "@timestamp": "desc" }]
+            - term:
+                metricset.name: cluster_stats
+            - term:
+                cluster_settings.cluster.metadata.display_name: $cluster
+            - range:
+                '@timestamp':
+                  gte: now-7d
+                  lte: now
+        sort:
+        - '@timestamp': desc
         _source:
-          - "@timestamp"
-          - "elasticsearch.cluster.id"
-          - "cluster_settings.cluster.metadata.display_name"
-          - "elasticsearch.cluster.stats.status"
-          - "elasticsearch.cluster.stats.nodes.count"
-          - "elasticsearch.cluster.stats.nodes.versions"
-          - "elasticsearch.cluster.stats.nodes.fs"
-          - "elasticsearch.cluster.stats.nodes.jvm.memory"
-          - "elasticsearch.cluster.stats.nodes.jvm.max_uptime.ms"
-          - "elasticsearch.cluster.stats.indices.shards"
-          - "elasticsearch.cluster.stats.indices.docs.total"
-          - "elasticsearch.cluster.stats.indices.store.size.bytes"
-          - "elasticsearch.cluster.stats.license.status"
-          - "elasticsearch.cluster.stats.license.type"
-          - "elasticsearch.cluster.stats.license.expiry_date"
+        - '@timestamp'
+        - elasticsearch.cluster.id
+        - cluster_settings.cluster.metadata.display_name
+        collapse:
+          field: elasticsearch.cluster.id
+    rows: '[*]._source'
+    fields:
+    - at=@timestamp
+    - cluster_uuid=elasticsearch.cluster.id
+    - display_name=cluster_settings.cluster.metadata.display_name
+    summary_chars: 12000
+resolve_cluster: &resolve_cluster
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Resolve exact $cluster display name across retained seven-day cluster_stats. Return up to ten DISTINCT
+    cluster UUIDs. The gateway bind_value accepts only one distinct UUID; zero or multiple candidates leave the
+    dedicated runbook variable unresolved, so dependent calls are not sent. Do not fall back to an incoming clusterUuid.
+    This is identity evidence, not current health.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        query:
+          bool:
+            filter:
+            - term:
+                metricset.name: cluster_stats
+            - term:
+                cluster_settings.cluster.metadata.display_name: $cluster
+            - range:
+                '@timestamp':
+                  gte: now-7d
+                  lte: now
+        sort:
+        - '@timestamp': desc
+        _source: &id001
+        - '@timestamp'
+        - elasticsearch.cluster.id
+        - cluster_settings.cluster.metadata.display_name
+        - elasticsearch.cluster.stats.status
+        - elasticsearch.cluster.stats.nodes.count
+        - elasticsearch.cluster.stats.nodes.versions
+        - elasticsearch.cluster.stats.nodes.fs
+        - elasticsearch.cluster.stats.nodes.jvm.memory
+        - elasticsearch.cluster.stats.nodes.jvm.max_uptime.ms
+        - elasticsearch.cluster.stats.indices.shards
+        - elasticsearch.cluster.stats.indices.docs.total
+        - elasticsearch.cluster.stats.indices.store.size.bytes
+        - elasticsearch.cluster.stats.license.status
+        - elasticsearch.cluster.stats.license.type
+        - elasticsearch.cluster.stats.license.expiry_date
+        - elasticsearch.cluster.stats.indices.total
+        - cluster_settings.cluster.routing.allocation
+        size: 10
+        collapse:
+          field: elasticsearch.cluster.id
     bind:
-      clusterUuid: { pick: "_source.elasticsearch.cluster.id" }
+      rtfRunbookResolvedClusterUuid:
+        pick: _source.elasticsearch.cluster.id
     fields:
-      - "latest_sample_at=[0]._source.@timestamp"
-      - "cluster=[0]._source.cluster_settings.cluster.metadata.display_name"
-      - "cluster_uuid=[0]._source.elasticsearch.cluster.id"
-      - "status=[0]._source.elasticsearch.cluster.stats.status"
-      - "nodes=[0]._source.elasticsearch.cluster.stats.nodes.count"
-      - "es_versions=[0]._source.elasticsearch.cluster.stats.nodes.versions"
-      - "shards_total=[0]._source.elasticsearch.cluster.stats.indices.shards.count"
-      - "shards_primary=[0]._source.elasticsearch.cluster.stats.indices.shards.primaries"
-      - "docs=[0]._source.elasticsearch.cluster.stats.indices.docs.total"
-      - "store_bytes=[0]._source.elasticsearch.cluster.stats.indices.store.size.bytes"
-      - "disk_total_bytes=[0]._source.elasticsearch.cluster.stats.nodes.fs.total.bytes"
-      - "disk_avail_bytes=[0]._source.elasticsearch.cluster.stats.nodes.fs.available.bytes"
-      - "heap_used_bytes=[0]._source.elasticsearch.cluster.stats.nodes.jvm.memory.heap.used.bytes"
-      - "heap_max_bytes=[0]._source.elasticsearch.cluster.stats.nodes.jvm.memory.heap.max.bytes"
-      - "max_node_uptime_ms=[0]._source.elasticsearch.cluster.stats.nodes.jvm.max_uptime.ms"
-      - "license=[0]._source.elasticsearch.cluster.stats.license.status"
-      - "license_type=[0]._source.elasticsearch.cluster.stats.license.type"
-      - "license_expiry=[0]._source.elasticsearch.cluster.stats.license.expiry_date"
-
+    - latest_sample_at=@timestamp
+    - cluster=cluster_settings.cluster.metadata.display_name
+    - cluster_uuid=elasticsearch.cluster.id
+    - status=elasticsearch.cluster.stats.status
+    - nodes=elasticsearch.cluster.stats.nodes.count
+    - es_versions=elasticsearch.cluster.stats.nodes.versions
+    - shards_total=elasticsearch.cluster.stats.indices.shards.count
+    - shards_primary=elasticsearch.cluster.stats.indices.shards.primaries
+    - docs=elasticsearch.cluster.stats.indices.docs.total
+    - store_bytes=elasticsearch.cluster.stats.indices.store.size.bytes
+    - disk_total_bytes=elasticsearch.cluster.stats.nodes.fs.total.bytes
+    - disk_avail_bytes=elasticsearch.cluster.stats.nodes.fs.available.bytes
+    - heap_used_bytes=elasticsearch.cluster.stats.nodes.jvm.memory.heap.used.bytes
+    - heap_max_bytes=elasticsearch.cluster.stats.nodes.jvm.memory.heap.max.bytes
+    - max_node_uptime_ms=elasticsearch.cluster.stats.nodes.jvm.max_uptime.ms
+    - license=elasticsearch.cluster.stats.license.status
+    - license_type=elasticsearch.cluster.stats.license.type
+    - license_expiry=elasticsearch.cluster.stats.license.expiry_date
+    summary_chars: 7000
+    rows: '[*]._source'
+cluster_current: &cluster_current
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Most recent cluster_stats within fifteen minutes. Cite the exact timestamp; an empty result does
+    not prove downtime.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: cluster_stats
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+        sort:
+        - '@timestamp': desc
+        _source: *id001
+    rows: '[*]._source'
+    fields: &id002
+    - latest_sample_at=@timestamp
+    - cluster=cluster_settings.cluster.metadata.display_name
+    - cluster_uuid=elasticsearch.cluster.id
+    - status=elasticsearch.cluster.stats.status
+    - nodes=elasticsearch.cluster.stats.nodes.count
+    - es_versions=elasticsearch.cluster.stats.nodes.versions
+    - shards_total=elasticsearch.cluster.stats.indices.shards.count
+    - shards_primary=elasticsearch.cluster.stats.indices.shards.primaries
+    - docs=elasticsearch.cluster.stats.indices.docs.total
+    - store_bytes=elasticsearch.cluster.stats.indices.store.size.bytes
+    - disk_total_bytes=elasticsearch.cluster.stats.nodes.fs.total.bytes
+    - disk_avail_bytes=elasticsearch.cluster.stats.nodes.fs.available.bytes
+    - heap_used_bytes=elasticsearch.cluster.stats.nodes.jvm.memory.heap.used.bytes
+    - heap_max_bytes=elasticsearch.cluster.stats.nodes.jvm.memory.heap.max.bytes
+    - max_node_uptime_ms=elasticsearch.cluster.stats.nodes.jvm.max_uptime.ms
+    - license=elasticsearch.cluster.stats.license.status
+    - license_type=elasticsearch.cluster.stats.license.type
+    - license_expiry=elasticsearch.cluster.stats.license.expiry_date
+    - allocation_settings_if_exported=cluster_settings.cluster.routing.allocation
+    summary_chars: 12000
+cluster_baseline: &cluster_baseline
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: One earlier cluster snapshot, at least fifteen minutes old, for comparison with current. This is
+    a sample, not a complete incident timeline.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: cluster_stats
+            - range:
+                '@timestamp':
+                  gte: now-2h
+                  lte: now-15m
+        sort:
+        - '@timestamp': desc
+        _source: *id001
+    rows: '[*]._source'
+    fields: *id002
+    summary_chars: 12000
+cluster_unhealthy_history: &cluster_unhealthy_history
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Up to ten yellow/red observations during the last hour. These are historical observations; use cluster_current
+    to assess the latest recorded status.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: cluster_stats
+            - range:
+                '@timestamp':
+                  gte: now-1h
+                  lte: now
+            - terms:
+                elasticsearch.cluster.stats.status:
+                - yellow
+                - red
+        sort:
+        - '@timestamp': desc
+        _source: *id001
+    rows: '[*]._source'
+    fields: *id002
+    summary_chars: 12000
+latest_any_metric: &latest_any_metric
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Latest retained document of ANY Elasticsearch metricset for the resolved source UUID. Distinguishes
+    a missing cluster_stats stream from all monitored metricsets being stale.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - range:
+                '@timestamp':
+                  gte: now-7d
+                  lte: now
+        sort:
+        - '@timestamp': desc
+        _source:
+        - '@timestamp'
+        - metricset.name
+        - event.dataset
+        - elasticsearch.cluster.id
+        - elasticsearch.node.id
+        - elasticsearch.node.name
+    rows: '[*]._source'
+    fields:
+    - at=@timestamp
+    - metricset=metricset.name
+    - dataset=event.dataset
+    - cluster_uuid=elasticsearch.cluster.id
+    - node_id=elasticsearch.node.id
+    - node=elasticsearch.node.name
+    summary_chars: 12000
 rule_alerts: &rule_alerts
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "The Kibana monitoring rules' own alert documents for this cluster (last 24h): which rules fired, active vs recovered, since when, and the rule's reason text."
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: 'Recent related alert records, plus still-active records even if older than seven days. The tested
+    reason.text phrase match provides candidates: confirm the same cluster, exact rule, node/instance and incident.
+    Empty results or ten capped results never prove no alert exists. Recovery requires the matching instance and
+    a recorded end/recovery time.'
   params:
     arguments:
-      index: ".internal.alerts-default.alerts-default-*"
+      index: .internal.alerts-default.alerts-default-*
       body:
+        size: 10
         query:
           bool:
             filter:
-              - { match_phrase: { kibana.alert.reason.text: "$cluster" } }  # reason is keyword; .text is the phrase-searchable subfield
-              - { range: { "@timestamp": { gte: "now-24h" } } }
-        sort: [{ "@timestamp": "desc" }]
-        _source: ["@timestamp", "kibana.alert.rule.name", "kibana.alert.status", "kibana.alert.start", "kibana.alert.flapping", "kibana.alert.reason"]
-    rows: "[*]._source"
+            - match_phrase:
+                kibana.alert.reason.text: $cluster
+            - bool:
+                should:
+                - range:
+                    '@timestamp':
+                      gte: now-7d
+                      lte: now
+                - term:
+                    kibana.alert.status: active
+                minimum_should_match: 1
+        sort:
+        - '@timestamp': desc
+        _source:
+        - '@timestamp'
+        - kibana.alert.uuid
+        - kibana.alert.instance.id
+        - kibana.alert.rule.name
+        - kibana.alert.rule.rule_type_id
+        - kibana.alert.rule.uuid
+        - kibana.alert.status
+        - kibana.alert.start
+        - kibana.alert.end
+        - kibana.alert.last_detected
+        - kibana.alert.flapping
+        - kibana.alert.reason
+        - kibana.alert.rule.parameters
+    rows: '[*]._source'
     fields:
-      - "rule=kibana.alert.rule.name"
-      - "status=kibana.alert.status"
-      - "since=kibana.alert.start"
-      - "last=@timestamp"
-      - "flapping=kibana.alert.flapping"
-      - "reason=kibana.alert.reason"
-    summary_chars: 2500
-
-nodes_by_heap: &nodes_by_heap
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest node_stats per node (last 10m), highest JVM heap % first."
+    - at=@timestamp
+    - alert_uuid=kibana.alert.uuid
+    - instance=kibana.alert.instance.id
+    - rule=kibana.alert.rule.name
+    - rule_type=kibana.alert.rule.rule_type_id
+    - status=kibana.alert.status
+    - start=kibana.alert.start
+    - end=kibana.alert.end
+    - last_detected=kibana.alert.last_detected
+    - flapping=kibana.alert.flapping
+    - reason=kibana.alert.reason
+    - parameters_if_exported=kibana.alert.rule.parameters
+    summary_chars: 12000
+nodes_latest: &nodes_latest
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: 'Actual latest node_stats per node: collapse by node ID, sort by timestamp descending. This is a
+    capped sample of at most ten nodes, not the full inventory when the cap is reached.'
   params:
     arguments:
-      index: ".monitoring-es-8-mb"
+      index: .monitoring-es-8-mb
       body:
-        query: { bool: { filter: *node_filter } }
-        collapse: { field: "elasticsearch.node.id" }
-        sort: [{ elasticsearch.node.stats.jvm.mem.heap.used.pct: "desc" }]
-        _source: *node_source
-    rows: "[*]._source"
-    fields: *node_fields
-    summary_chars: 3000
-
-nodes_by_disk: &nodes_by_disk
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest node_stats per node (last 10m), least free disk first."
-  params:
-    arguments:
-      index: ".monitoring-es-8-mb"
-      body:
-        query: { bool: { filter: *node_filter } }
-        collapse: { field: "elasticsearch.node.id" }
-        sort: [{ elasticsearch.node.stats.fs.summary.available.bytes: "asc" }]
-        _source: *node_source
-    rows: "[*]._source"
-    fields: *node_fields
-    summary_chars: 3000
-
-nodes_by_load: &nodes_by_load
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest node_stats per node (last 10m), highest 1-minute load first."
-  params:
-    arguments:
-      index: ".monitoring-es-8-mb"
-      body:
-        query: { bool: { filter: *node_filter } }
-        collapse: { field: "elasticsearch.node.id" }
-        sort: [{ elasticsearch.node.stats.os.cpu.load_avg.1m: "desc" }]
-        _source: *node_source
-    rows: "[*]._source"
-    fields: *node_fields
-    summary_chars: 3000
-
-nodes_by_write_rejections: &nodes_by_write_rejections
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest node_stats per node (last 10m), most write-pool rejections first."
-  params:
-    arguments:
-      index: ".monitoring-es-8-mb"
-      body:
-        query: { bool: { filter: *node_filter } }
-        collapse: { field: "elasticsearch.node.id" }
-        sort: [{ elasticsearch.node.stats.thread_pool.write.rejected.count: "desc" }]
-        _source: *node_source
-    rows: "[*]._source"
-    fields: *node_fields
-    summary_chars: 3000
-
-nodes_by_search_rejections: &nodes_by_search_rejections
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Latest node_stats per node (last 10m), most search-pool rejections first."
-  params:
-    arguments:
-      index: ".monitoring-es-8-mb"
-      body:
-        query: { bool: { filter: *node_filter } }
-        collapse: { field: "elasticsearch.node.id" }
-        sort: [{ elasticsearch.node.stats.thread_pool.search.rejected.count: "desc" }]
-        _source: *node_source
-    rows: "[*]._source"
-    fields: *node_fields
-    summary_chars: 3000
-
-unassigned_shards: &unassigned_shards
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Shards NOT in STARTED state in the latest shard snapshot (one per index): which indices, primary or replica."
-  params:
-    arguments:
-      index: ".monitoring-es-8-mb"
-      body:
+        size: 10
         query:
           bool:
             filter:
-              - { term: { elasticsearch.cluster.id: "$clusterUuid" } }
-              - { term: { metricset.name: "shard" } }
-              # shard snapshots are infrequent (observed ~10+ min apart); `at` on each row shows its age
-              - { range: { "@timestamp": { gte: "now-1h" } } }
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-10m
+                  lte: now
+            - exists:
+                field: elasticsearch.node.id
+        sort:
+        - '@timestamp': desc
+        _source: &id003
+        - '@timestamp'
+        - elasticsearch.node.name
+        - elasticsearch.node.master
+        - elasticsearch.node.roles
+        - elasticsearch.node.stats.jvm.mem.heap.used.pct
+        - elasticsearch.node.stats.jvm.mem.heap.max.bytes
+        - elasticsearch.node.stats.os.cpu.load_avg.1m
+        - elasticsearch.node.stats.os.cgroup.cpu.cfs.quota.us
+        - elasticsearch.node.stats.os.cgroup.cpu.stat.times_throttled.count
+        - elasticsearch.node.stats.fs.summary.total.bytes
+        - elasticsearch.node.stats.fs.summary.available.bytes
+        - elasticsearch.node.stats.thread_pool.search.rejected.count
+        - elasticsearch.node.stats.thread_pool.search.queue.count
+        - elasticsearch.node.stats.thread_pool.write.rejected.count
+        - elasticsearch.node.stats.thread_pool.write.queue.count
+        - elasticsearch.node.stats.indices.store.size.bytes
+        - elasticsearch.node.stats.indices.docs.count
+        - elasticsearch.node.id
+        - elasticsearch.node.stats.jvm.mem.heap.used.bytes
+        - elasticsearch.node.stats.jvm.uptime.ms
+        - node_stats.jvm.uptime_in_millis
+        - elasticsearch.node.stats.jvm.gc
+        - elasticsearch.node.stats.indices.fielddata
+        - elasticsearch.node.stats.indices.query_cache
+        - elasticsearch.node.stats.indices.request_cache
+        - elasticsearch.node.stats.indices.segments
+        - elasticsearch.node.stats.breakers
+        - elasticsearch.node.stats.process.cpu.pct
+        - elasticsearch.node.stats.os.cgroup.cpuacct.usage.ns
+        - elasticsearch.node.stats.os.cgroup.cpu.stat.elapsed_periods.count
+        - elasticsearch.node.stats.os.cgroup.cpu.stat.time_throttled.ns
+        - elasticsearch.node.stats.os.cgroup.cpu.cfs.period.us
+        - elasticsearch.node.stats.indices.indexing
+        - elasticsearch.node.stats.indices.search
+        collapse:
+          field: elasticsearch.node.id
+    rows: '[*]._source'
+    fields: &id004
+    - at=@timestamp
+    - node_id=elasticsearch.node.id
+    - node=elasticsearch.node.name
+    - roles=elasticsearch.node.roles
+    - heap_used_bytes=elasticsearch.node.stats.jvm.mem.heap.used.bytes
+    - heap_max_bytes=elasticsearch.node.stats.jvm.mem.heap.max.bytes
+    - heap_raw_pct=elasticsearch.node.stats.jvm.mem.heap.used.pct
+    - uptime_if_exported=elasticsearch.node.stats.jvm.uptime.ms
+    - legacy_uptime_if_exported=node_stats.jvm.uptime_in_millis
+    - load_1m=elasticsearch.node.stats.os.cpu.load_avg.1m
+    - process_cpu_raw_pct=elasticsearch.node.stats.process.cpu.pct
+    - cpu_usage_ns=elasticsearch.node.stats.os.cgroup.cpuacct.usage.ns
+    - cpu_quota_us=elasticsearch.node.stats.os.cgroup.cpu.cfs.quota.us
+    - cpu_period_us_if_exported=elasticsearch.node.stats.os.cgroup.cpu.cfs.period.us
+    - cpu_elapsed_periods=elasticsearch.node.stats.os.cgroup.cpu.stat.elapsed_periods.count
+    - cpu_throttled_periods=elasticsearch.node.stats.os.cgroup.cpu.stat.times_throttled.count
+    - disk_total_bytes=elasticsearch.node.stats.fs.summary.total.bytes
+    - disk_avail_bytes=elasticsearch.node.stats.fs.summary.available.bytes
+    - search_rejected=elasticsearch.node.stats.thread_pool.search.rejected.count
+    - search_queue=elasticsearch.node.stats.thread_pool.search.queue.count
+    - write_rejected=elasticsearch.node.stats.thread_pool.write.rejected.count
+    - write_queue=elasticsearch.node.stats.thread_pool.write.queue.count
+    - store_bytes=elasticsearch.node.stats.indices.store.size.bytes
+    - gc_if_exported=elasticsearch.node.stats.jvm.gc
+    - fielddata_if_exported=elasticsearch.node.stats.indices.fielddata
+    - query_cache_if_exported=elasticsearch.node.stats.indices.query_cache
+    - request_cache_if_exported=elasticsearch.node.stats.indices.request_cache
+    - breakers_if_exported=elasticsearch.node.stats.breakers
+    summary_chars: 12000
+nodes_baseline: &nodes_baseline
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Latest sample per node in an earlier 15-to-45-minute window. Compare by UUID plus node ID, never
+    by node name alone. A capped list cannot establish that a node is absent.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-45m
+                  lte: now-15m
+            - exists:
+                field: elasticsearch.node.id
+        sort:
+        - '@timestamp': desc
+        _source: *id003
+        collapse:
+          field: elasticsearch.node.id
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+target_node_latest: &target_node_latest
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Directly fetch the alert node even when it is not in the top ten cluster rows. $node is the name
+    or ID supplied by the alert; if absent, skip this call and use the cluster sample with its limit. A seven-day
+    result is last-known, not necessarily current.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-7d
+                  lte: now
+            - &id005
+              bool:
+                should:
+                - term:
+                    elasticsearch.node.name: $node
+                - term:
+                    elasticsearch.node.id: $node
+                minimum_should_match: 1
+        sort:
+        - '@timestamp': desc
+        _source: *id003
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+target_node_recent: &target_node_recent
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: 'Latest ten samples for the alert node within fifteen minutes. Ten hits may cover only seconds: report
+    the actual first/last timestamps, not a guaranteed fifteen-minute duration. Order chronologically for calculations.'
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - *id005
+        sort:
+        - '@timestamp': desc
+        _source: *id003
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+target_node_baseline: &target_node_baseline
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Latest available sample for the alert node between fifteen and forty-five minutes ago. Use only if
+    node identity and counter epoch match the current sample.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-45m
+                  lte: now-15m
+            - *id005
+        sort:
+        - '@timestamp': desc
+        _source: *id003
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+nodes_heap_peaks: &nodes_heap_peaks
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Highest observed heap per node within fifteen minutes; a PEAK, not current usage.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.node.stats.jvm.mem.heap.used.pct
+            - exists:
+                field: elasticsearch.node.id
+        sort:
+        - elasticsearch.node.stats.jvm.mem.heap.used.pct: desc
+        - '@timestamp': desc
+        _source: *id003
+        collapse:
+          field: elasticsearch.node.id
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+nodes_load_peaks: &nodes_load_peaks
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Highest observed load per node within fifteen minutes; load includes possible I/O waits and is not
+    CPU percentage.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.node.stats.os.cpu.load_avg.1m
+            - exists:
+                field: elasticsearch.node.id
+        sort:
+        - elasticsearch.node.stats.os.cpu.load_avg.1m: desc
+        - '@timestamp': desc
+        _source: *id003
+        collapse:
+          field: elasticsearch.node.id
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+nodes_disk_lows: &nodes_disk_lows
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Lowest observed available bytes per node in fifteen minutes. Absolute free bytes do not rank disk
+    percentage across different-sized nodes.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: node_stats
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.node.stats.fs.summary.available.bytes
+            - exists:
+                field: elasticsearch.node.id
+        sort:
+        - elasticsearch.node.stats.fs.summary.available.bytes: asc
+        - '@timestamp': desc
+        _source: *id003
+        collapse:
+          field: elasticsearch.node.id
+    rows: '[*]._source'
+    fields: *id004
+    summary_chars: 12000
+indices_latest: &indices_latest
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Latest document per index within fifteen minutes. At most ten indices. Shard totals are observed
+    monitoring statistics, not proof of configured number_of_replicas.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: index
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.index.name
+        sort:
+        - '@timestamp': desc
+        _source: &id006
+        - '@timestamp'
+        - elasticsearch.cluster.id
+        - elasticsearch.index.name
+        - elasticsearch.index.uuid
+        - elasticsearch.index.status
+        - elasticsearch.index.primaries.store.size_in_bytes
+        - elasticsearch.index.total.store.size_in_bytes
+        - elasticsearch.index.shards.primaries
+        - elasticsearch.index.shards.total
+        - elasticsearch.index.primaries.docs.count
+        collapse:
+          field: elasticsearch.index.name
+    rows: '[*]._source'
+    fields: &id007
+    - at=@timestamp
+    - index=elasticsearch.index.name
+    - index_uuid=elasticsearch.index.uuid
+    - status=elasticsearch.index.status
+    - primary_bytes=elasticsearch.index.primaries.store.size_in_bytes
+    - total_bytes=elasticsearch.index.total.store.size_in_bytes
+    - primary_shards=elasticsearch.index.shards.primaries
+    - observed_total_shards=elasticsearch.index.shards.total
+    - docs=elasticsearch.index.primaries.docs.count
+    summary_chars: 12000
+large_index_observations: &large_index_observations
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Ten indices with the highest OBSERVED primary bytes in the last fifteen minutes. Candidate contributors
+    to storage, not evidence of expensive queries or a bad ILM policy. Each row carries its observation time.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: index
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.index.primaries.store.size_in_bytes
+        sort:
+        - elasticsearch.index.primaries.store.size_in_bytes: desc
+        - '@timestamp': desc
+        _source: *id006
+        collapse:
+          field: elasticsearch.index.name
+    rows: '[*]._source'
+    fields: *id007
+    summary_chars: 12000
+large_average_shard_observations: &large_average_shard_observations
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Candidates ranked by observed average PRIMARY bytes per primary shard, not by whole-index size. Historical
+    peaks within fifteen minutes; average is not the largest individual shard. The read-only script sort requires
+    the tested numeric fields and script sorting to be permitted; a script failure is an evidence gap, not no oversized
+    shards.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: index
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - exists:
+                field: elasticsearch.index.primaries.store.size_in_bytes
+            - exists:
+                field: elasticsearch.index.shards.primaries
+        sort:
+        - _script:
+            type: number
+            script:
+              lang: painless
+              source: if (doc['elasticsearch.index.shards.primaries'].size()==0 || doc['elasticsearch.index.primaries.store.size_in_bytes'].size()==0
+                || doc['elasticsearch.index.shards.primaries'].value<=0) return -1; return (double)doc['elasticsearch.index.primaries.store.size_in_bytes'].value
+                / doc['elasticsearch.index.shards.primaries'].value;
+            order: desc
+        - '@timestamp': desc
+        _source: *id006
+        collapse:
+          field: elasticsearch.index.name
+    rows: '[*]._source'
+    fields: *id007
+    summary_chars: 12000
+nongreen_index_history: &nongreen_index_history
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Recent non-green INDEX OBSERVATIONS, not a latest-state inventory. Filtering before collapse can
+    retain old problems after recovery; corroborate using current cluster status and a direct latest-index query
+    in the evidence catalog.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: index
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - terms:
+                elasticsearch.index.status:
+                - yellow
+                - red
+        sort:
+        - '@timestamp': desc
+        _source: *id006
+        collapse:
+          field: elasticsearch.index.name
+    rows: '[*]._source'
+    fields: *id007
+    summary_chars: 12000
+latest_shard_sample: &latest_shard_sample
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Timestamp of the newest retained shard observation. It is one row, not proof that every shard has
+    been observed or that a batch is complete.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 1
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: shard
+            - range:
+                '@timestamp':
+                  gte: now-1h
+                  lte: now
+        sort:
+        - '@timestamp': desc
+        _source: &id008
+        - '@timestamp'
+        - elasticsearch.cluster.id
+        - elasticsearch.index.name
+        - elasticsearch.index.uuid
+        - elasticsearch.shard.number
+        - elasticsearch.shard.primary
+        - elasticsearch.shard.state
+        - elasticsearch.node.id
+        - elasticsearch.node.name
+    rows: '[*]._source'
+    fields: &id009
+    - at=@timestamp
+    - index=elasticsearch.index.name
+    - index_uuid=elasticsearch.index.uuid
+    - shard=elasticsearch.shard.number
+    - primary=elasticsearch.shard.primary
+    - state=elasticsearch.shard.state
+    - node_id=elasticsearch.node.id
+    - node=elasticsearch.node.name
+    summary_chars: 12000
+nonstarted_shard_history: &nonstarted_shard_history
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Up to ten recent non-STARTED shard observations, with no per-index collapse. May include repeated
+    observations and INITIALIZING/RELOCATING states. UNASSIGNED alone means unassigned. These are historical candidates
+    until a newer matching shard observation or fresh cluster status corroborates them.
+  params:
+    arguments:
+      index: .monitoring-es-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - term:
+                elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+            - term:
+                metricset.name: shard
+            - range:
+                '@timestamp':
+                  gte: now-1h
+                  lte: now
+            - exists:
+                field: elasticsearch.shard.state
             must_not:
-              - { term: { elasticsearch.shard.state: "STARTED" } }
-        collapse: { field: "elasticsearch.index.name" }
-        sort: [{ "@timestamp": "desc" }, { elasticsearch.shard.primary: "desc" }]
-        _source: ["@timestamp", "elasticsearch.index.name", "elasticsearch.shard.number", "elasticsearch.shard.primary", "elasticsearch.shard.state", "elasticsearch.node.name"]
-    rows: "[*]._source"
-    fields:
-      - "index=elasticsearch.index.name"
-      - "shard=elasticsearch.shard.number"
-      - "primary=elasticsearch.shard.primary"
-      - "state=elasticsearch.shard.state"
-      - "at=@timestamp"
-    summary_chars: 2500
-
-yellow_indices: &yellow_indices
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Indices that are NOT green (latest index snapshot): their primary and total shard counts give the configured replica count (total / primaries − 1)."
+            - term:
+                elasticsearch.shard.state: STARTED
+        sort:
+        - '@timestamp': desc
+        - elasticsearch.shard.primary: desc
+        _source: *id008
+    rows: '[*]._source'
+    fields: *id009
+    summary_chars: 12000
+source_logs: &source_logs
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Optional exported source-cluster log evidence. Only exact UUID matches are accepted. Zero hits can
+    mean the cluster field is different or logs are not collected; never treat this as proof of no errors. Data-stream
+    absence/403 is an evidence gap; other metric queries continue.
   params:
     arguments:
-      index: ".monitoring-es-8-mb"
+      index: elastic-cloud-logs-8
       body:
+        size: 10
         query:
           bool:
             filter:
-              - { term: { elasticsearch.cluster.id: "$clusterUuid" } }
-              - { term: { metricset.name: "index" } }
-              - { range: { "@timestamp": { gte: "now-15m" } } }
-            must_not:
-              - { term: { elasticsearch.index.status: "green" } }
-        collapse: { field: "elasticsearch.index.name" }
-        sort: [{ "@timestamp": "desc" }]
-        _source: ["elasticsearch.index.name", "elasticsearch.index.status", "elasticsearch.index.shards.primaries", "elasticsearch.index.shards.total", "elasticsearch.index.primaries.store.size_in_bytes"]
-    rows: "[*]._source.elasticsearch.index"
+            - range:
+                '@timestamp':
+                  gte: now-1h
+                  lte: now
+            - bool:
+                should:
+                - term:
+                    elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+                - term:
+                    elasticsearch.cluster.uuid: $rtfRunbookResolvedClusterUuid
+                - term:
+                    cluster.uuid: $rtfRunbookResolvedClusterUuid
+                - term:
+                    cluster_uuid: $rtfRunbookResolvedClusterUuid
+                minimum_should_match: 1
+            - bool:
+                should:
+                - terms:
+                    log.level:
+                    - WARN
+                    - ERROR
+                    - FATAL
+                    - warn
+                    - error
+                    - fatal
+                - match_phrase:
+                    message: node-left
+                - match_phrase:
+                    message: node-join
+                - match_phrase:
+                    message: gc overhead
+                minimum_should_match: 1
+        sort:
+        - '@timestamp': desc
+        _source:
+        - '@timestamp'
+        - message
+        - log.level
+        - event.dataset
+        - elasticsearch.cluster.id
+        - elasticsearch.cluster.uuid
+        - cluster.uuid
+        - cluster_uuid
+        - elasticsearch.node.id
+        - elasticsearch.node.name
+        - error.type
+        - error.message
+    rows: '[*]._source'
     fields:
-      - "index=name"
-      - "status=status"
-      - "primary_shards=shards.primaries"
-      - "total_shards=shards.total"
-      - "primary_bytes=primaries.store.size_in_bytes"
-    summary_chars: 2500
-
-largest_indices: &largest_indices
-  tool_id: "mcp.elasticsearch.search_query_dsl"
-  description: "Largest indices by primary store size (latest index snapshot): size, primary/total shard counts, status."
+    - at=@timestamp
+    - level=log.level
+    - dataset=event.dataset
+    - node=elasticsearch.node.name
+    - node_id=elasticsearch.node.id
+    - message=message
+    - error_type=error.type
+    - error_message=error.message
+    summary_chars: 12000
+kibana_source_versions: &kibana_source_versions
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Optional source-associated kibana version observations, at most ten raw rows. Exact source UUID filter.
+    Discover actual schema before concluding absence; never compare agent.version. Deduplicate to latest per instance
+    before comparing concurrent versions. Repeated rows may cover only one instance.
   params:
     arguments:
-      index: ".monitoring-es-8-mb"
+      index: .monitoring-kibana-8-mb
       body:
+        size: 10
         query:
           bool:
             filter:
-              - { term: { elasticsearch.cluster.id: "$clusterUuid" } }
-              - { term: { metricset.name: "index" } }
-              - { range: { "@timestamp": { gte: "now-15m" } } }
-        collapse: { field: "elasticsearch.index.name" }
-        sort: [{ elasticsearch.index.primaries.store.size_in_bytes: "desc" }]
-        _source: ["elasticsearch.index.name", "elasticsearch.index.status", "elasticsearch.index.primaries.store.size_in_bytes", "elasticsearch.index.total.store.size_in_bytes", "elasticsearch.index.shards.primaries", "elasticsearch.index.shards.total", "elasticsearch.index.primaries.docs.count"]
-    rows: "[*]._source.elasticsearch.index"
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - bool:
+                should:
+                - term:
+                    elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+                - term:
+                    cluster_uuid: $rtfRunbookResolvedClusterUuid
+                - term:
+                    kibana.stats.elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+                minimum_should_match: 1
+        sort:
+        - '@timestamp': desc
+        _source:
+        - '@timestamp'
+        - service.id
+        - service.name
+        - service.version
+        - kibana.stats.uuid
+        - kibana.stats.version
+        - kibana.settings.uuid
+        - kibana.settings.version
+        - elasticsearch.cluster.id
+        - cluster_uuid
+    rows: '[*]._source'
     fields:
-      - "index=name"
-      - "primary_bytes=primaries.store.size_in_bytes"
-      - "total_bytes=total.store.size_in_bytes"
-      - "primary_shards=shards.primaries"
-      - "total_shards=shards.total"
-      - "docs=primaries.docs.count"
-      - "status=status"
-    summary_chars: 2500
-
+    - at=@timestamp
+    - instance=service.id
+    - service=service.name
+    - version=service.version
+    - legacy_instance=kibana.stats.uuid
+    - legacy_version=kibana.stats.version
+    - settings_instance=kibana.settings.uuid
+    - settings_version=kibana.settings.version
+    summary_chars: 12000
+logstash_source_versions: &logstash_source_versions
+  tool_id: mcp.elasticsearch.search_query_dsl
+  description: Optional source-associated logstash version observations, at most ten raw rows. Exact source UUID
+    filter. Discover actual schema before concluding absence; never compare agent.version. Deduplicate to latest
+    per instance before comparing concurrent versions. Repeated rows may cover only one instance.
+  params:
+    arguments:
+      index: .monitoring-logstash-8-mb
+      body:
+        size: 10
+        query:
+          bool:
+            filter:
+            - range:
+                '@timestamp':
+                  gte: now-15m
+                  lte: now
+            - bool:
+                should:
+                - term:
+                    elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+                - term:
+                    cluster_uuid: $rtfRunbookResolvedClusterUuid
+                - term:
+                    logstash.elasticsearch.cluster.id: $rtfRunbookResolvedClusterUuid
+                minimum_should_match: 1
+        sort:
+        - '@timestamp': desc
+        _source:
+        - '@timestamp'
+        - service.id
+        - service.name
+        - service.version
+        - logstash.node.id
+        - logstash.node.version
+        - logstash.node.stats.logstash.uuid
+        - logstash.node.stats.logstash.version
+        - logstash.elasticsearch.cluster.id
+        - cluster_uuid
+    rows: '[*]._source'
+    fields:
+    - at=@timestamp
+    - instance=service.id
+    - service=service.name
+    - version=service.version
+    - legacy_instance=logstash.node.id
+    - legacy_version=logstash.node.version
+    - stats_instance=logstash.node.stats.logstash.uuid
+    - stats_version=logstash.node.stats.logstash.version
+    summary_chars: 12000
 common_alerts:
-  # ============================================================ CLUSTER HEALTH
-  - name: "ElasticCloudClusterHealth"
-    patterns:
-      [
-        "Cluster health check",
-        "Cluster health rule",
-        "monitoring_alert_cluster_health",
-      ]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and read its CURRENT health"
-        description: >-
-          The "Cluster health" rule fires when the cluster is yellow (replicas
-          unassigned — no data loss, less redundancy) or red (a PRIMARY is unassigned —
-          some data is unavailable and writes to it fail). From step 1 cite status,
-          nodes and latest_sample_at. From the rule's alert documents: is the "Cluster
-          health check" alert for this cluster still `active`, or `recovered`?
-          Interpret: status green now AND the alert recovered => the cluster HEALED on
-          its own (typical after a node restart / rolling change); report when it
-          recovered and stop short of recommending fixes. Status yellow/red now =>
-          ongoing; step 2 names the shards. "Nodes changed" or "Disk Usage" alerts for
-          the same cluster in the same window => that is the likely trigger.
-        tool_calls:
-          - *resolve_cluster
-          - *rule_alerts
-      - step: 2
-        title: "Name the unassigned shards and why they cannot be allocated"
-        description: >-
-          The unassigned-shards list names affected indices (one row per index, at
-          most 10 — "at least" when full) from the latest shard snapshot in the last
-          hour; shard snapshots are infrequent, so compare each row's `at` with
-          latest_sample_at — if step 1 says green now, older UNASSIGNED rows are
-          already healed. The non-green indices list gives each index's
-          primary_shards and total_shards: replicas = total_shards / primary_shards − 1.
-          Count DATA nodes from the node list's roles — nodes named tiebreaker-* (role
-          master/voting_only, no data_* role) hold NO shards and must not be counted.
-          Interpret: only primary=false rows (replicas) => yellow; if the cluster has
-          FEWER data nodes than 1 + replicas for an index, its replicas can never be
-          placed (a replica is never put on the same node as its primary or another
-          copy) — say that, with the numbers, and name the indices. primary=true rows => RED: those
-          indices have unavailable data. No rows but status not green => shards are
-          initializing/relocating — transient. Then check node disk: any node with
-          disk_avail_bytes / disk_total_bytes under ~15% is past the high disk
-          watermark, and Elasticsearch refuses to allocate shards to it — that, not
-          node count, is then the cause.
-        tool_calls:
-          - *unassigned_shards
-          - *yellow_indices
-          - *nodes_by_disk
-    remediation:
-      - action: "fix_replica_count_or_add_node"
-        description: "ONLY if step 2 shows replicas that cannot be placed because there are too few data nodes: set index.number_of_replicas to (data nodes − 1) on the named indices / their template, or add a data node (Elastic Cloud: add an availability zone)."
-        tool_id: ""
-        requires_approval: true
-      - action: "free_disk_for_allocation"
-        description: "If step 2 shows nodes past the disk watermark: free or add disk (delete old indices, adjust ILM, resize the deployment) so shards can allocate."
-        tool_id: ""
-        requires_approval: true
-      - action: "restore_red_primaries"
-        description: "If primaries are unassigned (RED): check whether the node holding them left the cluster (Nodes changed); restore from snapshot only if the node is gone for good."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner. RED (primary unassigned) is urgent — writes/searches to those indices fail; yellow is degraded redundancy."
-    follow_up:
-      - "Confirm status returns to green in cluster_stats and the Kibana rule alert moves to recovered."
-
-  - name: "ElasticCloudNodesChanged"
-    patterns: ["Nodes changed check", "Nodes changed", "monitoring_alert_nodes_changed"]
-    priority: P3
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and see what changed"
-        description: >-
-          "Nodes changed" fires when a node joins, leaves or restarts. On Elastic Cloud
-          this is usually planned (a configuration change, version upgrade, autoscaling,
-          or Elastic's maintenance moving an instance) but can be a crash. From step 1
-          cite nodes and max_node_uptime_ms (a SMALL max uptime => every node
-          restarted recently — a rolling restart / plan change). From the rule alert
-          docs cite the reason and time. Interpret: Cluster health yellow/red alerts
-          right after => shard reallocation after the change; it should recover on its
-          own. No health impact => informational.
-        tool_calls:
-          - *resolve_cluster
-          - *rule_alerts
-      - step: 2
-        title: "List the current nodes"
-        description: >-
-          The node list (latest node_stats per node) names every node reporting now.
-          A node named in the alert that is missing from this list => it left and has
-          not returned. Honest gap: node join/leave history and the Elastic Cloud
-          activity log (which plan change caused it) are not available to these tools
-          — say so.
-        tool_calls:
-          - *nodes_by_heap
-    remediation:
-      - action: "confirm_planned_change"
-        description: "Check the Elastic Cloud deployment activity for a plan change / maintenance at the alert time; if none and a node is missing, open an Elastic support case."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner only if a node is still missing or health turned red."
-    follow_up:
-      - "Confirm the node count is back to the expected size."
-
-  # ============================================================ NODE RESOURCES
-  - name: "ElasticCloudJvmMemoryHigh"
-    patterns:
-      [
-        "JVM Memory Usage",
-        "Memory Usage (JVM)",
-        "monitoring_alert_jvm_memory_usage",
-      ]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and confirm heap pressure on the alert's node"
-        description: >-
-          The rule fires when a node's JVM heap used % exceeds its threshold (85% here)
-          for the rule's duration. From the node list (highest heap first) cite
-          heap_pct and heap_max_bytes for the alert's node ($node when the alert
-          carries it). Interpret: heap_pct back below the threshold => the pressure
-          passed (garbage collection caught up) — say it recovered. One node high and
-          the rest low => a HOT node (uneven shard/query distribution). All nodes high
-          => the cluster is undersized for its data/queries. Search/write rejections >
-          0 on the same node => heap pressure is already causing request failures.
-        tool_calls:
-          - *resolve_cluster
-          - *nodes_by_heap
-      - step: 2
-        title: "Relate heap to the shard and data load"
-        description: >-
-          From step 1: shards_total vs heap_max_bytes — more than ~20 shards per GB of
-          heap per node is oversharding, a classic heap consumer. The largest indices
-          name where the data is. Interpret: very many small shards => shrink/merge
-          indices or use ILM rollover by size. Few huge indices on the hot node =>
-          rebalance or add a node. Honest gap: GC pause times, fielddata / query-cache
-          sizes and the heavy queries are not in the selected monitoring fields.
-        tool_calls:
-          - *largest_indices
-          - *rule_alerts
-    remediation:
-      - action: "reduce_shard_count"
-        description: "If step 2 shows oversharding: consolidate small indices, lower primary shard counts in templates, use ILM rollover by size."
-        tool_id: ""
-        requires_approval: true
-      - action: "scale_deployment_memory"
-        description: "If heap is high on ALL nodes with a normal shard count: increase the deployment's instance size (heap is half of RAM, capped ~31 GB)."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner when heap stays > 90% or rejections appear on the same node."
-    follow_up:
-      - "Confirm heap_pct stays under the threshold and the rule alert recovers."
-
-  - name: "ElasticCloudCpuHigh"
-    patterns: ["CPU Usage >", "CPU Usage rule", "monitoring_alert_cpu_usage"]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and find the busy node"
-        description: >-
-          The rule fires when a node's CPU use exceeds 85%. From the node list
-          (highest 1-minute load first) cite load_1m, cpu_quota_us (÷ 100000 = vCPUs
-          allotted) and cpu_throttled for the alert's node. Interpret: load_1m well
-          above the vCPU count => the node is CPU-saturated; cpu_throttled large =>
-          the container hit its CPU quota (Elastic Cloud instances are CPU-capped by
-          size). One node hot => uneven load (a hot shard); all nodes hot => undersized
-          or a traffic spike. Search/write queue > 0 or rejections => CPU saturation
-          is already delaying requests. Honest gap: the rule's exact CPU % is computed
-          from counters over time and is not in a single monitoring sample.
-        tool_calls:
-          - *resolve_cluster
-          - *nodes_by_load
-      - step: 2
-        title: "Check whether the load coincides with other alerts and big indices"
-        description: >-
-          From the rule alert docs: JVM Memory or thread-pool rejection alerts on the
-          same cluster at the same time => the same workload is saturating the node.
-          Largest indices name where indexing/search load is likely concentrated.
-        tool_calls:
-          - *rule_alerts
-          - *largest_indices
-    remediation:
-      - action: "spread_or_reduce_load"
-        description: "If one node is hot: rebalance shards of the named large indices / add replicas for read load. If all nodes: reduce expensive queries or bulk load, or increase the deployment size."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner when CPU saturation causes queueing/rejections."
-    follow_up:
-      - "Confirm load returns under the vCPU count and the rule alert recovers."
-
-  - name: "ElasticCloudDiskHigh"
-    patterns: ["Disk Usage >", "Disk Usage rule", "monitoring_alert_disk_usage"]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and find the fullest node"
-        description: >-
-          The rule fires above 80% disk used on a node. Elasticsearch's own
-          watermarks follow: at 85% it stops allocating shards TO the node, at 90% it
-          moves shards away, at 95% (flood stage) it makes indices on it READ-ONLY and
-          writes fail. From the node list (least free first) compute used % =
-          1 − disk_avail_bytes / disk_total_bytes for the alert's node and cite it.
-          Interpret: ≥ 95% => writes are blocked on indices there — P1. 85–95% =>
-          allocation is already restricted (can turn the cluster yellow). One node
-          much fuller => uneven shard sizes.
-        tool_calls:
-          - *resolve_cluster
-          - *nodes_by_disk
-      - step: 2
-        title: "Name what is using the disk"
-        description: >-
-          The largest indices (by primary size; total_bytes includes replicas) are
-          the candidates for deletion, ILM tightening or shrinking. NAME them with
-          their sizes in GiB. Honest gap: time-based growth rate is not available
-          from a single snapshot.
-        tool_calls:
-          - *largest_indices
-          - *rule_alerts
-    remediation:
-      - action: "free_disk"
-        description: "Delete or move expired indices named in step 2, shorten ILM retention, or force-merge old read-only indices."
-        tool_id: ""
-        requires_approval: true
-      - action: "increase_deployment_storage"
-        description: "If data is legitimately growing: increase the deployment's size (storage scales with instance size on Elastic Cloud) or enable autoscaling."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner immediately at ≥ 90% (shards start moving) and P1 at flood stage (writes blocked)."
-    follow_up:
-      - "Confirm disk used % falls under 80% and no index is left read-only (index.blocks.read_only_allow_delete)."
-
-  # ============================================================ THREAD POOLS
-  - name: "ElasticCloudThreadPoolRejections"
-    patterns:
-      [
-        "Thread pool search rejections",
-        "Thread pool write rejections",
-        "rejections check",
-        "monitoring_alert_thread_pool_search_rejections",
-        "monitoring_alert_thread_pool_write_rejections",
-      ]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and find the rejecting node(s)"
-        description: >-
-          Two rules share this entry: search rejections (queries refused) and write
-          rejections (indexing/bulk requests refused — data is NOT indexed unless the
-          client retries). The title says which pool. Both node lists are shown,
-          sorted by each pool's rejections; cite search_rejected / write_rejected and
-          the current queue for the alert's node. Rejected counts are CUMULATIVE since
-          node start — a non-zero value alone does not mean it is happening now; a
-          non-zero current queue does. Interpret: queue > 0 now => still saturated.
-          heap_pct high or load_1m above vCPUs on the same node => resource
-          saturation is the root cause, not the pool size. Rejections on one node only
-          => a hot shard / uneven routing.
-        tool_calls:
-          - *resolve_cluster
-          - *nodes_by_write_rejections
-          - *nodes_by_search_rejections
-      - step: 2
-        title: "Correlate with other alerts"
-        description: >-
-          From the rule alert docs: CPU / JVM Memory alerts on the same cluster =>
-          same saturation. None => a burst of client traffic (bulk jobs, heavy
-          searches). Honest gap: which client sent the load is not in monitoring data.
-        tool_calls:
-          - *rule_alerts
-    remediation:
-      - action: "reduce_request_pressure"
-        description: "Write rejections: lower bulk concurrency / batch size and make clients retry with backoff. Search rejections: reduce expensive/parallel queries or add replicas to spread search load."
-        tool_id: ""
-        requires_approval: true
-      - action: "scale_for_throughput"
-        description: "If the node is resource-saturated in step 1: increase the deployment size; do NOT just raise thread_pool queue sizes (it hides the problem and costs heap)."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service team for the client load; deployment owner if saturation persists. Write rejections mean data loss unless clients retry — escalate faster."
-    follow_up:
-      - "Confirm queues drain and the rule alert recovers."
-
-  # ============================================================ SHARDS / VERSIONS / LICENSE / MONITORING
-  - name: "ElasticCloudLargeShard"
-    patterns: ["Large Shard size", "Shard size", "monitoring_shard_size"]
-    priority: P3
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and find the oversized shards"
-        description: >-
-          The rule fires when an index's average primary shard size exceeds 55 GB.
-          Large shards slow recovery/relocation and rebalancing. From the largest
-          indices compute primary_bytes / primary_shards (GiB per shard) and NAME the
-          index(es) above 55 GB; the rule's reason text names the index that fired.
-          Interpret: a time-series/data-stream backing index => its rollover is by age
-          only; add max_primary_shard_size. A single ever-growing index => reindex into
-          more primary shards or split.
-        tool_calls:
-          - *resolve_cluster
-          - *largest_indices
-          - *rule_alerts
-    remediation:
-      - action: "rollover_or_split"
-        description: "Add ILM rollover max_primary_shard_size: 50gb for data streams; for a regular index use the _split API or reindex with more primaries."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning team of the named index — not urgent unless recoveries are slow."
-    follow_up:
-      - "Confirm the new backing index/shards stay under 50 GB."
-
-  - name: "ElasticCloudVersionMismatch"
-    patterns:
-      [
-        "Elasticsearch version mismatch",
-        "Kibana version mismatch",
-        "Logstash version mismatch",
-        "version mismatch",
-      ]
-    priority: P3
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and list the running versions"
-        description: >-
-          Three rules share this entry (Elasticsearch / Kibana / Logstash version
-          mismatch) — they fire when instances of the same product run different
-          versions, normally DURING a rolling upgrade. For Elasticsearch cite
-          es_versions from step 1 (more than one entry => mismatch). For Kibana and
-          Logstash the monitoring data does not carry per-instance versions — use the
-          rule's reason text from the alert docs, which lists them. Interpret: the
-          alert recovered => the upgrade finished. Still active for a long time => an
-          upgrade stalled or an instance was left behind; name it from the reason.
-        tool_calls:
-          - *resolve_cluster
-          - *rule_alerts
-    remediation:
-      - action: "complete_or_align_upgrade"
-        description: "Finish the rolling upgrade in the Elastic Cloud console, or align the lagging instance's version."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner if the mismatch outlasts the upgrade window."
-    follow_up:
-      - "Confirm a single version is reported and the rule alert recovers."
-
-  - name: "ElasticCloudLicenseExpiration"
-    patterns: ["License expiration", "Cluster License expiration check", "monitoring_alert_license_expiration"]
-    priority: P3
-    diagnostic_steps:
-      - step: 1
-        title: "Resolve the cluster and read its license"
-        description: >-
-          From step 1 cite license, license_type and license_expiry. Interpret:
-          expiry within 30 days => renew; status not active => features governed by
-          the license may be disabled. On Elastic Cloud the license is managed by the
-          subscription — an expiring license usually means a billing/subscription
-          issue, not a cluster problem.
-        tool_calls:
-          - *resolve_cluster
-    remediation:
-      - action: "renew_subscription"
-        description: "Renew the Elastic Cloud subscription / contact Elastic account team before the expiry date."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Account/billing owner."
-    follow_up:
-      - "Confirm the new expiry date in cluster_stats."
-
-  - name: "ElasticCloudMissingMonitoringData"
-    patterns: ["Missing monitoring data", "monitoring_alert_missing_monitoring_data"]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Check whether the cluster is still shipping monitoring data"
-        description: >-
-          The rule fires when a monitored cluster or node stops sending monitoring
-          data. Interpret: step 1 returns NO document => the cluster has sent nothing
-          in the last hour — either the deployment is down/unreachable or its
-          monitoring shipping (logs & metrics setting in the Elastic Cloud console)
-          was disabled or points elsewhere; the later steps are NOT RUN
-          (unresolved $clusterUuid) for the same reason. step 1 returns a document with a recent
-          latest_sample_at => the cluster is reporting; compare the node list: a node
-          missing from it (or with an old `at`) is the one that stopped. The alert
-          recovered => data resumed.
-        tool_calls:
-          - *resolve_cluster
-          - *rule_alerts
-      - step: 2
-        title: "List which nodes are reporting"
-        description: >-
-          The node list shows every node that reported in the last 10 minutes and its
-          last sample time. Name any node the alert mentions that is absent.
-        tool_calls:
-          - *nodes_by_heap
-    remediation:
-      - action: "check_deployment_and_monitoring_settings"
-        description: "Check the deployment's health in the Elastic Cloud console; if it is healthy, re-check Monitoring (logs & metrics) is enabled and shipping to the observability deployment."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Deployment owner — while monitoring data is missing, every other rule for that cluster is blind."
-    follow_up:
-      - "Confirm latest_sample_at is current again."
-
-escalation: >-
-  Route Elastic Cloud alerts to the deployment owner. RED health, flood-stage disk
-  (writes blocked) and write rejections are urgent because they fail or drop writes;
-  yellow health, version mismatch, large shards, license and node changes are
-  degraded-redundancy / planning items. Elastic support is the escalation for
-  deployment-level faults (nodes missing without a plan change).
-
+- name: ElasticCloudClusterHealth
+  patterns:
+  - Cluster health check
+  - Cluster health rule
+  - monitoring_alert_cluster_health
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare earlier health with the latest observation
+    description: Report current and earlier status, counts and timestamps. Green at a fresh timestamp is evidence
+      of recovery of cluster health at that instant. Confirm the matching alert status separately. Missing or capped
+      history does not establish duration or prove that the source is healthy.
+    tool_calls:
+    - *cluster_baseline
+    - *cluster_unhealthy_history
+  - step: 3
+    title: Identify shard symptoms and possible resource constraints
+    description: Distinguish UNASSIGNED from INITIALIZING and RELOCATING. All non-started rows are time-stamped
+      historical observations; do not claim the list is current or complete. Do not infer configured replica count
+      from observed shard totals. Count only data roles among actually covered nodes. Low disk, node-count changes
+      and source log messages can support hypotheses; exact allocation deciders and allocation settings of the source
+      may be unavailable. Never call the monitoring deployment allocation-explain API to diagnose these source shards.
+    tool_calls:
+    - *latest_shard_sample
+    - *nonstarted_shard_history
+    - *nongreen_index_history
+    - *nodes_latest
+    - *nodes_baseline
+    - *source_logs
+  remediation:
+  - action: review_node_or_capacity_issue
+    description: Owner should investigate an evidenced missing node, resource shortage or placement constraint.
+      Restore capacity or wait for an identified planned transition. Adding an eligible data node may help replica
+      placement; it is not proof that placement will succeed.
+    tool_id: ''
+    requires_approval: true
+  - action: review_replica_policy
+    description: 'Only if the SOURCE index replica settings and eligible-node constraints are independently confirmed:
+      owner may add suitable capacity or deliberately change replicas. Reducing replicas reduces redundancy and
+      is not an automatic fix.'
+    tool_id: ''
+    requires_approval: true
+  - action: investigate_unavailable_primaries
+    description: For confirmed source RED health, identify affected primary data and recovery options with the owner.
+      Do not force-allocate stale primaries or suggest deleting data on this evidence alone.
+    tool_id: ''
+    requires_approval: true
+  escalation: Urgent for fresh RED health or confirmed unavailable data/write impact; yellow is reduced redundancy.
+    Raise severity using actual impact.
+  follow_up:
+  - Verify fresh source cluster_stats and the matching alert recovery. Treat stale shards separately.
+- name: ElasticCloudNodesChanged
+  patterns:
+  - Nodes changed check
+  - Nodes changed
+  - monitoring_alert_nodes_changed
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare node identities before and after
+    description: Compare source UUID plus node ID across current and earlier samples, backed by cluster node counts.
+      Node names can be reused. A node absent from a capped or stale list is NOT proven departed. Smaller maximum
+      uptime does not identify a planned upgrade or prove every node restarted.
+    tool_calls:
+    - *cluster_baseline
+    - *nodes_baseline
+    - *nodes_latest
+    - *target_node_latest
+  - step: 3
+    title: Look for an explanation and health impact
+    description: Look for node-left/node-join, disconnect, restart or resource messages from this source in exported
+      logs. A plan change is only confirmed by owner evidence or explicit event records; no logs or no related alert
+      does not prove maintenance was planned.
+    tool_calls:
+    - *source_logs
+    - *cluster_unhealthy_history
+  remediation:
+  - action: verify_change_and_restore_capacity
+    description: Owner should check planned maintenance and expected topology. If loss is unplanned or health is
+      degraded, investigate the missing instance and resource symptoms. This runbook does not connect to parent
+      deployments.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment owner for sustained loss, unavailable data or unexplained change; informational if recovery
+    and the planned change are both confirmed.
+  follow_up:
+  - Compare fresh counts and identities with expected topology; confirm recovered rule state.
+- name: ElasticCloudJvmMemoryHigh
+  patterns:
+  - JVM Memory Usage
+  - Memory Usage (JVM)
+  - monitoring_alert_jvm_memory_usage
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Read the alert node current usage and recent peak separately
+    description: Directly query the named alert node. Compute heap percent from 100*used_bytes/max_bytes when both
+      exist and max is positive. Otherwise keep pct raw until its scale is verified; .pct alone does not tell you
+      whether it is 0..1 or 0..100. Use the actual alert threshold/duration. A single low sample shows easing at
+      that instant, not sustained recovery.
+    tool_calls:
+    - *target_node_latest
+    - *target_node_recent
+    - *target_node_baseline
+    - *nodes_latest
+    - *nodes_heap_peaks
+  - step: 3
+    title: Look for GC, cache, rejection and data-load evidence
+    description: Compare GC collection-time/count and rejection deltas only between samples of the same node and
+      counter epoch. Optional caches/breakers are returned when exported; missing fields are unknown. Cluster-wide
+      shard totals divided by one node heap cannot diagnose oversharding. Index size is storage context, not proof
+      of the cause of heap pressure.
+    tool_calls:
+    - *large_index_observations
+    - *source_logs
+  remediation:
+  - action: reduce_evidenced_memory_pressure
+    description: Owner should reduce expensive concurrent work or mapping/shard overhead when supported by the evidence.
+      Consolidate small indices only after checking per-node shard distribution and workload.
+    tool_id: ''
+    requires_approval: true
+  - action: review_memory_capacity
+    description: Consider capacity changes if fresh, sustained pressure affects the relevant nodes. Elastic Cloud
+      manages heap; do not prescribe a fixed heap size from this runbook.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment owner for sustained pressure, OOM/breaker events or increasing rejections. Use actual impact
+    and rule threshold.
+  follow_up:
+  - Require several fresh samples below the configured threshold and the correct rule instance recovered.
+- name: ElasticCloudCpuHigh
+  patterns:
+  - CPU Usage >
+  - CPU Usage rule
+  - monitoring_alert_cpu_usage
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare actual CPU evidence over time
+    description: 'Use the alert measured CPU value as trigger evidence. Process CPU pct, if present, has a scope/scale
+      that must be verified. Load average includes runnable and uninterruptible tasks and is not CPU percentage.
+      Compare cgroup CPU usage and throttled-period counters across valid samples. No hard-coded 100000-us period:
+      quota/period gives a quota equivalent only if the actual period exists and quota is positive.'
+    tool_calls:
+    - *target_node_latest
+    - *target_node_recent
+    - *target_node_baseline
+    - *nodes_latest
+    - *nodes_load_peaks
+  - step: 3
+    title: Correlate pressure with work and errors
+    description: Look for fresh queue/rejection changes, GC activity and source log errors during the same period.
+      Large indices alone do not identify the expensive query or a hot shard. Hot threads on commotion-observability
+      describe that monitoring node only and cannot provide parent thread traces.
+    tool_calls:
+    - *source_logs
+  remediation:
+  - action: reduce_verified_workload_pressure
+    description: Owner should reduce excessive concurrency, optimize an identified expensive query or adjust bulk
+      size if evidence supports it. Consider capacity when sustained pressure spans nodes. Avoid naming a client
+      or hot shard without evidence.
+    tool_id: ''
+    requires_approval: true
+  escalation: Owning application and deployment teams when sustained CPU pressure affects request latency or rejection
+    rates.
+  follow_up:
+  - Check fresh CPU/throttling evidence and queue/rejection trends, then the matching alert recovery.
+- name: ElasticCloudDiskHigh
+  patterns:
+  - Disk Usage >
+  - Disk Usage rule
+  - monitoring_alert_disk_usage
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compute disk usage and compare an earlier sample
+    description: Use 100*(1-available_bytes/total_bytes), with positive total and 0<=available<=total. Compare the
+      same node ID and capacity; changed total bytes invalidate a simple growth estimate. Low absolute free bytes
+      is not the same ranking as high percentage used. Alert threshold comes from the actual rule.
+    tool_calls:
+    - *target_node_latest
+    - *target_node_recent
+    - *target_node_baseline
+    - *nodes_latest
+    - *nodes_baseline
+    - *nodes_disk_lows
+  - step: 3
+    title: Find storage contributors and evidence of allocation/write impact
+    description: Name the observed largest stored indices with observation times. Compute growth only from comparable
+      timestamped samples; it may be noisy from merges/relocation. 85/90/95% are Elasticsearch default low/high/flood
+      examples, not confirmed source settings. Account for byte settings, max headroom and multiple data paths when
+      available. A block needs source logs or exported settings/evidence; percentage alone does not prove writes
+      are blocked.
+    tool_calls:
+    - *large_index_observations
+    - *nonstarted_shard_history
+    - *source_logs
+  remediation:
+  - action: review_storage_and_retention
+    description: Owner should add suitable storage or safely expire data according to the approved retention policy.
+      Validate retention, snapshot and data ownership before proposing specific deletions.
+    tool_id: ''
+    requires_approval: true
+  - action: avoid_emergency_force_merge
+    description: Do not use force merge as the default response to near-full disks; it may need substantial temporary
+      space. After capacity is restored, verify whether blocks cleared before considering any manual change.
+    tool_id: ''
+    requires_approval: true
+  escalation: Urgent if write blocks, capacity exhaustion or unavailable primaries are evidenced; otherwise use
+    remaining space and sustained growth to prioritize.
+  follow_up:
+  - Fresh disk evidence, write/health recovery and matching alert recovery; disclose unavailable block settings.
+- name: ElasticCloudThreadPoolSearchRejections
+  patterns:
+  - Thread pool search rejections
+  - monitoring_alert_thread_pool_search_rejections
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Measure NEW search rejections
+    description: 'Compare search rejected counters for the same node across chronological samples. Positive delta
+      means new rejected requests during that measured interval. A lower counter or restart/identity discontinuity
+      means reset: no naive subtraction. A nonzero lifetime total does not prove ongoing rejection; queue>0 alone
+      is not proof of failure. Absence of CPU/JVM alerts does not prove a traffic burst.'
+    tool_calls:
+    - *target_node_latest
+    - *target_node_recent
+    - *target_node_baseline
+    - *nodes_latest
+    - *nodes_baseline
+  - step: 3
+    title: Correlate the rejection interval with resource evidence
+    description: Use heap, GC, load, CPU throttling, queue trend and source logs at compatible timestamps. State
+      whether resource exhaustion is observed or only suspected. Differentiate client-facing failures from upstream
+      retries; request loss cannot be inferred from the counter alone.
+    tool_calls:
+    - *source_logs
+  remediation:
+  - action: reduce_search_pressure
+    description: Owner should lower excessive search concurrency and optimize identified expensive queries; consider
+      read capacity only with placement and workload evidence.
+    tool_id: ''
+    requires_approval: true
+  - action: review_resource_capacity
+    description: If sustained resource pressure is evidenced, owner should review capacity and distribution. Increasing
+      a thread-pool queue is not an automatic remedy.
+    tool_id: ''
+    requires_approval: true
+  escalation: Owning application and deployment teams; prioritize confirmed user-facing errors or unretried rejected
+    writes.
+  follow_up:
+  - No additional rejections across measured intervals, queues easing, and the matching search rule recovered.
+- name: ElasticCloudThreadPoolWriteRejections
+  patterns:
+  - Thread pool write rejections
+  - monitoring_alert_thread_pool_write_rejections
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Measure NEW write rejections
+    description: 'Compare write rejected counters for the same node across chronological samples. Positive delta
+      means new rejected requests during that measured interval. A lower counter or restart/identity discontinuity
+      means reset: no naive subtraction. A nonzero lifetime total does not prove ongoing rejection; queue>0 alone
+      is not proof of failure. Absence of CPU/JVM alerts does not prove a traffic burst.'
+    tool_calls:
+    - *target_node_latest
+    - *target_node_recent
+    - *target_node_baseline
+    - *nodes_latest
+    - *nodes_baseline
+  - step: 3
+    title: Correlate the rejection interval with resource evidence
+    description: Use heap, GC, load, CPU throttling, queue trend and source logs at compatible timestamps. State
+      whether resource exhaustion is observed or only suspected. Differentiate client-facing failures from upstream
+      retries; request loss cannot be inferred from the counter alone.
+    tool_calls:
+    - *source_logs
+  remediation:
+  - action: reduce_write_pressure
+    description: Owner should lower excessive bulk concurrency or batch size and verify bounded backoff/retries
+      for rejected items. Rejection indicates risk of missing writes if retries fail, not proof of permanent loss.
+    tool_id: ''
+    requires_approval: true
+  - action: review_resource_capacity
+    description: If sustained resource pressure is evidenced, owner should review capacity and distribution. Increasing
+      a thread-pool queue is not an automatic remedy.
+    tool_id: ''
+    requires_approval: true
+  escalation: Owning application and deployment teams; prioritize confirmed user-facing errors or unretried rejected
+    writes.
+  follow_up:
+  - No additional rejections across measured intervals, queues easing, and the matching write rule recovered.
+- name: ElasticCloudLargeShard
+  patterns:
+  - Large Shard size
+  - Shard size
+  - monitoring_shard_size
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Find high average primary-shard sizes
+    description: Rank candidates by primary_store_bytes / primary_count, with primary_count>0. Report GiB=bytes/1073741824
+      and use the alert threshold with its actual unit. Average primary size is not maximum per-shard size. If the
+      alert names an index missing from these ten candidates, run the explicit index drilldown in the evidence catalog.
+      Historical peak rows are not current snapshots.
+    tool_calls:
+    - *large_average_shard_observations
+    - *indices_latest
+  - step: 3
+    title: Check impact without guessing the ILM policy
+    description: Compare health/disk symptoms and source logs for long recovery or relocation. The monitoring deployment
+      ILM API explains its local monitoring indices, not the parent index policy. Large size does not prove age-only
+      rollover or an ILM failure.
+    tool_calls:
+    - *nodes_latest
+    - *source_logs
+  remediation:
+  - action: review_rollover_and_shard_design
+    description: Owner should review actual source lifecycle settings and workload. Size-based rollover can limit
+      future growth; existing shards need a separate migration/split/reindex plan with capacity and prerequisites
+      checked. Size targets are workload-dependent.
+    tool_id: ''
+    requires_approval: true
+  escalation: Index owner; prioritize if large shards coincide with recovery delays or capacity pressure.
+  follow_up:
+  - Compare fresh average and actual maximum shard size if exported; verify future rollover behavior through monitoring.
+- name: ElasticCloudElasticsearchVersionMismatch
+  patterns:
+  - Elasticsearch version mismatch
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare versions of the same product at compatible times
+    description: Use the node-version list within a single fresh source cluster_stats snapshot, and compare with
+      baseline. A historical change of a version on one node is not simultaneous mismatch. Complete node coverage
+      is required to say all nodes agree.
+    tool_calls:
+    - *cluster_baseline
+  remediation:
+  - action: review_product_upgrade
+    description: Owner should confirm the Elasticsearch upgrade window and affected instance versions. A version
+      mismatch can occur during a rolling change, but the change is not proven planned by version data alone. Escalate
+      persistent mismatches; do not prescribe a downgrade.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment/product owner if mismatched versions persist beyond the agreed upgrade window or cause
+    impact.
+  follow_up:
+  - Fresh latest versions agree for the covered instances and the exact Elasticsearch rule recovered; state any
+    incomplete coverage.
+- name: ElasticCloudKibanaVersionMismatch
+  patterns:
+  - Kibana version mismatch
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare versions of the same product at compatible times
+    description: The supplied rule reason remains a fallback. Try optional UUID-scoped Kibana monitoring documents;
+      compare latest observations of distinct instances in the same fresh interval. service.version can carry the
+      product version; agent.version is the collector version. Missing stream, missing cluster association or missing
+      fields is insufficient evidence, not proof that no product data exists.
+    tool_calls:
+    - *kibana_source_versions
+  remediation:
+  - action: review_product_upgrade
+    description: Owner should confirm the Kibana upgrade window and affected instance versions. A version mismatch
+      can occur during a rolling change, but the change is not proven planned by version data alone. Escalate persistent
+      mismatches; do not prescribe a downgrade.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment/product owner if mismatched versions persist beyond the agreed upgrade window or cause
+    impact.
+  follow_up:
+  - Fresh latest versions agree for the covered instances and the exact Kibana rule recovered; state any incomplete
+    coverage.
+- name: ElasticCloudLogstashVersionMismatch
+  patterns:
+  - Logstash version mismatch
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare versions of the same product at compatible times
+    description: The supplied rule reason remains a fallback. Try optional UUID-scoped Logstash monitoring documents;
+      compare latest observations of distinct instances in the same fresh interval. service.version can carry the
+      product version; agent.version is the collector version. Missing stream, missing cluster association or missing
+      fields is insufficient evidence, not proof that no product data exists.
+    tool_calls:
+    - *logstash_source_versions
+  remediation:
+  - action: review_product_upgrade
+    description: Owner should confirm the Logstash upgrade window and affected instance versions. A version mismatch
+      can occur during a rolling change, but the change is not proven planned by version data alone. Escalate persistent
+      mismatches; do not prescribe a downgrade.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment/product owner if mismatched versions persist beyond the agreed upgrade window or cause
+    impact.
+  follow_up:
+  - Fresh latest versions agree for the covered instances and the exact Logstash rule recovered; state any incomplete
+    coverage.
+- name: ElasticCloudLicenseExpiration
+  patterns:
+  - License expiration
+  - Cluster License expiration check
+  - monitoring_alert_license_expiration
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Compare license status and expiry
+    description: Read status, type and expiry from the source snapshot. Parse the supplied date/epoch explicitly
+      in UTC; compare against the actual warning window in the alert. A missing expiry is unknown, not automatically
+      expired. Compare baseline to see a renewal/change. Do not infer a billing failure from expiry alone.
+    tool_calls:
+    - *cluster_baseline
+  remediation:
+  - action: review_cloud_license_status
+    description: Ask the Elastic Cloud account/deployment owner to verify subscription/license synchronization and
+      any renewal requirement. Use Elastic support if status is unexpected. Do not install or change a license via
+      this read-only runbook.
+    tool_id: ''
+    requires_approval: true
+  escalation: Account/deployment owner; urgent if license-dependent features are actually impaired.
+  follow_up:
+  - A fresh source license observation reflects the expected state and the correct rule recovered.
+- name: ElasticCloudMissingMonitoringData
+  patterns:
+  - Missing monitoring data
+  - monitoring_alert_missing_monitoring_data
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the source cluster and assess evidence freshness
+    description: Resolve the exact $cluster display name to one distinct UUID using resolve_cluster. Use only the
+      dedicated bound runbook UUID for subsequent source queries; do not fall back to the incoming clusterUuid.
+      Zero or multiple candidates cause dependent calls to be NOT RUN. Preserve incoming UUID, rule, node, measured
+      value, threshold, duration and alert time as context. Report any incoming/resolved UUID disagreement as an
+      identity mismatch. Stale identity data does not establish current health. Match rule and instance in alert
+      documents. Missing identity is insufficient evidence, not another incident.
+    tool_calls:
+    - *identity_candidates
+    - *resolve_cluster
+    - *rule_alerts
+    - *cluster_current
+  - step: 2
+    title: Check freshness separately for each metricset and node
+    description: A stale cluster_stats stream alone is not proof that every metricset stopped. Compare latest_any_metric,
+      cluster_current, newest shard sample, each node timestamp and the alert expected collection interval. The
+      10-node cap prevents claiming missing nodes from list absence. If the cluster UUID cannot be resolved, still
+      retain the alert reason and use catalog collector checks; do not turn placeholder failures into incidents.
+    tool_calls:
+    - *latest_any_metric
+    - *nodes_latest
+    - *nodes_baseline
+    - *target_node_latest
+    - *latest_shard_sample
+  - step: 3
+    title: Separate collector-side trouble from source shipping trouble
+    description: Use source logs if available. The evidence catalog provides collector cluster-health/node-stats
+      checks plus freshness grouped by source cluster and metricset. Multiple sources becoming stale together supports
+      a shared collection issue; one affected source supports a source/transport/collection hypothesis. These are
+      hypotheses unless direct evidence confirms them. Monitoring loss does not prove the source is down.
+    tool_calls:
+    - *source_logs
+  remediation:
+  - action: investigate_monitoring_path
+    description: Owner should check monitoring collection/export configuration, permissions, network path, retention
+      and collector capacity. All automated calls remain on commotion-observability. If the collector is healthy
+      and only one source is stale, request owner investigation of that source without switching the MCP connection.
+    tool_id: ''
+    requires_approval: true
+  escalation: Deployment/observability owner; prioritize broad visibility loss or simultaneous application impact.
+  follow_up:
+  - Confirm fresh samples resume for the affected metricsets and nodes over multiple collection intervals, then
+    matching rule recovery.
+escalation: Source deployment owner for evidence-supported source incidents; observability owner for collection-path
+  issues. Action suggestions are manual and subject to the owner change process. The runbook executes no remediation.
 follow_up:
-  - "Kibana and Logstash monitoring documents carry no per-instance version or cluster id here — version-mismatch attribution relies on the rule's reason text."
-  - "The search tool returns at most 10 hits and drops aggregations; clusters with more than 10 nodes / problem indices are reported as 'at least'. An aggregation-capable tool (or ES|QL STATS) would give exact counts."
-  - "GC, fielddata/query-cache and per-query attribution need node/cluster APIs on the monitored deployment itself (the tools only reach the observability deployment)."
+- Use the guide and companion evidence catalog for incident-time windows, ES|QL summaries, source-index/shard drilldowns,
+  schema discovery and collector checks.
+- Validate new fields/queries and response adapters with read-only acceptance checks before enabling this revision.
+- The 13 rules now have separate entries; generic version mismatch/rejections-only names are ambiguous and must
+  not be silently routed to one product/pool.
