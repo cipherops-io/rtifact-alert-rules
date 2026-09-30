@@ -1,28 +1,53 @@
+# Rtifact MongoDB Atlas v1 runbook revision.
+# Preserves the original runbook layout. No new MCP action is introduced.
+# Diagnostic descriptions contain conditional branches; enforcement is REQUIRED in the executor.
+# See mongodb-atlas-v1.runtime-policy.yaml and operator-guide.md before production use.
+# No live tools were called or mutated during preparation.
 tech_stack: mongodb-atlas
-version: "1.0"
-description: >-
-  Runbook for MongoDB Atlas (managed) alerts delivered by the Atlas webhook
-  integration (RTI-1132: dev3, prod3, tcprod). Titles arrive as
-  "[MongoAtlas] <cluster>: <Atlas event text>", e.g.
-  "[MongoAtlas] Cluster0: System: Memory usage % has gone above 85", and the alert
-  carries the firing object in impacted_entities: cluster (Atlas cluster name,
-  case-sensitive, e.g. "Cluster0"), replicaSet (e.g. "atlas-122fn1-shard-0"), host
-  (the member, e.g. "atlas-122fn1-shard-00-02.9euth.mongodb.net:27017") and metric
-  (e.g. SYSTEM_MEMORY_PERCENT_USED). Atlas clusters are NOT in the tenant's
-  Kubernetes/VictoriaMetrics — every step reads Atlas itself through the
-  integration service's MongoDB Atlas tools (tool_id mcp.mongodb-atlas.<action>):
-  list_projects, list_alerts, inspect_cluster, get_performance_advisor. All are
-  read-only. PROJECT RESOLUTION: every Atlas tool needs the project (group) id. When
-  the alert carries groupId it is used as-is; otherwise step 1 finds it with
-  list_projects, matching the project by name ($projectName) — or, when the Atlas
-  key sees exactly one project, that one. If neither resolves, later steps are NOT
-  RUN ("unresolved placeholder(s) $groupId"): say the Atlas project could not be
-  identified for this alert rather than guessing one. Report every finding against
-  the alert's OWN cluster ($cluster) and host — list_alerts is project-wide, so
-  ignore open alerts that belong to other clusters/hosts except as blast-radius
-  context. There is NO Atlas time-series (measurements) tool yet: do not invent a
-  trend, peak or duration that no tool returned.
+version: '1.2'
+description: |
+  Reviewed v1 runbooks for the eleven user-supplied MongoDB Atlas rules. Scope: authenticated
+  Atlas webhook plus the existing MongoDB Atlas and MongoDB Database connector actions ONLY.
+  No VictoriaMetrics/VictoriaLogs, time-series API, project-events API, currentOp, serverStatus,
+  new/custom tool is required. The existing MongoDB Logs action is now used conditionally as a bounded recent-process diagnostic. Database statistics are current snapshots,
+  not the excluded continuous metrics integration. Performance Advisor findings are allowed
+  only when actually returned by the existing connector; no standalone log retrieval is used.
 
+  SAFETY CONTRACT: use mongodb-atlas-v1.runtime-policy.yaml in the host executor. It is an
+  implementation specification, not an automatically enforced MongoDB/MCP option. The existing
+  runbook-shaped YAML alone cannot enforce guards, pagination, call budgets or tenant scope.
+  If the executor cannot conditionally gate tool_calls, fail closed and use only confirmed
+  Atlas alert/configuration reads. Do not run every listed call unconditionally. Logical
+  mcp.<appIdentifier>.<actionIdentifier> aliases must be resolved using the tool-bindings file.
+  No credentials or connector URLs are present in this pack.
+
+  Resolve groupId and cluster from the authenticated integration's authorized mapping and the
+  alert. Payload IDs select resources only inside that scope; they never expand authorization.
+  Do not guess projects, clusters, credentials, databases or host membership. A separately bound
+  MongoDB Database credential must be positively mapped to the SAME Atlas project and cluster
+  before database tools run. No database action in the supplied registry accepts connectionId,
+  projectId, clusterName or host; those are enforced by the binding, not invented arguments.
+
+  Match by external alert ID; next by verified configId and entity. If OPEN lookup misses,
+  conditionally reconcile TRACKING/CLOSED within budget, or use a newer authenticated lifecycle
+  event. Absence, API error or truncated pagination is not recovery. Repeated notifications are
+  not new incidents or independent metric samples. Keep occurrence IDs separate even when an
+  incident groups warning/critical alerts. Keep the user's notification delays unchanged; do
+  not wait those durations again in the agent. Store receivedAt, fetchedAt, raw metric units,
+  source timestamps and scope; never label fetch time as sample time.
+
+  Evidence rule: separate provider-reported symptom, observed configuration, candidate
+  contributor, missing evidence and application impact. No historical trend, cause, election
+  story, maintenance event, disk growth, per-client usage or guaranteed index benefit may be
+  inferred from missing data or metadata alone. UNKNOWN/partial RCA is a successful safe outcome.
+  Remediation entries are manual review recommendations only: empty tool_id must never dispatch.
+  P1 owner escalation happens BEFORE optional enrichment, not after a long investigation.
+
+  Response contracts: only input schemas were provided. Do not hard-code guessed fields such
+  as suggestedIndexes.content.shapes. Normalize real responses in the gateway after fixture
+  contract tests; distinguish success-empty, forbidden, unavailable, timeout and parse failure.
+  The attached source runbook used stronger causal claims that are deliberately narrowed here.
+  See operator guide for an explicit change log and official technical references.
 match_keywords:
   - mongoatlas
   - mongodb atlas
@@ -34,577 +59,1818 @@ categories:
   - DATABASE
 
 available_tools:
-  - "mcp.mongodb-atlas.list_projects — projects visible to the Atlas key (id, name, clusterCount); resolves $groupId"
-  - "mcp.mongodb-atlas.list_alerts — OPEN Atlas alerts in the project: event type, host, metric, currentValue, since when"
-  - "mcp.mongodb-atlas.inspect_cluster — cluster state, tier (instanceSize), node count, disk size/IOPS, compute + disk autoscaling config, version"
-  - "mcp.mongodb-atlas.get_performance_advisor — slow query shapes (namespace, avgMs, count, inefficiency) and suggested indexes"
-
-# ── Reusable tool calls ────────────────────────────────────────────────────────
-resolve_project: &resolve_project
-  tool_id: "mcp.mongodb-atlas.list_projects"
-  description: "Atlas projects visible to the integration's key; binds $groupId (the alert's project id) for the later steps."
+  - mcp.mongodb-atlas.list_projects - conditional scoped discovery
+  - mcp.mongodb-atlas.list_clusters - conditional cluster discovery
+  - mcp.mongodb-atlas.list_alerts - OPEN/TRACKING/CLOSED pages; not a health probe
+  - mcp.mongodb-atlas.inspect_cluster - control-plane configuration, not live health
+  - mcp.mongodb-atlas.get_performance_advisor - only sections actually returned by this wrapper
+  - mcp.mongodb-database.list_databases - bounded discovery via verified cluster binding
+  - mcp.mongodb-database.list_collections - bounded discovery via verified cluster binding
+  - mcp.mongodb-database.db_stats - current database storage snapshot
+  - mcp.mongodb-database.collection_storage_size - current collection size as returned
+  - mcp.mongodb-database.collection_indexes - index definitions, not index usage or sizes
+  - mcp.mongodb-database.collection_schema - bounded structural sample for an observed namespace; may sample
+    business documents
+  - mcp.mongodb-database.explain - queryPlanner-only verification for one exact executable observed query
+  - mcp.mongodb-database.mongodb_logs - bounded recent mongod log buffer from the verified database binding;
+    not historical Atlas logs
+resolve_project:
+  tool_id: mcp.mongodb-atlas.list_projects
+  description: |-
+    DISCOVERY ONLY. Skip when the authenticated integration already binds the project.
+    Use the exact authorized project ID or exact unique project-name match over verified pages.
+    A single visible result is not permission to select a project unless the integration is
+    explicitly project-scoped and pagination is complete. Unresolved or conflicting scope stops
+    all subsequent calls. pageNum is a positive integer supplied by the runtime, not a model guess.
+  params:
+    arguments:
+      itemsPerPage: 100
+      pageNum: $pageNum
+      includeCount: false
+resolve_cluster:
+  tool_id: mcp.mongodb-atlas.list_clusters
+  description: |-
+    DISCOVERY ONLY. Run only when the project is verified and the alert cluster is not yet
+    bound. Match an exact case-sensitive cluster name or use an existing trusted mapping.
+    Do not infer cluster membership from hostname substrings. Never select the first result.
+  params:
+    arguments:
+      projectId: $groupId
+open_alerts:
+  tool_id: mcp.mongodb-atlas.list_alerts
+  description: |-
+    REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+    probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+    exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+    value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+    runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+    not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+  params:
+    arguments:
+      projectId: $groupId
+      status: OPEN
+      itemsPerPage: 100
+      pageNum: $pageNum
+      includeCount: false
+    timeout: 20
+tracking_alerts:
+  tool_id: mcp.mongodb-atlas.list_alerts
+  description: |-
+    CONDITIONAL status reconciliation only. Run when the exact alert was not found OPEN and
+    there is remaining budget. Match identity as in OPEN. TRACKING is not recovery. Absence in
+    a page does not establish absence from the project. Never scan unbounded history.
+  params:
+    arguments:
+      projectId: $groupId
+      status: TRACKING
+      itemsPerPage: 100
+      pageNum: $pageNum
+      includeCount: false
+    timeout: 20
+closed_alerts:
+  tool_id: mcp.mongodb-atlas.list_alerts
+  description: |-
+    CONDITIONAL status reconciliation only. A matching CLOSED record or a newer authenticated
+    close webhook for the same external alert ID is positive resolution evidence. This input
+    schema has no alertId or time-range filter: do not pass invented parameters. Stop at the
+    pagination/call budget and retain NOT_FOUND or UNKNOWN if the exact record is not located.
+    A different older CLOSED occurrence must not close the incoming occurrence.
+  params:
+    arguments:
+      projectId: $groupId
+      status: CLOSED
+      itemsPerPage: 100
+      pageNum: $pageNum
+      includeCount: false
+    timeout: 20
+cluster_config:
+  tool_id: mcp.mongodb-atlas.inspect_cluster
+  description: |-
+    REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+    Read only fields actually returned and label desired versus effective configuration.
+    stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+    not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+    Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+    proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+  params:
+    arguments:
+      projectId: $groupId
+      clusterName: $cluster
+    timeout: 20
+query_workload:
+  tool_id: mcp.mongodb-atlas.get_performance_advisor
+  description: |-
+    CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+    availability emergency unless already cached. This connector accepts ONLY projectId and
+    clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+    The attached registry has no output schema: inspect actual responses before configuring
+    extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+    exists. Handle each returned section's error/availability independently. Suggestions are
+    cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+    No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+    of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+    redact values before model input. Never invent executable values from redacted samples.
+  params:
+    arguments:
+      projectId: $groupId
+      clusterName: $cluster
+    timeout: 45
+database_catalog:
+  tool_id: mcp.mongodb-database.list_databases
+  description: |-
+    CONDITIONAL storage discovery only, after the bound database credential has been verified
+    against this incident's tenant, Atlas project and cluster outside model input. This schema
+    has no connectionId or limit. Reuse cached metadata; do not fan out across all databases.
+    Only use names and sizes actually returned. Accessible/returned databases can be a subset;
+    report partial coverage. Select at most one authorized candidate for this run.
   params:
     arguments: {}
-    bind:
-      groupId:
-        from: "results"
-        match: { name: "$projectName" }
-        pick: "id"
-    fields:
-      - "results[*].name"
-      - "results[*].id"
-      - "results[*].clusterCount"
-      - "totalCount"
-
-open_alerts: &open_alerts
-  tool_id: "mcp.mongodb-atlas.list_alerts"
-  description: "OPEN Atlas alerts in the project — confirms this alert is still open, its live currentValue, and what else is firing on the same cluster/host."
+    timeout: 10
+collection_catalog:
+  tool_id: mcp.mongodb-database.list_collections
+  description: |-
+    CONDITIONAL. Database must come from trusted incident context or an authorized observed
+    namespace/database catalog. This call has no limit/filter parameter. Do not enumerate every
+    collection then issue a call for each. Select at most two evidence-backed candidates, with
+    partial coverage explicitly recorded. Skip if no safe candidate can be selected.
   params:
-    arguments: { projectId: "$groupId", status: "OPEN" }
-    fields:
-      - "totalCount"
-      - "results[*].metricName"
-      - "results[*].currentValue"
-      - "results[*].hostnameAndPort"
-      - "results[*].eventTypeName"
-      - "results[*].clusterName"
-      - "results[*].replicaSetName"
-      - "results[*].created"
-      - "results[*].status"
-
-cluster_config: &cluster_config
-  tool_id: "mcp.mongodb-atlas.inspect_cluster"
-  description: "The alert's cluster: state, tier, node count, disk, compute/disk autoscaling, version."
+    arguments:
+      database: $database
+    timeout: 10
+database_snapshot:
+  tool_id: mcp.mongodb-database.db_stats
+  description: |-
+    CONDITIONAL. Inspect ONE verified candidate database. Record observedAt, database,
+    connection scope, source fields and units/scaleFactor when returned. dataSize is logical
+    data, storageSize is allocated document storage and indexSize is allocated index storage;
+    do not add dataSize to storageSize. Do not assume GB, hot working-set size, growth rate,
+    per-shard/per-host attribution or disk percent from these values. Do not add filesystem
+    sizes across databases. Timeouts/permission failures are evidence gaps, not zero usage.
   params:
-    arguments: { projectId: "$groupId", clusterName: "$cluster" }
-    fields:
-      - "name"
-      - "stateName"
-      - "paused"
-      - "clusterType"
-      - "mongoDBVersion"
-      - "diskSizeGB"
-      - "replicationSpecs[*].numShards"
-      - "replicationSpecs[*].regionConfigs[*].providerName"
-      - "replicationSpecs[*].regionConfigs[*].regionName"
-      - "replicationSpecs[*].regionConfigs[*].electableSpecs"
-      - "replicationSpecs[*].regionConfigs[*].autoScaling"
-      - "effectiveReplicationSpecs[*].regionConfigs[*].electableSpecs"
-
-query_workload: &query_workload
-  tool_id: "mcp.mongodb-atlas.get_performance_advisor"
-  description: "Performance Advisor for the cluster: slow query shapes (namespace, avgMs, count, inefficiency) and the indexes Atlas suggests."
+    arguments:
+      database: $database
+    timeout: 10
+collection_snapshot:
+  tool_id: mcp.mongodb-database.collection_storage_size
+  description: |-
+    CONDITIONAL. Inspect only a discovered, authorized namespace; at most two per run.
+    Report the precise returned measure and unit. A single collection size is not a growth
+    trend, the hot working set, a complete host disk breakdown or per-index size. Preserve the
+    collection remainder after the first dot in a namespace. Skip views/unsupported collections
+    when the tool says unsupported, and do not create a collection to make a call succeed.
   params:
-    arguments: { projectId: "$groupId", clusterName: "$cluster" }
-    timeout: 45  # observed ~20s on dev3
-    fields:
-      - "suggestedIndexes.content.suggestedIndexes[*].namespace"
-      - "suggestedIndexes.content.suggestedIndexes[*].index"
-      - "suggestedIndexes.content.suggestedIndexes[*].weight"
-      - "suggestedIndexes.content.shapes[*].namespace"
-      - "suggestedIndexes.content.shapes[*].avgMs"
-      - "suggestedIndexes.content.shapes[*].count"
-      - "suggestedIndexes.content.shapes[*].inefficiencyScore"
-      - "dropIndexSuggestions.content"
-      - "slowQueryLogs.content.slowQueries[*].namespace"
-      - "schemaSuggestions.content.recommendations[*].description"
-
+    arguments:
+      database: $database
+      collection: $collection
+    timeout: 10
+index_definitions:
+  tool_id: mcp.mongodb-database.collection_indexes
+  description: |-
+    CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+    observed namespace (at most two). Compare returned ordered key patterns and index options,
+    including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+    options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+    index is a review candidate, not a proven fix. Do not invoke create_index.
+  params:
+    arguments:
+      database: $database
+      collection: $collection
+    timeout: 10
+recent_mongodb_logs:
+  tool_id: mcp.mongodb-database.mongodb_logs
+  description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected by the
+    already-verified database binding. This is getLog-style recent process output, NOT Atlas
+    historical/exported logs, and the tool has no host selector. Unless the response identifies the process,
+    do not attribute an entry to the alerted host. Use as supporting near-current evidence only; absence of a
+    message never proves an event did not occur earlier or on another member. Do not retry on failure, do not
+    probe alternate credentials, redact literals/secrets before model input, and do not use this action for a
+    no-active-mongos diagnosis because it does not provide mongos log history.
+  params:
+    arguments:
+      type: global
+      limit: 50
+    timeout: 10
+schema_sample:
+  tool_id: mcp.mongodb-database.collection_schema
+  description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already identified
+    by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate a query/index hypothesis.
+    This may sample customer business documents: apply the integration's privacy policy, redact example values,
+    and return structural summaries only. A sample is not a complete schema or cardinality/selectivity measurement.
+    Skip during availability emergencies, writes-blocked incidents, and while CPU >95 remains OPEN."
+  params:
+    arguments:
+      database: $database
+      collection: $collection
+      sampleSize: 10
+    timeout: 10
+explain_find:
+  tool_id: mcp.mongodb-database.explain
+  description: CONDITIONAL and mutually exclusive with any other explain call in the same investigation. Run
+    only when trusted evidence provides the exact executable FIND predicate for the observed namespace; never
+    reconstruct redacted values, substitute {}, or invent parameters. Use queryPlanner only so the tool
+    evaluates the winning plan without requesting executionStats. Preserve exact filter semantics supported by
+    this wrapper. If sort/projection/collation/hint or other required semantics cannot be represented
+    faithfully, skip and report the limitation. This wrapper has no maxTimeMS; enforce one-call and
+    server-side safety in the connector. Current plan evidence is not proof of the incident-time plan.
+  params:
+    arguments:
+      database: $database
+      collection: $collection
+      method: find
+      filter: $observedFilter
+      verbosity: queryPlanner
+    timeout: 10
 common_alerts:
-  # ============================================================ RESOURCE SATURATION
-  - name: "MongoAtlasMemoryUsageHigh"
+  - name: MongoAtlasMemoryUsageHigh
     patterns:
-      [
-        "System: Memory usage %",
-        "Memory usage % has gone above",
-        "SYSTEM_MEMORY_PERCENT_USED",
-      ]
+      - 'System: Memory usage %'
+      - Memory usage % has gone above
+      - SYSTEM_MEMORY_PERCENT_USED
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and confirm the memory alert is still open on the alert's host"
-        description: >-
-          Atlas "System: Memory usage % above N" (configured at 85 and 90; fires after
-          10 min, re-notifies every 30 min) measures the whole member's RAM use, not
-          just mongod's cache. From list_alerts, find the OPEN OUTSIDE_METRIC_THRESHOLD
-          entry for SYSTEM_MEMORY_PERCENT_USED on the alert's host and cite its
-          currentValue. Interpret: no matching open entry => the condition has already
-          cleared; say it self-resolved. currentValue far above the threshold (e.g. >95)
-          => genuine memory exhaustion risk. Other OPEN alerts on the SAME host/cluster
-          matter: CPU (User) or Query Targeting open together => an inefficient query
-          workload is pulling data into memory (step 3); Connections % open together
-          => a connection surge (each connection costs ~1 MB) is consuming RAM.
-        tool_calls:
-          - *resolve_project
-          - *open_alerts
-      - step: 2
-        title: "Check the cluster's tier and whether compute autoscaling can absorb the load"
-        description: >-
-          From inspect_cluster: electableSpecs.instanceSize is the tier that fixes
-          the RAM (M10 2 GB, M20 4 GB, M30 8 GB, M40 16 GB, M50 32 GB ...);
-          effectiveReplicationSpecs shows the tier actually running after autoscaling;
-          autoScaling.compute.enabled / maxInstanceSize show headroom. Interpret:
-          compute autoscaling DISABLED => nothing will relieve this automatically; the
-          tier is the cap. Autoscaling enabled but effective tier already equals
-          maxInstanceSize => autoscaling is maxed out; raise the max or reduce load.
-          Autoscaling enabled with headroom => Atlas may scale up on its own (it reacts
-          to sustained load) — say so and weigh urgency accordingly. stateName other
-          than IDLE (e.g. UPDATING) => a scaling or maintenance operation is already in
-          progress and can explain transient memory pressure.
-        tool_calls:
-          - *cluster_config
-      - step: 3
-        title: "Attribute memory pressure to the query workload"
-        description: >-
-          Performance Advisor lists slow query shapes and suggested indexes for the
-          cluster. Interpret: shapes with high count and high avgMs on a namespace, or a
-          suggested index with high weight => unindexed/inefficient queries are
-          scanning collections and pushing the working set beyond RAM — NAME the
-          namespace(s) and the suggested index. No slow shapes and no suggestions =>
-          the working set has simply outgrown the tier (data growth), so capacity, not
-          queries, is the fix. Honest gap: there is no Atlas measurements tool yet, so
-          the memory trend, WiredTiger cache fill and page-fault rate are not available
-          — do not invent them.
-        tool_calls:
-          - *query_workload
-    remediation:
-      - action: "add_suggested_indexes"
-        description: "ONLY if step 3 named slow shapes or suggested indexes: create the Performance Advisor's suggested index on the named namespace (rolling build) so those queries stop scanning — the most direct way to shrink the working set."
-        tool_id: ""
-        requires_approval: true
-      - action: "scale_cluster_tier"
-        description: "If step 2 shows compute autoscaling disabled or already at maxInstanceSize and step 3 found no query cause: move the cluster to the next tier (more RAM) or raise autoscaling.compute.maxInstanceSize."
-        tool_id: ""
-        requires_approval: true
-      - action: "reduce_connection_memory"
-        description: "If Connections % is open on the same host: cap client connection pools (maxPoolSize) — each idle connection holds memory."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service team for query/index fixes; platform/DB owner for tier or autoscaling changes. Escalate urgently when currentValue > 95 or it is open together with CPU / disk alerts on the primary."
-    follow_up:
-      - "After the fix confirm the SYSTEM_MEMORY_PERCENT_USED alert closes in Atlas (list_alerts no longer shows it OPEN)."
-      - "Add an Atlas measurements tool (host SYSTEM_MEMORY_PERCENT_USED / cache fill history) to show the trend instead of a single currentValue."
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: memory above 90%; notification delay 10 minutes, resend 30 minutes. Category: Performance / Capacity. Preserve the reported metric definition; system memory utilization is not an observed WiredTiger cache diagnosis.
 
-  - name: "MongoAtlasCPUUserHigh"
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Inspect capacity configuration, without inferring runtime memory behavior
+        description: |-
+          Use returned provider/region, tier and effective tier/autoscaling fields. Compute autoscaling
+          disabled or an explicitly reached configured max is a capacity constraint, not a root cause.
+          Do not claim memory exhaustion, swapping, a connection surge or a full working set from this
+          single alert. Related CPU/connections alerts are concurrent symptoms, not causal proof.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Look for candidate query or index contributors only when useful
+        description: |-
+          When relevant, use the existing Performance Advisor response. A high-cost query or index
+          recommendation is an optimization finding; without memory/caching history its contribution
+          to this host's memory alert is unconfirmed. Empty/unavailable Advisor does not prove that the
+          dataset has outgrown RAM. If an authorized namespace is returned, compare existing indexes.
+          Do not fetch all database sizes as a proxy for RAM. Schema sampling/explain are allowed only after Advisor identifies an exact namespace and executable query hypothesis.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
+          - tool_id: mcp.mongodb-database.collection_indexes
+            description: |-
+              CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+              observed namespace (at most two). Compare returned ordered key patterns and index options,
+              including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+              options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+              index is a review candidate, not a proven fix. Do not invoke create_index.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 4
+        title: Inspect recent mongod evidence for memory/cache/query symptoms
+        description: If the verified database binding is reachable, inspect one bounded recent mongod log
+          snapshot. Look only for returned evidence such as WiredTiger/cache/eviction warnings, slow
+          operations, storage pressure, restarts, or network errors. Do not treat missing messages as proof
+          those conditions were absent, and do not attribute entries to the alerted host unless the result
+          identifies it. This step can support a hypothesis but cannot replace memory/cache time-series
+          metrics.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+      - step: 5
+        title: Validate one evidenced query/index hypothesis with schema and query planner
+        description: Only if Advisor returned an exact namespace and an executable FIND filter, optionally
+          sample that collection's structure and inspect the queryPlanner plan. Use the schema only to verify
+          field/type structure; it does not measure cardinality or memory usage. Explain can show whether the
+          CURRENT represented query would use an index or collection scan, but it does not prove that query
+          caused the memory alert. Skip when the query is redacted or cannot be faithfully represented.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
+    remediation:
+      - action: review_workload
+        description: Review the explicitly returned query/index findings with the service owner; evaluate
+          write and build costs before approving any index.
+        tool_id: ''
+        requires_approval: true
+      - action: review_capacity
+        description: Have the DB owner verify real memory/cache/swap history and capacity/autoscaling
+          constraints in Atlas before selecting a tier change.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; involve service owner for an evidenced query candidate. Raise urgency for
+      independently reported application failures or active Core availability alerts, not a guessed
+      working-set cause.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Report root cause as not established when only the memory alert and static capacity settings are
+        available.
+  - name: MongoAtlasCPUUserHigh
     patterns:
-      [
-        "System: CPU (User) %",
-        "CPU (User) % has gone above",
-        "SYSTEM_NORMALIZED_CPU_USER",
-      ]
+      - 'System: CPU (User) % above 90'
+      - CPU (User) % has gone above 90
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and confirm the CPU alert and its severity band"
-        description: >-
-          Atlas "System: CPU (User) % above N" is configured twice: above 90 (fires
-          after 5 min, re-notifies 30 min) and above 95 (fires after 10 min,
-          re-notifies 10 min) — the 95 variant is the more severe, sustained one. From
-          list_alerts cite the OPEN CPU entry's currentValue on the alert's host.
-          Interpret: no matching open entry => cleared. Query Targeting open on the
-          same host => CPU is burnt scanning documents for inefficient queries (step
-          3). Memory % open together => the working set no longer fits and the CPU is
-          spent on cache eviction / disk reads. CPU high on the PRIMARY only => write
-          or primary-read load; on a secondary => replication apply or
-          secondary-preferred reads.
-        tool_calls:
-          - *resolve_project
-          - *open_alerts
-      - step: 2
-        title: "Check the tier and compute autoscaling headroom"
-        description: >-
-          From inspect_cluster: instanceSize / effective tier fixes the vCPU count;
-          autoScaling.compute.enabled and maxInstanceSize show whether Atlas can scale
-          out of this. Interpret: autoscaling disabled or already at the max =>
-          sustained CPU needs a tier change or a workload fix. Burstable low tiers
-          (M10/M20) exhaust CPU credits under sustained load — call that out. stateName
-          not IDLE => an operation (scaling, index build, maintenance) is in progress
-          and may be the CPU consumer.
-        tool_calls:
-          - *cluster_config
-      - step: 3
-        title: "Find the query shapes consuming the CPU"
-        description: >-
-          From Performance Advisor: NAME the namespace and shape with the highest
-          count × avgMs, and any suggested index. Interpret: a high-weight suggested
-          index or high inefficiencyScore shapes => collection scans are the CPU cost;
-          indexing is the fix. No slow shapes => the load is legitimate volume (more
-          requests), so capacity or read distribution is the fix. Honest gap: without
-          a measurements/currentOp tool the exact running operation and the CPU trend
-          are unavailable — say so rather than guess.
-        tool_calls:
-          - *query_workload
-    remediation:
-      - action: "index_or_fix_hot_query"
-        description: "ONLY if step 3 named a hot shape or suggested index: add the suggested index / rewrite the named query so it stops scanning."
-        tool_id: ""
-        requires_approval: true
-      - action: "scale_or_enable_compute_autoscaling"
-        description: "If step 2 shows no autoscaling headroom and the load is legitimate: move to the next tier or enable/raise compute autoscaling; for read-heavy load consider secondary reads."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service team for the named query; platform/DB owner when CPU > 95 is sustained on the primary and user latency is affected."
-    follow_up:
-      - "Confirm the CPU (User) alert closes in Atlas after the fix."
-      - "A currentOp / profiler read tool would name the exact running operation — deferred."
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: CPU (User) above 90%; notification delay 5 minutes, resend 30 minutes. Category: Performance / Capacity. Runtime rule-catalog matching must disambiguate this from the 95% rule.
 
-  # ============================================================ AVAILABILITY
-  - name: "MongoAtlasReplicaSetNoPrimary"
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Inspect capacity settings and same-entity alert context
+        description: |-
+          Use the actual metricName/units from the alert; normalized and unnormalized CPU metrics
+          must not be silently conflated. Record configured/effective tier and compute autoscaling
+          settings only when returned. Do not infer exhausted burst credits, maintenance, index build,
+          cache eviction or replication work from tier/stateName. Do not infer a primary/secondary role
+          from hostname ordinals. Severity selection comes from configId/verified threshold, not the
+          instantaneous CPU value.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Identify query inefficiency candidates and inspect their indexes
+        description: |-
+          Call Performance Advisor once if budget permits. Report observed namespace, query-shape
+          identity, recommended ordered index keys and section/window status. Slow-operation elapsed
+          time is not CPU time. count multiplied by avgMs is not percent CPU, nor proof of attribution;
+          only compare provider samples with the same known scope/window. Advisor weight is not a
+          measured CPU-saving estimate. No returned candidate means cause unknown, not legitimate
+          traffic. Check up to two returned namespaces with collection_indexes. Do not run explain
+          or schema sampling in the default path.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
+          - tool_id: mcp.mongodb-database.collection_indexes
+            description: |-
+              CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+              observed namespace (at most two). Compare returned ordered key patterns and index options,
+              including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+              options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+              index is a review candidate, not a proven fix. Do not invoke create_index.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 4
+        title: Inspect recent mongod evidence for CPU/query symptoms
+        description: When the same-cluster database binding is reachable, inspect one bounded recent mongod
+          log snapshot for returned slow-operation, query, storage, replication, or network messages. Use only
+          messages actually present. Recent getLog output is not incident history and may come from a
+          connection-selected member rather than the alerted host; do not make host-specific or historical
+          claims without returned identity/timestamps.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+      - step: 5
+        title: Validate one hot-query hypothesis without executing it
+        description: Only after Advisor identifies an exact namespace and an executable FIND predicate,
+          compare sampled field structure and the current queryPlanner plan. Schema sampling is capped at 10
+          and may expose customer data internally, so return structural facts only. Explain is verification of
+          the represented CURRENT query shape, not CPU attribution. Never synthesize redacted predicates or
+          use executionStats/allPlansExecution.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
+    remediation:
+      - action: review_query_candidate
+        description: Review any evidenced query/index candidate with its owner. Do not call it the CPU root
+          cause without attribution evidence.
+        tool_id: ''
+        requires_approval: true
+      - action: review_compute_headroom
+        description: Have the DB owner review workload history and allowed compute autoscaling before
+          approving a capacity change.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner/service owner. If the separate CPU >95 rule is positively OPEN for the same host,
+      link both occurrences to the same investigation and apply the higher urgency without erasing either
+      rule.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+  - name: MongoAtlasReplicaSetNoPrimary
     patterns:
-      [
-        "Replica set has no primary",
-        "has no primary",
-        "NO_PRIMARY",
-      ]
+      - Replica set has no primary
+      - NO_PRIMARY
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and confirm no-primary is still open"
-        description: >-
-          "Replica set has no primary" (fires after 3 min, re-notifies every 10 min)
-          means the replica set ($replicaSet) cannot accept WRITES — applications
-          writing to it are failing. From list_alerts: is the NO_PRIMARY entry for
-          this replica set still OPEN? Interpret: not open => an election completed
-          and a primary exists again; report a transient failover and how long the
-          alert lasted if list_alerts shows it. Still open => active write outage.
-          Host-down / other availability alerts on members of the same replica set
-          => members are unreachable, so a majority cannot be formed for an election.
-        tool_calls:
-          - *resolve_project
-          - *open_alerts
-      - step: 2
-        title: "Check whether Atlas itself is changing the cluster"
-        description: >-
-          From inspect_cluster: stateName and paused. Interpret: paused = true => the
-          cluster was PAUSED (no primary by design) — say so plainly. stateName
-          UPDATING / REPAIRING => a tier change, version upgrade, maintenance or
-          node replacement is rolling through the members; a no-primary window during
-          that is expected to be short. stateName IDLE with no-primary still open =>
-          not a planned operation — members are unhealthy or partitioned; escalate to
-          Atlas support. Report electableSpecs.nodeCount (how many electable members
-          exist) — a 3-node set needs 2 healthy members for a primary.
-        tool_calls:
-          - *cluster_config
-    remediation:
-      - action: "confirm_atlas_operation_or_open_support"
-        description: "If step 2 shows a planned operation (UPDATING/maintenance), monitor until the election completes. If stateName is IDLE and no primary persists, open an Atlas support case — members are unhealthy and Atlas-managed nodes cannot be repaired from our side."
-        tool_id: ""
-        requires_approval: true
-      - action: "check_application_write_retries"
-        description: "Confirm the applications use retryable writes and a replica-set connection string so they recover automatically once a primary is elected."
-        tool_id: ""
-        requires_approval: true
-    escalation: "P1 — immediate DB owner + Atlas support when the alert stays open beyond a few minutes on a production cluster; writes are failing for every client of $replicaSet."
-    follow_up:
-      - "After recovery confirm the NO_PRIMARY alert closed and the replica set has one primary."
-      - "Review Atlas project activity for the maintenance/scaling event that triggered the election."
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: no primary; notification delay 3 minutes, resend 10 minutes. Category: Core / Critical. Atlas-reported primary unavailability is urgent; application failure rate is not measured by these tools.
 
-  - name: "MongoAtlasNoActiveMongos"
-    patterns:
-      [
-        "no active mongos",
-        "Cluster has no active mongos processes",
-        "CLUSTER_MONGOS_IS_MISSING",
-      ]
-    priority: P1
-    diagnostic_steps:
-      - step: 1
-        title: "Identify the Atlas project and confirm the no-mongos alert is still open"
-        description: >-
-          "Cluster has no active mongos processes" (fires after 15 min, re-notifies
-          every 15 min) applies to SHARDED clusters: mongos is the router every client
-          connects through, so with none running the whole cluster is unreachable.
-          From list_alerts: still OPEN for $cluster? Interpret: not open => routers
-          are back; report a transient outage. Open together with host-down alerts =>
-          infrastructure-level failure.
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
         tool_calls:
-          - *resolve_project
-          - *open_alerts
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
       - step: 2
-        title: "Check the cluster type and state"
-        description: >-
-          From inspect_cluster: clusterType must be SHARDED (or GEOSHARDED) for this
-          alert to be meaningful — if it is REPLICASET, say the alert is misconfigured
-          for this cluster. paused = true => the cluster is paused (no mongos by
-          design). stateName UPDATING/REPAIRING => a planned operation is restarting
-          the routers. IDLE while no mongos => not planned; escalate to Atlas support.
+        title: Inspect control-plane configuration and escalate before enrichment
+        description: |-
+          Page the configured DB owner immediately for the incoming production alert; do not wait
+          for this call. Read paused/stateName/cluster type/configured topology as observations.
+          UPDATING does not prove planned maintenance; IDLE does not exclude maintenance or node trouble.
+          Configured electable node count is not live member health or verified election quorum. Other
+          host-down alerts strengthen availability concern but do not prove a network partition or
+          failed majority. The available tools cannot verify current primary identity, member reachability,
+          election history or exactly which clients failed. Skip database calls other than the explicitly
+          gated one-shot recent-log exception in the next step; skip Advisor and repeated connection
+          attempts. A database driver server-selection error would not identify the cause.
         tool_calls:
-          - *cluster_config
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Optionally inspect one recent mongod log buffer after P1 escalation
+        description: After owner escalation, and only when an already-verified same-cluster database
+          connection can answer without connection probing, make at most one no-retry recent-log call.
+          Returned REPL/ELECTION/NETWORK/CONTROL messages can support a failover/member-availability
+          hypothesis, but this tool is not a replica-set-wide historical log source and may fail while no
+          primary exists. Failure or absence of messages is an evidence gap, not proof of cause or recovery.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
     remediation:
-      - action: "confirm_atlas_operation_or_open_support"
-        description: "If step 2 shows a planned operation, monitor until mongos returns. Otherwise open an Atlas support case — mongos processes are Atlas-managed."
-        tool_id: ""
+      - action: escalate_availability
+        description: DB owner should check live replica-set health and Atlas activity in the Atlas UI and
+          contact MongoDB Support for an unresolved production availability issue. Do not wait merely because
+          stateName is UPDATING.
+        tool_id: ''
         requires_approval: true
-    escalation: "P1 — DB owner + Atlas support immediately; every client of the sharded cluster is affected."
+      - action: verify_application_impact
+        description: Service owner should verify write errors/retry behavior using existing approved
+          operational channels. Do not automatically change read preferences, force elections or restart
+          managed nodes.
+        tool_id: ''
+        requires_approval: true
+    escalation: 'P1: notify DB/platform owner immediately on the incoming occurrence; support escalation according
+      to the production availability policy. Do not delay escalation until RCA succeeds.'
     follow_up:
-      - "Confirm the alert closes and clients reconnect through mongos."
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
 
-  # ============================================================ REPLICATION
-  - name: "MongoAtlasOplogWindowLow"
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Positive alert closure can confirm the provider no-primary condition recovered; the tool set does not
+        independently prove a current healthy primary or successful application writes.
+  - name: MongoAtlasOplogWindowLow
     patterns:
-      [
-        "Replication Oplog Window",
-        "Oplog Window has gone below",
-        "OPLOG_MASTER_TIME_ESTIMATE",
-      ]
+      - Replication Oplog Window
+      - OPLOG_MASTER_TIME_ESTIMATE
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and confirm the oplog window value"
-        description: >-
-          "Replication Oplog Window below 1 hour" (fires after 10 min, re-notifies
-          every 15 min): the oplog on $host only holds ~currentValue hours of writes.
-          A secondary (or a backup/restore, or a change stream) that falls further
-          behind than the window must do a full INITIAL SYNC. From list_alerts cite
-          currentValue. Interpret: well below 1h (minutes) => high risk that a lagging
-          or restarting secondary cannot catch up. Replication-lag alerts open on the
-          same replica set => a secondary is already behind — the window is the time
-          left before it is lost. Disk % open together => the oplog cannot be grown on
-          this disk.
-        tool_calls:
-          - *resolve_project
-          - *open_alerts
-      - step: 2
-        title: "Check disk and tier — what bounds the oplog here"
-        description: >-
-          From inspect_cluster: diskSizeGB and autoScaling.diskGB.enabled bound how
-          large the oplog can be; the tier bounds write throughput. Interpret: a small
-          disk with disk autoscaling off => the oplog is size-capped low; raising the
-          oplog minimum size (or retention hours) needs disk headroom. A write-heavy
-          workload (step 3) shrinks the window by filling the oplog faster.
-        tool_calls:
-          - *cluster_config
-      - step: 3
-        title: "Look for a write-heavy or inefficient workload filling the oplog"
-        description: >-
-          From Performance Advisor: namespaces with very high operation counts point
-          at the workload generating oplog entries (bulk updates/deletes, TTL
-          sweeps, rewrite-whole-document updates). NAME them. Honest gap: the oplog
-          size, GB/hour write rate and per-secondary replication lag are not exposed
-          by the available tools — say so rather than invent them.
-        tool_calls:
-          - *query_workload
-    remediation:
-      - action: "increase_oplog_size_or_retention"
-        description: "Raise the cluster's minimum oplog size or minimum oplog window (Atlas → Additional Settings) so the window stays above 1h at peak write rate; ensure disk headroom first (step 2)."
-        tool_id: ""
-        requires_approval: true
-      - action: "reduce_oplog_churn"
-        description: "If step 3 named a write-heavy namespace: batch/throttle the bulk job or switch full-document rewrites to targeted $set updates."
-        tool_id: ""
-        requires_approval: true
-    escalation: "DB owner — urgent when replication lag is also open (a secondary is about to need an initial sync)."
-    follow_up:
-      - "Confirm the oplog window alert closes after resizing."
-      - "An Atlas measurements tool (OPLOG_MASTER_TIME, OPLOG_RATE_GB_PER_HOUR) would show the write-rate trend — deferred."
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: oplog window below 1 hour; notification delay 10 minutes, resend 15 minutes. Category: Core / Critical (replication safety risk). P2 here is an operational urgency proposal, not a change to Atlas severity.
 
-  # ============================================================ STORAGE
-  - name: "MongoAtlasDiskSpaceHigh"
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Assess replication-safety context and storage configuration
+        description: |-
+          Preserve raw value and units. Convert seconds/minutes/hours only when explicitly known;
+          RAW does not by itself mean hours. The oplog window is retained write-history coverage, NOT
+          replication lag or time remaining before data loss. Related replication-lag alerts add risk,
+          but do not prove a secondary is already too stale. inspect_cluster does not establish actual
+          oplog size, retention configuration, per-secondary lag or oplog generation rate unless those
+          specific fields are returned. A small configured disk does not prove an oplog cap. Disk
+          pressure affects remediation choices but is not proof that an oplog cannot grow.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Inspect recent replication-related mongod messages
+        description: Use one bounded recent log snapshot only when the database binding is reachable. Returned
+          replication, heartbeat, rollback, initial-sync, storage or network messages may support a
+          replication-pressure hypothesis. The tool does not provide complete per-secondary history; no
+          matching message does not rule out earlier lag, sync-source changes, or problems on another member.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+    remediation:
+      - action: review_retention
+        description: DB owner should verify live oplog window, actual oplog size/retention and each secondary
+          lag in Atlas. Evaluate retention/size changes against available disk and recovery requirements.
+        tool_id: ''
+        requires_approval: true
+      - action: review_write_history
+        description: Ask the owner to check write-volume changes or bulk jobs. Do not blame read-heavy
+          Performance Advisor shapes for oplog generation and do not scan local.oplog.rs in this v1.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 replication-safety investigation; raise to P1 when a separate current
+      availability/write-blocking incident or owner-verified replication safety failure warrants it.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Do not promise a fixed catch-up deadline or automatic initial sync for backup/change-stream consumers
+        from this alert alone.
+  - name: MongoAtlasWritesBlocked
     patterns:
-      [
-        "Disk space % used on Data Partition",
-        "DISK_PARTITION_SPACE_USED_DATA",
-        "Writes have been blocked",
-        "critically low disk space",
-      ]
+      - Writes have been blocked on your cluster
+      - Writes blocked due to critically low disk
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and establish how full the disk is and whether writes are already blocked"
-        description: >-
-          Two alerts share this entry. "Disk space % used on Data Partition above 90"
-          (fires after 3 min, re-notifies 30 min) is the WARNING; "Writes have been
-          blocked on your cluster due to critically low disk space" (once per
-          occurrence) is the OUTAGE — Atlas has made the cluster read-only to protect
-          it and every write is failing. From list_alerts cite the disk currentValue
-          on $host and whether the writes-blocked event is OPEN. Interpret:
-          writes-blocked open => active write outage, treat as P1 regardless of the
-          percentage. Disk % only => time-to-full matters; fix before Atlas blocks
-          writes. Oplog-window alert open together => the oplog is competing for the
-          same disk.
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: Atlas writes blocked due to critically low disk; once per occurrence. Category: Core / Critical. This is an occurrence event: capture its original timestamp and provider-reported cause even if it never appears in OPEN alerts.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
         tool_calls:
-          - *resolve_project
-          - *open_alerts
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
       - step: 2
-        title: "Check disk size and disk autoscaling"
-        description: >-
-          From inspect_cluster: diskSizeGB (or electableSpecs.diskSizeGB) and
-          autoScaling.diskGB.enabled. Interpret: disk autoscaling DISABLED => nothing
-          will grow the disk; this is the root configuration gap — say so. Enabled but
-          the alert still fired => growth outpaced autoscaling or the disk is at the
-          tier's maximum storage; the tier must change. stateName UPDATING => a disk
-          resize may already be in progress.
+        title: Assess storage configuration without adding load
+        description: |-
+          Notify the DB owner first. Use inspect_cluster and available same-cluster alerts only.
+          Do not run database/collection enumeration, db_stats, schema sampling, explain or index work
+          while write blocking is active or its recovery is unverified. A once-per-occurrence alert's
+          absence from OPEN does not mean writes were unblocked. A newer authenticated writes-unblocked
+          event or owner-confirmed recovery is stronger evidence of write-mode recovery; distinguish
+          it from closure of a disk-percentage alert. Current stateName and enabled disk autoscaling do
+          not identify whether a resize occurred, is stalled or has reached a limit.
         tool_calls:
-          - *cluster_config
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
       - step: 3
-        title: "Look for reclaimable space and the collections driving growth"
-        description: >-
-          From Performance Advisor: dropIndexSuggestions list unused/redundant indexes
-          (disk that can be reclaimed), and namespaces with heavy write shapes point at
-          what is growing. NAME them. Honest gap: per-collection storage sizes
-          (dbStats/collStats) are not available from the current tools — say which
-          collections to inspect instead of inventing sizes.
+        title: Optionally inspect recent storage-engine messages after immediate escalation
+        description: After the write-blocking incident has been escalated, use one no-retry recent mongod log
+          call only if the existing read-only database binding is still reachable. Returned
+          STORAGE/WiredTiger/journal/checkpoint errors or warnings can enrich the incident, but do not run
+          collection scans, schema sampling or explain while writes are blocked. A failed log call must not
+          delay disk-capacity recovery actions.
         tool_calls:
-          - *query_workload
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
     remediation:
-      - action: "increase_disk_or_enable_disk_autoscaling"
-        description: "Primary fix: increase the cluster's disk size now (and enable autoScaling.diskGB) — when writes are already blocked this is the only immediate way to restore writes."
-        tool_id: ""
+      - action: restore_headroom
+        description: DB owner should urgently inspect Atlas write-blocking status and available storage
+          expansion/autoscaling options; engage MongoDB Support when constrained. Increasing storage is a
+          documented recovery path, not an automatic action of this agent.
+        tool_id: ''
         requires_approval: true
-      - action: "reclaim_space"
-        description: "After writes are restored: drop the unused indexes step 3 named, add TTL/archival for the growing collection, then compact if needed."
-        tool_id: ""
+      - action: defer_cleanup
+        description: After recovery, open the disk-capacity investigation for bounded database/index footprint
+          review. Do not propose emergency blind deletes, compact, new index builds or unsupported changes.
+        tool_id: ''
         requires_approval: true
-    escalation: "P1 — DB owner immediately when writes are blocked (all clients' writes fail). Warning-only: owning team within the re-notify window."
+    escalation: P1 DB/platform owner immediately. Preserve event history and report current write mode as
+      unverified until positively established; service owners verify application recovery.
     follow_up:
-      - "Confirm the disk alert and any writes-blocked event close after the resize."
-      - "A dbStats/collStats tool would name the largest collections — deferred."
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
 
-  # ============================================================ QUERY EFFICIENCY
-  - name: "MongoAtlasQueryTargetingHigh"
-    patterns:
-      [
-        "Query Targeting: Scanned Objects / Returned",
-        "Scanned Objects / Returned",
-        "QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED",
-      ]
-    priority: P2
-    diagnostic_steps:
-      - step: 1
-        title: "Identify the Atlas project and confirm the targeting ratio"
-        description: >-
-          "Query Targeting: Scanned Objects / Returned above 1000" (fires after 10
-          min, re-notifies 30 min): on average queries on $host examine >1000
-          documents per document returned — collection scans or poorly selective
-          indexes. From list_alerts cite currentValue. Interpret: CPU or Memory %
-          open on the same host => the inefficient queries are already costing
-          resources; raise urgency.
-        tool_calls:
-          - *resolve_project
-          - *open_alerts
-      - step: 2
-        title: "Name the inefficient query shapes and the index that fixes them"
-        description: >-
-          From Performance Advisor: NAME the namespace and query shape with the
-          highest inefficiencyScore / count, and the suggested index for it. Interpret:
-          a suggested index on that namespace => that index is the fix. Shapes but no
-          suggestion => the query is unselective by design (e.g. regex, $ne, large
-          $in) — needs a query/schema change. No shapes => the offending queries ran
-          below the slow-query threshold; say the advisor has no attribution yet.
-        tool_calls:
-          - *query_workload
-    remediation:
-      - action: "add_suggested_index"
-        description: "ONLY if step 2 returned a suggested index: create it (rolling build) on the named namespace."
-        tool_id: ""
-        requires_approval: true
-      - action: "fix_unselective_query"
-        description: "If step 2 shows shapes without a suggestion: rewrite the named query to use a selective indexed predicate or add a compound index matching its filter+sort."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service team for the named query."
-    follow_up:
-      - "Confirm the query-targeting alert closes after the index is built."
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
 
-  - name: "MongoAtlasIndexSuggestions"
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - 'Do not await a repeat webhook: this event is once per occurrence. Schedule any follow-up through the platform
+        workflow, not by allowing the agent to run indefinitely.'
+  - name: MongoAtlasIndexSuggestions
     patterns:
-      [
-        "Host has index suggestions",
-        "index suggestions",
-        "NEW_INDEX_SUGGESTIONS",
-      ]
+      - Host has index suggestions
+      - NEW_INDEX_SUGGESTIONS
     priority: P3
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and read the suggested indexes"
-        description: >-
-          "Host has index suggestions" (fires immediately, re-notifies every 60 min)
-          is advisory: Performance Advisor found slow queries on $host that a new
-          index would speed up. From get_performance_advisor list EACH suggested index
-          with its namespace and weight, and the query shapes (avgMs, count) it would
-          fix. Interpret: high weight / high count × avgMs => worth building now;
-          low weight => schedule. Mention dropIndexSuggestions when present (removing
-          unused indexes offsets the cost of a new one).
-        tool_calls:
-          - *resolve_project
-          - *query_workload
-      - step: 2
-        title: "Check for resource impact on the same host"
-        description: >-
-          From list_alerts: CPU (User), Memory % or Query Targeting open on the same
-          host => the missing index is already hurting the cluster; raise urgency from
-          advisory to action.
-        tool_calls:
-          - *open_alerts
-    remediation:
-      - action: "build_suggested_index"
-        description: "Create the suggested index(es) step 1 named (rolling build, off-peak for large collections)."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service team — advisory unless step 2 shows resource alerts on the same host."
-    follow_up:
-      - "Confirm the suggestion disappears from Performance Advisor after the index is built."
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: host has index suggestions; notification delay 0 minutes, resend 60 minutes. Category: Performance / Capacity. UI treatment: optimization insight, not a standalone outage.
 
-  # ============================================================ CONNECTIONS
-  - name: "MongoAtlasConnectionsHigh"
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Retrieve and qualify the recommendation
+        description: |-
+          Read the existing get_performance_advisor output once. Do not assume this wrapper exposes
+          all upstream MCP operations or recent slow logs. Label missing sections unavailable; missing
+          window means timing unknown. Preserve each recommendation's namespace and ordered keys.
+          Select a bounded number for comparison. Provider weight is advisory ranking, not guaranteed
+          latency/CPU/RAM benefit. Co-occurring CPU/targeting alerts increase triage relevance but do
+          not prove the missing index caused them.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
+      - step: 3
+        title: Compare with currently defined indexes on the mapped cluster
+        description: |-
+          Only after database credential mapping is verified, inspect at most two observed namespaces.
+          Check keys and available options; do not treat a same-name or same-prefix index as automatically
+          equivalent. An exact existing index can mean a stale recommendation; it does not justify
+          creating a duplicate. Schema sampling and queryPlanner are optional operator-approved follow-on
+          steps, not default. Never synthesize query literals from redacted samples.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_indexes
+            description: |-
+              CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+              observed namespace (at most two). Compare returned ordered key patterns and index options,
+              including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+              options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+              index is a review candidate, not a proven fix. Do not invoke create_index.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 4
+        title: Validate the recommendation against structure and the current query plan
+        description: For at most one high-value recommendation, use the observed namespace to inspect a small
+          structural schema sample and, only when the Advisor evidence contains an exact executable FIND
+          predicate, run queryPlanner explain. Confirm whether the recommended fields exist with compatible
+          observed types and whether the current represented query plan already uses an equivalent index. Do
+          not infer selectivity/cardinality from schema sampling, and do not auto-create the index.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
+    remediation:
+      - action: review_index_proposal
+        description: Give the owner the suggested namespace/ordered keys, supporting findings and current
+          index comparison. Require review of selectivity, sort, collation, partial/sparse/unique options,
+          write cost, build headroom and rollout/rollback.
+        tool_id: ''
+        requires_approval: true
+      - action: do_not_blindly_drop
+        description: Drop-index suggestions require separate workload-window/dependency review. Rare-use,
+          constraint or scheduled-job indexes may still be needed.
+        tool_id: ''
+        requires_approval: true
+    escalation: P3 owning service/DB team through an insight. Escalate the separately evidenced
+      resource/availability incident, not this recommendation alone.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Suggestion disappearance can reflect a changed analysis window. Verify actual index existence and
+        owner-observed query results; do not declare success solely from absence.
+  - name: MongoAtlasCPUUserCritical
     patterns:
-      [
-        "Connections % of configured limit",
-        "% of configured limit",
-        "CONNECTIONS_PERCENT",
-      ]
+      - 'System: CPU (User) % above 95'
+      - CPU (User) % has gone above 95
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: CPU (User) above 95%; notification delay 10 minutes, resend 10 minutes. Category: Performance / Capacity. P1 is a proposed Rtifact operational priority; it does not assert an application outage.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Inspect capacity settings and same-entity alert context
+        description: |-
+          Use the actual metricName/units from the alert; normalized and unnormalized CPU metrics
+          must not be silently conflated. Record configured/effective tier and compute autoscaling
+          settings only when returned. Do not infer exhausted burst credits, maintenance, index build,
+          cache eviction or replication work from tier/stateName. Do not infer a primary/secondary role
+          from hostname ordinals. Severity selection comes from configId/verified threshold, not the
+          instantaneous CPU value.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Identify query inefficiency candidates and inspect their indexes
+        description: |-
+          Call Performance Advisor once if budget permits. Report observed namespace, query-shape
+          identity, recommended ordered index keys and section/window status. Slow-operation elapsed
+          time is not CPU time. count multiplied by avgMs is not percent CPU, nor proof of attribution;
+          only compare provider samples with the same known scope/window. Advisor weight is not a
+          measured CPU-saving estimate. No returned candidate means cause unknown, not legitimate
+          traffic. Check up to two returned namespaces with collection_indexes. Do not run explain
+          or schema sampling in the default path.
+          Because this is the CPU-critical rule, prefer cached Advisor output; at most one
+          lightweight index inspection if the DB owner permits. No explain, sampling, aggregation,
+          broad db_stats or reconnect loop during severe resource pressure.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
+          - tool_id: mcp.mongodb-database.collection_indexes
+            description: |-
+              CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+              observed namespace (at most two). Compare returned ordered key patterns and index options,
+              including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+              options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+              index is a review candidate, not a proven fix. Do not invoke create_index.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 4
+        title: Inspect recent mongod evidence for CPU/query symptoms
+        description: When the same-cluster database binding is reachable, inspect one bounded recent mongod
+          log snapshot for returned slow-operation, query, storage, replication, or network messages. Use only
+          messages actually present. Recent getLog output is not incident history and may come from a
+          connection-selected member rather than the alerted host; do not make host-specific or historical
+          claims without returned identity/timestamps.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+      - step: 5
+        title: Validate one hot-query hypothesis without executing it
+        description: Only after Advisor identifies an exact namespace and an executable FIND predicate,
+          compare sampled field structure and the current queryPlanner plan. Schema sampling is capped at 10
+          and may expose customer data internally, so return structural facts only. Explain is verification of
+          the represented CURRENT query shape, not CPU attribution. Never synthesize redacted predicates or
+          use executionStats/allPlansExecution. While the >95% occurrence is still OPEN, defer schema sampling
+          and explain unless an explicit low-impact/operator gate approves them; use cached/index/log evidence
+          first.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
+    remediation:
+      - action: urgent_capacity_review
+        description: Notify the DB owner and have them verify impact/capacity options. No automatic scale or
+          autoscaling mutation.
+        tool_id: ''
+        requires_approval: true
+      - action: defer_query_execution
+        description: Present observed query/index candidates for review; postpone plan execution, sampling and
+          index builds during severe saturation.
+        tool_id: ''
+        requires_approval: true
+    escalation: P1 resource-risk triage by DB owner under the proposed policy. Link the corresponding >90
+      occurrence when identity matches; retain independent lifecycle per rule and avoid duplicate expensive
+      analysis.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+  - name: MongoAtlasQueryTargetingHigh
+    patterns:
+      - 'Query Targeting: Scanned Objects / Returned'
+      - QUERY_TARGETING_SCANNED_OBJECTS_PER_RETURNED
     priority: P2
     diagnostic_steps:
       - step: 1
-        title: "Identify the Atlas project and confirm how close the host is to its connection limit"
-        description: >-
-          "Connections % of configured limit above 85" (fires after 5 min, re-notifies
-          every 10 min): at 100% Atlas refuses new connections and clients fail to
-          connect. From list_alerts cite currentValue on $host. Interpret: > 95 =>
-          imminent connection refusals. Memory % open together => connection memory
-          is contributing to RAM pressure. CPU open together => slow queries are
-          holding connections longer (step 3).
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: scanned objects / returned above 1000; notification delay 10 minutes, resend 30 minutes. Category: Performance / Capacity. The host ratio flags efficiency risk but does not identify a query.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
         tool_calls:
-          - *resolve_project
-          - *open_alerts
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
       - step: 2
-        title: "Check the tier — it sets the connection limit"
-        description: >-
-          From inspect_cluster: the connection limit is fixed by the tier
-          (instanceSize — e.g. M10 1500, M20 3000, M30 3000, M40 6000 per member).
-          Interpret: a low tier with many application pods => the aggregate client
-          pool sizes exceed the tier's limit; either shrink pools or move up a tier.
+        title: Find evidence-backed namespaces and query shapes
+        description: |-
+          Use only fields actually returned by Performance Advisor. Separate its known/unknown
+          analysis window and cluster/host scope from the incident scope. No suggestions does not prove
+          an unselective query, sub-threshold queries or healthy indexes; attribution is unavailable.
+          A ratio is valid only for compatible numerator/denominator; returned=0 is undefined, not
+          infinity or a substituted denominator of one. Advisor suggestions are candidates, not the fix.
+          A current COLLSCAN, if an approved plan is later obtained, is not always wrong and does not
+          prove that same plan ran at alert time.
         tool_calls:
-          - *cluster_config
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
       - step: 3
-        title: "Check whether slow queries are holding connections"
-        description: >-
-          From Performance Advisor: slow shapes with high avgMs keep connections busy
-          and force pools to open more. NAME them. Honest gap: per-client connection
-          counts (which application holds them) need a currentOp/connection tool that
-          is not available yet — say so rather than naming a client.
+        title: Inspect existing index definitions and prepare a reviewable proposal
+        description: |-
+          Inspect only namespaces observed in authorized Advisor evidence. Keep ordered keys and
+          options. Do not name a service owner from a collection name alone. No exact executable query
+          means no explain call. Optional schema or planner extensions require separate gates and are
+          not part of this automatic v1 path.
         tool_calls:
-          - *query_workload
+          - tool_id: mcp.mongodb-database.collection_indexes
+            description: |-
+              CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
+              observed namespace (at most two). Compare returned ordered key patterns and index options,
+              including uniqueness, partial filters, sparse, collation, hidden/TTL when present. Missing
+              options are unknown. Index definitions do not measure usage, bytes or benefit. A suggested
+              index is a review candidate, not a proven fix. Do not invoke create_index.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 4
+        title: Inspect recent mongod query evidence
+        description: Use one recent mongod log snapshot from the verified binding for supporting
+          slow-operation/query messages. If logs return docsExamined, keysExamined, nreturned, planSummary or
+          duration fields, preserve them exactly and correlate only when namespace/timing/identity support it.
+          The absence of a slow-query log in this bounded buffer does not contradict the Atlas targeting
+          alert.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+      - step: 5
+        title: Validate the leading query/index hypothesis with schema and queryPlanner
+        description: For one exact namespace/query candidate returned by Advisor, sample up to 10 documents
+          for structural field types and run queryPlanner explain only if the FIND predicate is executable and
+          unredacted. Use the plan to distinguish a current COLLSCAN/IXSCAN-style planning outcome or index
+          choice when actually returned. This strengthens the hypothesis but does not prove incident-time plan
+          or causal impact.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
     remediation:
-      - action: "cap_client_pools"
-        description: "Reduce maxPoolSize on the applications connecting to $cluster so the sum of pools stays under the tier's limit; fix connection leaks (clients not reused per process)."
-        tool_id: ""
+      - action: review_index_or_query
+        description: Present returned recommendations and current index definitions to the owning DB/service
+          team. Ask them to test a representative query with the correct values/options before approving index
+          or query changes.
+        tool_id: ''
         requires_approval: true
-      - action: "scale_tier_for_connection_limit"
-        description: "If the connection count is legitimate for the workload: move to a tier with a higher connection limit."
-        tool_id: ""
-        requires_approval: true
-    escalation: "Owning service teams (pool configuration) + DB owner when currentValue > 95 on the primary."
+    escalation: P2 query-efficiency finding; escalate concurrent independently established service/resource
+      impact under its own incident policy.
     follow_up:
-      - "Confirm the connections alert closes after pool changes."
-      - "A connection-by-client tool (currentOp / $currentOp appName) would name the application holding connections — deferred."
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
 
-escalation: >-
-  Route Atlas alerts to the owning service team first when the cause is a query,
-  index or connection-pool issue named by the tools; to the platform/DB owner for
-  tier, disk and autoscaling changes; and to Atlas support (via the DB owner) for
-  no-primary / no-mongos conditions that are not explained by a planned Atlas
-  operation — Atlas-managed nodes cannot be repaired from our side.
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
 
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Root cause stays a candidate unless incident-aligned query evidence actually supports attribution.
+  - name: MongoAtlasDiskSpaceHigh
+    patterns:
+      - Disk space % used on Data Partition
+      - DISK_PARTITION_SPACE_USED_DATA
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: data-partition disk usage above 90%; notification delay 3 minutes, resend 30 minutes. Category: Performance / Capacity. This is distinct from the P1 writes-blocked occurrence.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Check write-blocking precedence and storage/autoscaling configuration
+        description: |-
+          If write-blocking/no-primary/no-mongos is active or suspected, switch to the emergency
+          Atlas-only path and skip all subsequent database calls. Otherwise inspect returned disk and
+          autoscaling settings. Disabled autoscaling is a constraint, not proven cause of disk growth.
+          Enabled autoscaling plus a disk alert does not prove failure, tier maximum, or a resize in
+          progress. Do not compute time-to-full from one percentage or from notification recurrence.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Inspect a bounded database storage snapshot
+        description: |-
+          Only with verified database credential mapping and no emergency: reuse a cached catalog
+          or list databases once. Select at most one candidate from explicit evidence or returned
+          size metadata; never assume first means largest. Read db_stats for that database. Report
+          logical data, allocated document storage, index storage and units separately. A mongos
+          aggregate must not be labeled as the firing shard/member's local disk. Permission-limited
+          visibility means partial coverage, not a complete storage inventory.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.list_databases
+            description: |-
+              CONDITIONAL storage discovery only, after the bound database credential has been verified
+              against this incident's tenant, Atlas project and cluster outside model input. This schema
+              has no connectionId or limit. Reuse cached metadata; do not fan out across all databases.
+              Only use names and sizes actually returned. Accessible/returned databases can be a subset;
+              report partial coverage. Select at most one authorized candidate for this run.
+            params:
+              arguments: {}
+              timeout: 10
+          - tool_id: mcp.mongodb-database.db_stats
+            description: |-
+              CONDITIONAL. Inspect ONE verified candidate database. Record observedAt, database,
+              connection scope, source fields and units/scaleFactor when returned. dataSize is logical
+              data, storageSize is allocated document storage and indexSize is allocated index storage;
+              do not add dataSize to storageSize. Do not assume GB, hot working-set size, growth rate,
+              per-shard/per-host attribution or disk percent from these values. Do not add filesystem
+              sizes across databases. Timeouts/permission failures are evidence gaps, not zero usage.
+            params:
+              arguments:
+                database: $database
+              timeout: 10
+      - step: 4
+        title: Inspect only a few evidence-backed collection candidates
+        description: |-
+          Use a namespace already present in evidence; otherwise list collections in the selected
+          database once. Choose at most two, not an unbounded fan-out. collection_storage_size reports
+          only what its actual output says; list_collection_indexes does not supply per-index bytes.
+          Say largest among inspected items, not largest in cluster. Do not infer growth or unused
+          space from a single snapshot. Optional cached Advisor drop-index findings are review leads,
+          not guaranteed reclaimable filesystem space. Do not delay capacity escalation for a full
+          inventory.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.list_collections
+            description: |-
+              CONDITIONAL. Database must come from trusted incident context or an authorized observed
+              namespace/database catalog. This call has no limit/filter parameter. Do not enumerate every
+              collection then issue a call for each. Select at most two evidence-backed candidates, with
+              partial coverage explicitly recorded. Skip if no safe candidate can be selected.
+            params:
+              arguments:
+                database: $database
+              timeout: 10
+          - tool_id: mcp.mongodb-database.collection_storage_size
+            description: |-
+              CONDITIONAL. Inspect only a discovered, authorized namespace; at most two per run.
+              Report the precise returned measure and unit. A single collection size is not a growth
+              trend, the hot working set, a complete host disk breakdown or per-index size. Preserve the
+              collection remainder after the first dot in a namespace. Skip views/unsupported collections
+              when the tool says unsupported, and do not create a collection to make a call succeed.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+              timeout: 10
+      - step: 5
+        title: Inspect recent storage-engine messages as supporting evidence
+        description: After bounded storage snapshots, inspect one recent mongod log buffer for returned
+          WiredTiger, checkpoint, storage, journal, recovery, or disk-related warnings/errors. Logs can
+          explain contemporaneous storage-engine trouble but cannot identify historical growth rate or
+          complete filesystem consumers. No matching messages is not a clean bill of health.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+    remediation:
+      - action: review_storage_capacity
+        description: DB owner should assess storage headroom and permitted expansion/autoscaling promptly;
+          select a remedy after verifying current capacity and deployment constraints.
+        tool_id: ''
+        requires_approval: true
+      - action: review_retention_after_stabilizing
+        description: Use observed footprints to plan retention/archival/index review with the data owner.
+          Document deletion does not necessarily release filesystem space; no automatic delete, compact or
+          drop operations.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner for disk pressure. P1 when a current write-blocking or other availability event is
+      positively reported; escalate first and stop additional database work.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Footprint observations are snapshots only. Do not claim that the largest inspected collection caused
+        the alert without growth/history evidence.
+  - name: MongoAtlasConnectionsHigh
+    patterns:
+      - Connections % of configured limit
+      - CONNECTIONS_PERCENT
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: connections above 85% of configured limit; notification delay 5 minutes, resend 10 minutes. Category: Performance / Capacity. 85% utilization is not proof that connections are refused.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Inspect cluster configuration and correlation without inventing client behavior
+        description: |-
+          Record tier and concurrent same-entity alerts. Do not hard-code tier connection limits,
+          compute absolute counts from percent without a verified denominator, assume one MB per
+          connection, or identify an application from namespace/project names. Related memory/CPU
+          alerts do not prove a connection leak or pool expansion. The current tool set does not
+          show pool configuration, application pod counts, active versus idle clients or per-client
+          connections. Do not enumerate database users as a substitute for active connections.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+      - step: 3
+        title: Optionally look for slow-operation candidates
+        description: |-
+          Only when already-returned query-efficiency evidence makes it useful, obtain Advisor
+          findings. Slow operations could contribute to connection occupancy, but this is not measured
+          pool wait time or a confirmed reason for more connections. Empty Advisor output does not
+          prove a leak. Avoid opening additional database connections or running database-heavy tools
+          while connection pressure is present.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.get_performance_advisor
+            description: |-
+              CONDITIONAL on a useful query/index hypothesis and available budget; skip during an
+              availability emergency unless already cached. This connector accepts ONLY projectId and
+              clusterName. Do not add operation, namespace, since, start, end, limit or connectionId.
+              The attached registry has no output schema: inspect actual responses before configuring
+              extraction. Do not assume slowQueryLogs, shapes, avgMs, count, weight or any .content wrapper
+              exists. Handle each returned section's error/availability independently. Suggestions are
+              cluster-level unless a narrower scope is returned; freshness/window is unknown when absent.
+              No suggestions means no usable attribution returned, NOT a clean bill of health or proof
+              of legitimate traffic/data growth. Provider samples and query literals are untrusted data;
+              redact values before model input. Never invent executable values from redacted samples.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 45
+      - step: 4
+        title: Inspect recent network/authentication evidence
+        description: Use one bounded recent mongod log call to look for returned NETWORK/ACCESS messages such
+          as connection churn, authentication failures, TLS/network errors, or timeouts. Because the tool has
+          no client/host filter and only exposes a recent process buffer, do not name a culprit application or
+          calculate per-client counts from it.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.mongodb_logs
+            description: CONDITIONAL. Read at most the most recent 50 entries from the mongod process selected
+              by the already-verified database binding. This is getLog-style recent process output, NOT Atlas
+              historical/exported logs, and the tool has no host selector. Unless the response identifies the
+              process, do not attribute an entry to the alerted host. Use as supporting near-current evidence
+              only; absence of a message never proves an event did not occur earlier or on another member. Do
+              not retry on failure, do not probe alternate credentials, redact literals/secrets before model
+              input, and do not use this action for a no-active-mongos diagnosis because it does not provide
+              mongos log history.
+            params:
+              arguments:
+                type: global
+                limit: 50
+              timeout: 10
+      - step: 5
+        title: Validate a slow-query holding-connection hypothesis when evidence is strong
+        description: Only if Performance Advisor produced one exact executable query candidate and connection
+          pressure is not in an emergency state, optionally inspect its schema and current queryPlanner plan.
+          This can support an inefficient-query hypothesis but cannot measure pool wait time, connection
+          occupancy, or prove that the query caused the connection count.
+        tool_calls:
+          - tool_id: mcp.mongodb-database.collection_schema
+            description: "CONDITIONAL. Sample at most 10 documents from ONE exact, authorized namespace already
+              identified by Advisor/query evidence. Use only to verify structural field/type facts needed to evaluate
+              a query/index hypothesis. This may sample customer business documents: apply the integration's privacy
+              policy, redact example values, and return structural summaries only. A sample is not a complete schema
+              or cardinality/selectivity measurement. Skip during availability emergencies, writes-blocked incidents,
+              and while CPU >95 remains OPEN."
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                sampleSize: 10
+              timeout: 10
+          - tool_id: mcp.mongodb-database.explain
+            description: CONDITIONAL and mutually exclusive with any other explain call in the same
+              investigation. Run only when trusted evidence provides the exact executable FIND predicate for
+              the observed namespace; never reconstruct redacted values, substitute {}, or invent parameters.
+              Use queryPlanner only so the tool evaluates the winning plan without requesting executionStats.
+              Preserve exact filter semantics supported by this wrapper. If sort/projection/collation/hint or
+              other required semantics cannot be represented faithfully, skip and report the limitation. This
+              wrapper has no maxTimeMS; enforce one-call and server-side safety in the connector. Current plan
+              evidence is not proof of the incident-time plan.
+            params:
+              arguments:
+                database: $database
+                collection: $collection
+                method: find
+                filter: $observedFilter
+                verbosity: queryPlanner
+              timeout: 10
+    remediation:
+      - action: review_pools_and_impact
+        description: Service owner should review client reuse, pool limits, application-instance counts,
+          timeouts and connection errors in their systems; the agent must not choose a culprit service without
+          evidence.
+        tool_id: ''
+        requires_approval: true
+      - action: review_capacity_limit
+        description: DB owner should verify the applicable connection limit and evaluate capacity only after
+          validating legitimate connection requirements. Do not blindly shrink all pools.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB/service owner. Escalate promptly for owner-confirmed connection rejection/customer
+      impact or a separate availability incident; do not claim an outage at 85% solely from the alert.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+  - name: MongoAtlasNoActiveMongos
+    patterns:
+      - Cluster has no active mongos processes
+      - no active mongos
+      - CLUSTER_MONGOS_IS_MISSING
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Resolve authorized scope and reconcile this alert occurrence
+        description: |
+          Configured rule: no active mongos; notification delay 15 minutes, resend 15 minutes. Category: Core / Critical. Treat an incoming production alert as urgent provider-reported router unavailability.
+
+          Use the shared project/cluster scope preflight. If the trusted binding already provides
+          $groupId and $cluster, do not run discovery. Query OPEN alerts and preserve the exact external
+          alert ID and configId. If absent, run the shared bounded TRACKING/CLOSED reconciliation, not
+          an unbounded project-history search. No exact positive match means NOT_FOUND/UNKNOWN, never
+          self-resolved. Match same host/replica set using explicit identity; cluster-level context is
+          not host-specific evidence. The notification delay is configuration, not a verified continuous
+          measurement series. Report provider currentValue only with its raw unit and source timing.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.list_alerts
+            description: |-
+              REQUIRED after scope resolution. This is a page of project-wide alerts, not a host health
+              probe. Match the incoming external alert ID first; otherwise require alertConfigId plus the
+              exact affected entity and mark identity weaker. Preserve ID, event type, metric name, raw
+              value/unit, returned timestamps and scope, if present. Follow verified pagination within the
+              runtime budget. Unrelated alerts are context only. Not found is NOT resolved. Fetch time is
+              not the measurement timestamp. Reuse one checked OPEN snapshot across this investigation.
+            params:
+              arguments:
+                projectId: $groupId
+                status: OPEN
+                itemsPerPage: 100
+                pageNum: $pageNum
+                includeCount: false
+              timeout: 20
+      - step: 2
+        title: Verify configuration identity and escalate immediately
+        description: |-
+          Notify DB/platform owner before enrichment. Inspect clusterType and configuration state.
+          An unexpected REPLICASET result is an identity/configuration inconsistency: verify binding
+          before calling the rule misconfigured. UPDATING is not proof of router maintenance; IDLE is
+          not proof that no planned operation exists. Configured router/topology information is not
+          live process health. Do not invent missing router counts, restart reasons, network faults
+          or total customer impact. Skip direct database calls because they may depend on the missing
+          routers; repeated timeouts only add noise and do not diagnose the outage.
+        tool_calls:
+          - tool_id: mcp.mongodb-atlas.inspect_cluster
+            description: |-
+              REQUIRED when the exact project/cluster is verified; reuse a cached result with its age.
+              Read only fields actually returned and label desired versus effective configuration.
+              stateName is control-plane configuration state, NOT per-member runtime health. IDLE does
+              not prove health/no maintenance; UPDATING does not identify a resize, upgrade or restart.
+              Node counts are configured counts, not healthy counts. Autoscaling configuration is not
+              proof an action occurred. Never hard-code tier-to-RAM, tier-to-IOPS or connection limits.
+            params:
+              arguments:
+                projectId: $groupId
+                clusterName: $cluster
+              timeout: 20
+    remediation:
+      - action: escalate_router_availability
+        description: DB owner should verify live router health and Atlas activity in the UI and involve
+          MongoDB Support for persistent service risk. Do not restart managed routers or create access-list
+          entries through the agent.
+        tool_id: ''
+        requires_approval: true
+      - action: verify_clients
+        description: Ask service owners to confirm connection/retry failures and recovery separately; do not
+          claim that all clients failed based on a single provider event.
+        tool_id: ''
+        requires_approval: true
+    escalation: P1 DB/platform owner immediately, MongoDB Support according to the availability policy. Do not
+      delay while waiting for Advisor or database calls.
+    follow_up:
+      - 'Use a matching newer CLOSED observation/close webhook for this occurrence, not its absence
+
+        from one OPEN page. Closure is symptom recovery, not proof that a recommended fix worked.
+
+        For customer-impacting alerts, ask the owning team to confirm application recovery separately.
+
+        Keep the final report and evidence references even when the cause is not established.'
+      - Matching alert closure indicates the provider condition recovered. Independently verify client
+        connectivity before stating application service is restored.
+      - 'Do not use mongodb_logs as mongos history: the registered database log action returns recent mongod events
+        and has no mongos/host selector.'
+escalation: |-
+  P1 notification is an immediate existing platform action, not a new tool or an agent-created ticket. All remediation remains manual/approval-only. Preserve separate alert occurrence identities and an auditable evidence trail.
 follow_up:
-  - "Project resolution: ask the Atlas webhook integration to put groupId (and project name) in impacted_entities so $groupId comes from the alert instead of list_projects."
-  - "Add Atlas measurements (host metrics history), currentOp and dbStats/collStats read tools to the integration so trends, the exact running operation and per-collection sizes can be cited."
+  - Contract-test real connector output shapes and permissions before rollout; input schemas alone cannot
+    establish output compatibility.
+  - Retain explicit unknowns for missing metric/log/event/live-health evidence; do not silently expand v1
+    scope.
+  - Use the operator guide, runtime policy, binding reference and offline validator together. No file in this
+    package is a deployed enforcement service.
