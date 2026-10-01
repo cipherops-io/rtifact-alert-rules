@@ -113,6 +113,21 @@ open_alerts:
       pageNum: 1
       includeCount: false
     timeout: 20
+    rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+    max_rows: 25
+    summary_chars: 3000
+    fields:
+      - "id=id"
+      - "metric=metricName"
+      - "value=currentValue.number"
+      - "units=currentValue.units"
+      - "host=hostnameAndPort"
+      - "replica_set=replicaSetName"
+      - "cluster=clusterName"
+      - "event=eventTypeName"
+      - "status=status"
+      - "created=created"
+      - "config_id=alertConfigId"
 tracking_alerts:
   tool_id: mcp.mongodb-atlas.list_alerts
   description: |-
@@ -127,6 +142,21 @@ tracking_alerts:
       pageNum: 1
       includeCount: false
     timeout: 20
+    rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+    max_rows: 25
+    summary_chars: 3000
+    fields:
+      - "id=id"
+      - "metric=metricName"
+      - "value=currentValue.number"
+      - "units=currentValue.units"
+      - "host=hostnameAndPort"
+      - "replica_set=replicaSetName"
+      - "cluster=clusterName"
+      - "event=eventTypeName"
+      - "status=status"
+      - "created=created"
+      - "config_id=alertConfigId"
 closed_alerts:
   tool_id: mcp.mongodb-atlas.list_alerts
   description: |-
@@ -143,6 +173,21 @@ closed_alerts:
       pageNum: 1
       includeCount: false
     timeout: 20
+    rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+    max_rows: 25
+    summary_chars: 3000
+    fields:
+      - "id=id"
+      - "metric=metricName"
+      - "value=currentValue.number"
+      - "units=currentValue.units"
+      - "host=hostnameAndPort"
+      - "replica_set=replicaSetName"
+      - "cluster=clusterName"
+      - "event=eventTypeName"
+      - "status=status"
+      - "created=created"
+      - "config_id=alertConfigId"
 cluster_config:
   tool_id: mcp.mongodb-atlas.inspect_cluster
   description: |-
@@ -157,6 +202,21 @@ cluster_config:
       projectId: $groupId
       clusterName: $cluster
     timeout: 20
+    fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+      - "name=name"
+      - "state=stateName"
+      - "paused=paused"
+      - "type=clusterType"
+      - "version=mongoDBVersion"
+      - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+      - "region=replicationSpecs[0].regionConfigs[0].regionName"
+      - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+      - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+      - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+      - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+      - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+      - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+      - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
 query_workload:
   tool_id: mcp.mongodb-atlas.get_performance_advisor
   description: |-
@@ -175,6 +235,26 @@ query_workload:
       projectId: $groupId
       clusterName: $cluster
     timeout: 45
+    parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+      - "suggestedIndexes.content.shapes[*].operations[*].raw"
+    mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+      - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+    omit:  # never store/log the raw log line (customer values, client IPs)
+      - "suggestedIndexes.content.shapes[*].operations[*].raw"
+    rows: "suggestedIndexes.content.shapes[*]"
+    max_rows: 20
+    summary_chars: 4000
+    fields:
+      - "ns=namespace"
+      - "count=count"
+      - "avg_ms=avgMs"
+      - "inefficiency=inefficiencyScore"
+      - "plan=operations[0].raw.attr.planSummary"
+      - "app=operations[0].raw.attr.appName"
+      - "scanned=operations[0].raw.attr.docsExamined"
+      - "returned=operations[0].raw.attr.nreturned"
+      - "cpu_ns=operations[0].raw.attr.cpuNanos"
+      - "query=operations[0].predicates"
 database_catalog:
   tool_id: mcp.mongodb-database.list_databases
   description: |-
@@ -317,6 +397,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Inspect capacity configuration, without inferring runtime memory behavior
         description: |-
@@ -338,6 +433,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Look for candidate query or index contributors only when useful
         description: |-
@@ -364,6 +474,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
           - tool_id: mcp.mongodb-database.collection_indexes
             description: |-
               CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
@@ -496,6 +626,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Inspect capacity settings and same-entity alert context
         description: |-
@@ -519,6 +664,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Identify query inefficiency candidates and inspect their indexes
         description: |-
@@ -547,6 +707,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
           - tool_id: mcp.mongodb-database.collection_indexes
             description: |-
               CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
@@ -676,6 +856,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Inspect control-plane configuration and escalate before enrichment
         description: |-
@@ -702,6 +897,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Optionally inspect one recent mongod log buffer after P1 escalation
         description: After owner escalation, and only when an already-verified same-cluster database
@@ -784,6 +994,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Assess replication-safety context and storage configuration
         description: |-
@@ -808,6 +1033,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Inspect recent replication-related mongod messages
         description: Use one bounded recent log snapshot only when the database binding is reachable. Returned
@@ -887,6 +1127,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Assess storage configuration without adding load
         description: |-
@@ -911,6 +1166,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Optionally inspect recent storage-engine messages after immediate escalation
         description: After the write-blocking incident has been escalated, use one no-retry recent mongod log
@@ -992,6 +1262,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Retrieve and qualify the recommendation
         description: |-
@@ -1019,6 +1304,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
       - step: 3
         title: Compare with currently defined indexes on the mapped cluster
         description: |-
@@ -1137,6 +1442,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Inspect capacity settings and same-entity alert context
         description: |-
@@ -1160,6 +1480,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Identify query inefficiency candidates and inspect their indexes
         description: |-
@@ -1191,6 +1526,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
           - tool_id: mcp.mongodb-database.collection_indexes
             description: |-
               CONDITIONAL. Bound database connection must map to the incident cluster. Inspect an exact
@@ -1322,6 +1677,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Find evidence-backed namespaces and query shapes
         description: |-
@@ -1350,6 +1720,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
       - step: 3
         title: Inspect existing index definitions and prepare a reviewable proposal
         description: |-
@@ -1483,6 +1873,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Check write-blocking precedence and storage/autoscaling configuration
         description: |-
@@ -1505,6 +1910,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Inspect a bounded database storage snapshot
         description: |-
@@ -1650,6 +2070,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Inspect cluster configuration and correlation without inventing client behavior
         description: |-
@@ -1673,6 +2108,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
       - step: 3
         title: Optionally look for slow-operation candidates
         description: |-
@@ -1699,6 +2149,26 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 45
+              parse_json:  # `raw` is a JSON-text slow-query log line; decode so fields can read it
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              mask_values:  # query shapes keep field names/operators, literal values (phones, ids) become "?"
+                - "suggestedIndexes.content.shapes[*].operations[*].predicates"
+              omit:  # never store/log the raw log line (customer values, client IPs)
+                - "suggestedIndexes.content.shapes[*].operations[*].raw"
+              rows: "suggestedIndexes.content.shapes[*]"
+              max_rows: 20
+              summary_chars: 4000
+              fields:
+                - "ns=namespace"
+                - "count=count"
+                - "avg_ms=avgMs"
+                - "inefficiency=inefficiencyScore"
+                - "plan=operations[0].raw.attr.planSummary"
+                - "app=operations[0].raw.attr.appName"
+                - "scanned=operations[0].raw.attr.docsExamined"
+                - "returned=operations[0].raw.attr.nreturned"
+                - "cpu_ns=operations[0].raw.attr.cpuNanos"
+                - "query=operations[0].predicates"
       - step: 4
         title: Inspect recent network/authentication evidence
         description: Use one bounded recent mongod log call to look for returned NETWORK/ACCESS messages such
@@ -1815,6 +2285,21 @@ common_alerts:
                 pageNum: 1
                 includeCount: false
               timeout: 20
+              rows: "results[*]"  # one line per alert; an empty page renders as totalCount=0
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - "id=id"
+                - "metric=metricName"
+                - "value=currentValue.number"
+                - "units=currentValue.units"
+                - "host=hostnameAndPort"
+                - "replica_set=replicaSetName"
+                - "cluster=clusterName"
+                - "event=eventTypeName"
+                - "status=status"
+                - "created=created"
+                - "config_id=alertConfigId"
       - step: 2
         title: Verify configuration identity and escalate immediately
         description: |-
@@ -1839,6 +2324,21 @@ common_alerts:
                 projectId: $groupId
                 clusterName: $cluster
               timeout: 20
+              fields:  # paths verified against a real tcprod Cluster0 response (ALT-295032)
+                - "name=name"
+                - "state=stateName"
+                - "paused=paused"
+                - "type=clusterType"
+                - "version=mongoDBVersion"
+                - "provider=replicationSpecs[0].regionConfigs[0].providerName"
+                - "region=replicationSpecs[0].regionConfigs[0].regionName"
+                - "tier=replicationSpecs[0].regionConfigs[0].electableSpecs.instanceSize"
+                - "effective_tier=replicationSpecs[0].regionConfigs[0].effectiveElectableSpecs.instanceSize"
+                - "nodes=replicationSpecs[0].regionConfigs[0].electableSpecs.nodeCount"
+                - "disk_gb=replicationSpecs[0].regionConfigs[0].electableSpecs.diskSizeGB"
+                - "disk_iops=replicationSpecs[0].regionConfigs[0].electableSpecs.diskIOPS"
+                - "compute_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.compute"
+                - "disk_autoscaling=replicationSpecs[0].regionConfigs[0].autoScaling.diskGB.enabled"
     remediation:
       - action: escalate_router_availability
         description: DB owner should verify live router health and Atlas activity in the UI and involve
