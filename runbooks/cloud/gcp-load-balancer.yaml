@@ -1,0 +1,244 @@
+tech_stack: gcp-load-balancer
+version: "1.0"
+description: >-
+  Runbook for the proactive GCP load-balancer 4xx/5xx anomaly alerts raised on a GKE
+  INTERNAL Application Load Balancer (loadbalancing.googleapis.com/https/internal/request_count)
+  whose backends are GKE services via container-native NEGs. The alert's service is
+  `lb:<short-backend>` where <short-backend> is the NEG backend_target_name with the
+  `k8s1-<8hex>-` prefix and `-<8hex>` suffix removed, i.e. `<namespace>-<service>-<port>`.
+  The namespace/service split is AMBIGUOUS (NEG names truncate at 63 chars) — never guess it;
+  resolve it with tool.list_services and say so when it stays ambiguous.
+  The data source is Cloud Monitoring + Cloud Logging, NOT VictoriaMetrics: use
+  tool.get_lb_error_breakdown (response-code counts, per-5-minute trend, proxyStatus causes,
+  top failing paths) as the primary evidence. Interpret its output as follows.
+  proxyStatus (the LB's own explanation, in the 5xx/4xx samples): destination_unavailable /
+  connection_refused / backend_connection_closed => backend pods unreachable or resetting
+  (502/503); connection_timeout / http_response_timeout / destination_not_found => 504 / no
+  healthy endpoints; http_protocol_error => backend speaking HTTP wrongly or HTTP/2 mismatch;
+  `HTTP <code>` with no proxyStatus => the backend itself returned that code (an application
+  error, not an LB fault). CAVEATS: (1) an empty breakdown means no series/entries were
+  returned (LB logging can be sampled or off) — it is NOT proof of health; an `error` key means
+  the GCP query failed, so say the evidence is unavailable. (2) 4xx are usually client-caused;
+  never treat them as an outage without a baseline spike, a deploy/config correlation, or a
+  real-user impact signal. (3) Only the internal Application LB is covered; an external LB
+  needs the proactive agent's LB_ERROR_METRIC / LB_ERROR_LOG_RESOURCE_TYPE changed.
+
+# Opt-in for forge's URL-less path: proactive LB alerts carry no runbook_url, so forge runs this
+# file's matched entry directly (runbook_loader.auto_execute_runbook_path). Keywords are
+# deliberately specific — they are matched as substrings against title + alert context.
+auto_execute: true
+
+match_keywords:
+  - lb backend
+  - gclb
+  - gcp load balancer
+  - internal_http_lb_rule
+  - backend_target_name
+
+categories:
+  - INFRASTRUCTURE
+  - NETWORKING
+  - CLOUD
+
+common_alerts:
+  # ============================================================ 5xx
+  - name: "GcpLbBackend5xx"
+    patterns:
+      [
+        "HTTP 5xx on LB backend",
+        "5xx of requests on LB backend",
+        "LB backend 5xx",
+        "load balancer 5xx",
+        "gcp lb 5xx",
+        "GcpLbBackend5xx",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Quantify the 5xx, split it by code, and read the LB's own failure reason (proxyStatus)"
+        description: >-
+          Call get_lb_error_breakdown for the alert's `lb:<backend>` service. count_5xx / total /
+          rate_5xx_pct size the incident (the alert fires at >=10 errors AND >=5% of that backend's
+          requests; >=30 errors is critical). by_code names the failure mode: 502 = backend reset or
+          closed the connection / bad gateway; 503 = no healthy endpoints or backend overloaded (or
+          load-shedding); 504 = backend too slow (response beyond the backend-service timeout, 30s by
+          default); 500 = the application itself failed. trend (5-minute buckets, oldest->newest)
+          tells SUDDEN (step change => deploy, config, dependency failure) from RAMPING (saturation
+          or leak) from RECOVERING (already fading — say so). samples.5xx.top_proxy_status is the
+          strongest signal: destination_unavailable / connection_refused => pods gone or not
+          listening; connection_timeout / http_response_timeout => slow or hung backend;
+          backend_connection_closed => keepalive mismatch or crash mid-request; plain `HTTP 500`
+          with no proxyStatus => application error. samples.5xx.top_requests shows whether one
+          endpoint (a bad route / heavy query) or everything fails; slowest_latency_s near the
+          backend timeout confirms 504 timeouts. Report counts against THIS backend only.
+        tool_calls:
+          - tool_id: "tool.get_lb_error_breakdown"
+            description: "5xx/4xx counts by response code, 5-minute trend, proxyStatus causes and top failing request paths for the alerting LB backend (Cloud Monitoring + Cloud Logging)."
+            params:
+              window_minutes: 30
+      - step: 2
+        title: "Map the NEG backend to its Kubernetes service and check workload health"
+        description: >-
+          neg_ns_svc_port in step 1 is `<namespace>-<service>-<port>`. Use list_services to find the
+          service whose name/namespace matches it and state the mapping (or that it is ambiguous).
+          Then judge the backing workload: get_deployment_health (unavailable/ready replicas, a stuck
+          or recent rollout), get_pod_health (not-ready / restarting pods — a readiness probe
+          failing removes endpoints from the NEG and produces 503 'no healthy backend'),
+          get_hpa_state (maxed-out HPA => capacity), get_resource_saturation (CPU throttling / memory
+          near limit => slow responses => 504), get_oom_events (OOMKilled => 502 connection resets).
+          If the 5xx step-change aligns with a rollout, treat the new revision as the suspect.
+          If the mapping is ambiguous, say the workload check is unconfirmed rather than inspecting
+          a guessed service.
+        tool_calls:
+          - tool_id: "tool.list_services"
+            description: "Find the Kubernetes service behind the LB's NEG backend (match on neg_ns_svc_port)."
+          - tool_id: "tool.get_deployment_health"
+            description: "Replica availability and rollout state of the backing deployment."
+          - tool_id: "tool.get_pod_health"
+            description: "Not-ready / restarting pods of the backing service (readiness failures drain the NEG)."
+          - tool_id: "tool.get_hpa_state"
+            description: "Whether the HPA is pinned at max replicas."
+          - tool_id: "tool.get_resource_saturation"
+            description: "CPU throttling and memory pressure on the backing pods."
+          - tool_id: "tool.get_oom_events"
+            description: "OOMKilled containers (connection resets => 502)."
+      - step: 3
+        title: "Rule out platform causes: node pressure, pending pods, and an application error signature"
+        description: >-
+          If step 2 shows healthy pods but 5xx persist, widen: get_node_pressure (node
+          memory/disk/PID pressure evicting pods), get_pending_pods (replicas that cannot schedule =>
+          too few endpoints => 503), and find_new_error_signatures / detect_log_spike for the backing
+          service (a NEW error signature that began with the 5xx step-change names the application
+          defect). 502s with proxyStatus backend_connection_closed and healthy pods usually mean a
+          keepalive mismatch: the app/server closes idle connections sooner than the LB's backend
+          keepalive (an app idle timeout under ~600s for an internal LB, or the HTTP server's
+          keepalive shorter than the LB's) — name it as a hypothesis, not a finding.
+        tool_calls:
+          - tool_id: "tool.get_node_pressure"
+            description: "Node memory/disk/PID pressure and evictions."
+          - tool_id: "tool.get_pending_pods"
+            description: "Pods that cannot schedule (reduces NEG endpoints)."
+          - tool_id: "tool.find_new_error_signatures"
+            description: "New error signatures in the backing service's logs since the 5xx began."
+          - tool_id: "tool.detect_log_spike"
+            description: "Error-log spike for the backing service versus the same window yesterday."
+    remediation: # suggestion-only — the fix is in the BACKEND or its rollout, not the LB
+      - action: "rollback_or_restart_backend"
+        description: "When the 5xx started with a rollout (step 2) or pods are crashing/OOMing: roll back the deployment to the last good revision, or restart the unhealthy pods. Owning service team; confirm the LB 5xx rate falls after endpoints turn healthy."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "scale_up_backend"
+        description: "When 503/504 with the HPA at max, CPU throttling or high latency: raise HPA maxReplicas / resource limits. Check the backend service's max-rate/connection limits too."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+      - action: "fix_probe_or_timeout_config"
+        description: "When pods are healthy but 502/504 persist: align the readiness probe with the LB health check (same path/port), raise the BackendConfig timeoutSec above the slowest legitimate request, and make the app's keepalive/idle timeout longer than the LB's. Needs a config change via GitOps — do not hand-edit."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning backend/service team for a single-backend 5xx (the usual case). Platform/networking on-call when several LB backends fail together (shared dependency, node pool, or LB/NEG issue) or the alert is critical (>=30 errors) and unexplained after step 3."
+    follow_up:
+      - "Confirm the backend's 5xx rate drops below 5% / 10 errors per 15 min and the alert auto-resolves."
+      - "If 503s coincided with rollouts, add readiness gating, preStop drain/terminationGracePeriod and a rolling-update maxUnavailable of 0 so endpoints drain before pods stop."
+      - "If 504s: compare slowest_latency_s to the BackendConfig timeoutSec and fix the slow endpoint rather than only raising the timeout."
+
+  # ============================================================ 4xx
+  - name: "GcpLbBackend4xxSpike"
+    patterns:
+      [
+        "spike on LB backend",
+        "HTTP 400 spike on LB backend",
+        "HTTP 401 spike on LB backend",
+        "HTTP 403 spike on LB backend",
+        "HTTP 429 spike on LB backend",
+        "LB backend 4xx",
+        "load balancer 4xx",
+        "GcpLbBackend4xxSpike",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify which 4xx code spiked, how large the spike is, and who/what is sending it"
+        description: >-
+          The alert fires only for a watched code (default 400, 401, 403, 429) when it is >=50 in the
+          window AND >=5x that backend+code's own trailing average (404 is excluded: it is constant
+          background). Read the code from the alert title, then use get_lb_error_breakdown by_code and
+          trend to confirm the spike's shape (a one-off burst vs a sustained step) and
+          samples.4xx.top_requests for WHICH path/method drives it. Interpret by code:
+          401 => authentication failing (expired/rotated token or key, IdP outage, a client with a bad
+          credential retrying — a few paths with a huge count is a stuck client);
+          403 => authorization/policy: Cloud Armor rule or IAP/IAM change, a permissions/CORS/WAF
+          change, or a scanner probing blocked paths (many varied paths = scanning);
+          429 => throttling: a rate limit / Cloud Armor throttle tripping, often a retry storm or one
+          noisy client (the real question is whether legitimate users are being throttled);
+          400 => malformed requests: a client/SDK release sending bad payloads, oversized headers, or
+          an HTTP-protocol mismatch (compare http_protocol_error in proxyStatus).
+          A 4xx spike with a flat 2xx and no user complaints is usually benign client noise — say so;
+          a 4xx spike with 2xx falling is real user impact (a login/policy/route regression).
+        tool_calls:
+          - tool_id: "tool.get_lb_error_breakdown"
+            description: "4xx counts by code, trend, and the top paths/methods behind the spike for the alerting LB backend."
+            params:
+              window_minutes: 60
+      - step: 2
+        title: "Correlate with a recent change and check the backing service's own view"
+        description: >-
+          4xx regressions are mostly caused by change: a deploy that altered auth, routes or payload
+          validation (403/401/400), an URL-map / path-rule or API-version change (404-like route
+          breakage), a Cloud Armor/IAP policy edit (403), or a client release (400). Map the NEG to its
+          service with list_services (neg_ns_svc_port is `<namespace>-<service>-<port>`; state when it
+          is ambiguous), then use get_deployment_health for a recent rollout, and
+          find_new_error_signatures / detect_log_spike for the service's own auth/validation errors
+          (the backend log message usually names the exact reason). Note that 4xx served by the LB
+          itself (Cloud Armor, IAP, URL-map no-match) will NOT appear in backend logs — if the
+          backend logs are quiet while the LB counts are high, the rejection is at the LB/edge.
+        tool_calls:
+          - tool_id: "tool.list_services"
+            description: "Find the Kubernetes service behind the LB's NEG backend."
+          - tool_id: "tool.get_deployment_health"
+            description: "Recent rollout of the backing deployment (change correlation)."
+          - tool_id: "tool.find_new_error_signatures"
+            description: "New auth/validation error signatures in the backing service since the spike began."
+          - tool_id: "tool.detect_log_spike"
+            description: "Backing-service error-log spike versus the same window yesterday."
+    remediation: # suggestion-only — 4xx is rarely fixed by restarting anything
+      - action: "revert_breaking_change"
+        description: "When the spike starts at a deploy / policy / URL-map / client-release change: revert or fix that change (auth, routing, Cloud Armor/IAP policy, payload validation) via GitOps. Owning service team."
+        tool_id: ""
+        requires_approval: true
+      - action: "tune_or_block_client"
+        description: "When one client/IP/path drives 429/401/403 (retry storm, stuck credential, scanner): contact the client owner to fix the credential/backoff, or block/throttle the source in Cloud Armor. Confirm legitimate users are unaffected first."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning backend/service team for auth/validation changes. Security on-call for a 401/403 spike across many varied paths (scanning/credential stuffing). Platform/networking on-call when a Cloud Armor, IAP or URL-map change is the cause."
+    follow_up:
+      - "Confirm the code returns to its trailing-average rate and the alert resolves."
+      - "If a client retry storm: ask the client to add exponential backoff + jitter and honour Retry-After."
+      - "If a policy/route change caused it: add a pre-deploy check for Cloud Armor / IAP / URL-map changes."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Break down the LB errors"
+      tool_calls:
+        - tool_id: "tool.get_lb_error_breakdown"
+          description: "Response-code counts, trend, proxyStatus causes and top failing paths for the LB backend."
+    - step: 2
+      title: "Check the backing workload"
+      tool_calls:
+        - tool_id: "tool.list_services"
+          description: "Map the NEG backend to its Kubernetes service."
+        - tool_id: "tool.get_deployment_health"
+          description: "Replica availability and rollout state."
+        - tool_id: "tool.get_pod_health"
+          description: "Not-ready / restarting pods."
+    - step: 3
+      title: "Generate RCA narrative"
+      tool_calls:
+        - tool_id: "tool.generate_root_cause"
+          description: "Produce root-cause summary with confidence and blast-radius estimate."
+
+available_tools:
+  - tool_id: "tool.get_lb_error_breakdown"
+    endpoint: "/api/tools/get-lb-error-breakdown"
+    description: "GCP LB 4xx/5xx breakdown for one backend (Cloud Monitoring + Cloud Logging, ADC)."
+    params: ["service_name", "window_minutes"]
