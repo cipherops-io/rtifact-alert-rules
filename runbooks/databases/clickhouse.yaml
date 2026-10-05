@@ -2890,9 +2890,11 @@ common_alerts:
       - step: 1
         title: "Confirm which of the two signals fired and whether it is ongoing"
         description: >-
-          The rule ORs four branches: increase over 10m of NETWORK_ERROR in system.errors or
-          DNSError in system.events, plus the just-appeared branch for each (these counters
-          do not exist until the first occurrence). network_errors_10m and dns_errors_10m
+          The rule ORs four branches: an increase of more than 5 over 10m in NETWORK_ERROR
+          in system.errors or DNSError in system.events, plus the just-appeared branch for
+          each (these counters do not exist until the first occurrence, so the branch fires
+          when one appears already above 5). Five or fewer errors in the window is treated
+          as background noise. network_errors_10m and dns_errors_10m
           show recent activity; the *_total series show cumulative values since server start.
           Interpret: network errors rising without DNS errors => connection-level failures
           (policy, packet loss, a peer refusing connections). DNS errors present =>

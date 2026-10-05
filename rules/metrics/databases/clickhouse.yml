@@ -894,13 +894,13 @@ groups:
 
       - alert: ClickHouseNetworkErrors
         expr: |
-          increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0
+          increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5
           or
-          increase(chi_clickhouse_event_DNSError[10m]) > 0
+          increase(chi_clickhouse_event_DNSError[10m]) > 5
           or
-          (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+          (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
           or
-          (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+          (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
         for: 5m
         labels:
           sourceType: metric
@@ -911,9 +911,9 @@ groups:
           category: network
           runbook: runbooks/databases/clickhouse.yaml
           query: |
-            increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
-            or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
-            or (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+            increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase(chi_clickhouse_event_DNSError[10m]) > 5
+            or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+            or (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
         annotations:
           summary: "ClickHouse is hitting network or DNS errors"
           description: "Host {{ $labels.hostname }} (CHI {{ $labels.chi }}) recorded {{ $value | humanize }} network or
