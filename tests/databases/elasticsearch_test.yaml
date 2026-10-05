@@ -1,0 +1,389 @@
+# Elasticsearch default-alert regression tests. Run: promtool test rules tests/databases/elasticsearch_test.yaml
+rule_files:
+  - ../../rules/metrics/databases/elasticsearch.yml
+evaluation_interval: 30s
+tests:
+  - name: Healthy values, exact warning boundaries and historical counters do not fire
+    interval: 30s
+    input_series:
+      - series: elasticsearch_scrape_success{instance="exporter:9114",collector="cluster-info"}
+        values: 1+0x60
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="red"}
+        values: 0+0x60
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="yellow"}
+        values: 0+0x60
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 150+0x60
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x60
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 850+0x60
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 1000+0x60
+      - series: elasticsearch_breakers_tripped{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",breaker="parent"}
+        values: 100+0x60
+      - series: elasticsearch_index_stats_indexing_index_failed_total{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",index="logs"}
+        values: 100+0x60
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+0x60
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+0x60
+      - series: elasticsearch_cluster_health_task_max_waiting_in_queue_millis{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a"}
+        values: 60000+0x60
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 30m
+        exp_samples: []
+  - name: Collector failures and red clusters honor their distinct waiting periods
+    interval: 30s
+    input_series:
+      - series: elasticsearch_scrape_success{instance="exporter:9114",collector="cluster-info"}
+        values: 0+0x10
+      - series: elasticsearch_scrape_success{instance="healthy:9114",collector="cluster-info"}
+        values: 1+0x10
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="red"}
+        values: 1+0x10
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 30s
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 1m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchClusterRed"}'
+            value: 1
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 2m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchClusterRed"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchMetricsCollectionFailed"}'
+            value: 1
+  - name: Yellow is included for an intentional single-data-node cluster
+    interval: 30s
+    input_series:
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="yellow"}
+        values: 1+0x22
+      - series: elasticsearch_cluster_health_number_of_data_nodes{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a"}
+        values: 1+0x22
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 9m30s
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchClusterYellow"}'
+            value: 1
+  - name: Disk boundaries exclude 85, include 95 as critical only, and guard invalid capacities
+    interval: 30s
+    input_series:
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="at85",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 150+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="at85",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="above85",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 149+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="above85",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="below95",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 51+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="below95",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="at95",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 50+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="at95",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="at99",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 10+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="at99",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="zeroCapacity",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 0+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="zeroCapacity",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 0+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="negativeCapacity",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1+0x24
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="negativeCapacity",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: -1+0x24
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="missingCapacity",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1+0x24
+    promql_expr_test:
+      - expr: sum by (alertname, name) (ALERTS{alertstate="firing"})
+        eval_time: 1m30s
+        exp_samples: []
+      - expr: sum by (alertname, name) (ALERTS{alertstate="firing"})
+        eval_time: 2m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchDiskSpaceCritical", name="at95"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchDiskSpaceCritical", name="at99"}'
+            value: 1
+      - expr: sum by (alertname, name) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchDiskSpaceCritical", name="at95"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchDiskSpaceCritical", name="at99"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchDiskSpaceLow", name="above85"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchDiskSpaceLow", name="below95"}'
+            value: 1
+  - name: Disk escalation clears warning at 95 and honors the critical delay and recovery
+    interval: 30s
+    input_series:
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 100+0x20 50+0x4 500+0x4
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x30
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchDiskSpaceLow"}'
+            value: 1
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 10m30s
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 12m
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 12m30s
+        exp_samples:
+          - labels: '{alertname="ElasticsearchDiskSpaceCritical"}'
+            value: 1
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 13m
+        exp_samples: []
+  - name: Heap pressure uses heap area, a positive maximum, and a sustained strict threshold
+    interval: 30s
+    input_series:
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="high",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 860+0x22
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="high",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 1000+0x22
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="at85",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 850+0x22
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="at85",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 1000+0x22
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="nonHeap",instance="exporter:9114",rtf_cluster_id="client-a",area="nonheap"}
+        values: 950+0x22
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="nonHeap",instance="exporter:9114",rtf_cluster_id="client-a",area="nonheap"}
+        values: 1000+0x22
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="zeroLimit",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 900+0x22
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="zeroLimit",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 0+0x22
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="unknownLimit",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 900+0x22
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="unknownLimit",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: -1+0x22
+    promql_expr_test:
+      - expr: sum by (alertname, name) (ALERTS{alertstate="firing"})
+        eval_time: 9m30s
+        exp_samples: []
+      - expr: sum by (alertname, name) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchJVMHeapHigh", name="high"}'
+            value: 1
+  - name: Breaker and indexing counters detect new events, handle resets, and expire old incidents
+    interval: 30s
+    input_series:
+      - series: elasticsearch_breakers_tripped{cluster="production",name="thresholdReached",instance="exporter:9114",rtf_cluster_id="client-a",breaker="parent"}
+        values: 100+0x19 103+0x40
+      - series: elasticsearch_index_stats_indexing_index_failed_total{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",index="thresholdReached"}
+        values: 100+0x19 105+0x40
+      - series: elasticsearch_breakers_tripped{cluster="production",name="belowThreshold",instance="exporter:9114",rtf_cluster_id="client-a",breaker="parent"}
+        values: 100+0x19 102+0x40
+      - series: elasticsearch_index_stats_indexing_index_failed_total{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",index="belowThreshold"}
+        values: 100+0x19 104+0x40
+      - series: elasticsearch_breakers_tripped{cluster="production",name="resetOnly",instance="exporter:9114",rtf_cluster_id="client-a",breaker="parent"}
+        values: 100+0x19 0+0x40
+      - series: elasticsearch_index_stats_indexing_index_failed_total{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",index="resetOnly"}
+        values: 100+0x19 0+0x40
+      - series: elasticsearch_breakers_tripped{cluster="production",name="resetThenFailures",instance="exporter:9114",rtf_cluster_id="client-a",breaker="parent"}
+        values: 100+0x18 0 3+0x40
+      - series: elasticsearch_index_stats_indexing_index_failed_total{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",index="resetThenFailures"}
+        values: 100+0x18 0 5+0x40
+    promql_expr_test:
+      - expr: sum by (alertname, name, index) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples: []
+      - expr: sum by (alertname, name, index) (ALERTS{alertstate="firing"})
+        eval_time: 14m30s
+        exp_samples: []
+      - expr: sum by (alertname, name, index) (ALERTS{alertstate="firing"})
+        eval_time: 15m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchCircuitBreakerTripped", name="thresholdReached"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchIndexingFailures", index="thresholdReached"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchCircuitBreakerTripped", name="resetThenFailures"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchIndexingFailures", index="resetThenFailures"}'
+            value: 1
+      - expr: sum by (alertname, name, index) (ALERTS{alertstate="firing"})
+        eval_time: 21m
+        exp_samples: []
+  - name: Rejection ratio honors pool selection, 5 percent boundary, traffic gate and client isolation
+    interval: 30s
+    input_series:
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search_coordination"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search_coordination"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search_throttled"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="search_throttled"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="write"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="write"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="write_coordination"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="write_coordination"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="bulk"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="bulk"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="index"}
+        values: 0+2x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",type="index"}
+        values: 0+18x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-b",type="search"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-b",type="search"}
+        values: 0+10000x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="exact5Percent",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+1x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="exact5Percent",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+19x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="lowTraffic",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+1x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="lowTraffic",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="idle",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="idle",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="excludedPool",instance="exporter:9114",rtf_cluster_id="client-a",type="snapshot"}
+        values: 0+20x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="excludedPool",instance="exporter:9114",rtf_cluster_id="client-a",type="snapshot"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="allRejected",instance="exporter:9114",rtf_cluster_id="client-a",type="write"}
+        values: 0+20x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="allRejected",instance="exporter:9114",rtf_cluster_id="client-a",type="write"}
+        values: 0+0x24
+      - series: elasticsearch_thread_pool_rejected_count{cluster="production",name="exactMinimum",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+1x24
+      - series: elasticsearch_thread_pool_completed_count{cluster="production",name="exactMinimum",instance="exporter:9114",rtf_cluster_id="client-a",type="search"}
+        values: 0+9x24
+    promql_expr_test:
+      - expr: sum by (alertname, rtf_cluster_id, name, type) (ALERTS{alertstate="firing"})
+        eval_time: 4m30s
+        exp_samples: []
+      - expr: sum by (alertname, rtf_cluster_id, name, type) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="search"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="search_coordination"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="search_throttled"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="write"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="write_coordination"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="bulk"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="data-1", rtf_cluster_id="client-a", type="index"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="allRejected", rtf_cluster_id="client-a", type="write"}'
+            value: 1
+          - labels: '{alertname="ElasticsearchThreadPoolRejections", name="exactMinimum", rtf_cluster_id="client-a", type="search"}'
+            value: 1
+  - name: Cluster queue wait is converted from milliseconds and scoped to the client
+    interval: 30s
+    input_series:
+      - series: elasticsearch_cluster_health_task_max_waiting_in_queue_millis{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a"}
+        values: 61000+0x12
+      - series: elasticsearch_cluster_health_task_max_waiting_in_queue_millis{cluster="production",instance="exporter:9114",rtf_cluster_id="client-b"}
+        values: 60000+0x12
+    promql_expr_test:
+      - expr: sum by (alertname, rtf_cluster_id) (ALERTS{alertstate="firing"})
+        eval_time: 4m30s
+        exp_samples: []
+      - expr: sum by (alertname, rtf_cluster_id) (ALERTS{alertstate="firing"})
+        eval_time: 5m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchClusterTasksDelayed", rtf_cluster_id="client-a"}'
+            value: 1
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ElasticsearchClusterTasksDelayed
+        exp_alerts:
+          - exp_labels:
+              cluster: production
+              instance: exporter:9114
+              rtf_cluster_id: client-a
+              sourceType: metric
+              severity: warning
+              priority: P2
+              tech_stack: elasticsearch
+              signal: cause
+              category: data
+              runbook: runbooks/databases/elasticsearch.yaml
+              query: elasticsearch_cluster_health_task_max_waiting_in_queue_millis / 1000 > 60
+            exp_annotations:
+              summary: Elasticsearch cluster management tasks are waiting too long
+              description: Cluster production, reported by exporter:9114, has a longest pending cluster-task wait of 1m 1s. The maximum queue
+                wait has remained above 60 seconds for at least 5 minutes. Cluster-state changes such as index creation, mapping updates and shard
+                allocation may be delayed even while existing searches and writes continue. This metric measures time waiting in the cluster management
+                queue, not query latency or task execution time. Inspect pending task sources and priorities, the elected master's CPU, heap and
+                GC, and cluster-state publication or node connectivity problems to determine what is delaying progress.
+              runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml
+  - name: Brief failures and resource spikes recover before their waiting periods
+    interval: 30s
+    input_series:
+      - series: elasticsearch_scrape_success{instance="exporter:9114",collector="cluster-info"}
+        values: 0+0x2 1+0x25
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="red"}
+        values: 1+0x1 0+0x26
+      - series: elasticsearch_cluster_health_status{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a",color="yellow"}
+        values: 1+0x18 0+0x9
+      - series: elasticsearch_filesystem_data_available_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 10+0x2 500+0x25
+      - series: elasticsearch_filesystem_data_size_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",mount="/data",path="/data/es"}
+        values: 1000+0x28
+      - series: elasticsearch_jvm_memory_used_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 950+0x18 500+0x9
+      - series: elasticsearch_jvm_memory_max_bytes{cluster="production",name="data-1",instance="exporter:9114",rtf_cluster_id="client-a",area="heap"}
+        values: 1000+0x28
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 2m
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 14m
+        exp_samples: []
+  - name: Missing metrics alone do not create global alerts for unmonitored clients
+    interval: 30s
+    input_series: []
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 15m
+        exp_samples: []

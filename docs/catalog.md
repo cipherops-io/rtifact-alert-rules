@@ -88,20 +88,18 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ElasticsearchDown` | critical | P1 | 1m | symptom | `up{job=~"elasticsearch.*"} == 0` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchClusterRed` | critical | P0 | 1m | symptom | `elasticsearch_cluster_health_status{color="red"} == 1` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchClusterYellow` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_status{color="yellow"} == 1` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchNodeLeft` | critical | P1 | 2m | symptom | `elasticsearch_cluster_health_number_of_nodes < (elasticsearch_cluster_health_nu…` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchJVMHeapHigh` | warning | P2 | 5m | cause | `elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max…` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchJVMGCDurationHigh` | warning | P2 | 5m | cause | `rate(elasticsearch_jvm_gc_collection_seconds_sum[5m]) > 2` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchCircuitBreakerTripped` | warning | P2 | 5m | symptom | `rate(elasticsearch_breakers_tripped[5m]) > 0` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchDiskWatermarkHigh` | warning | P2 | 5m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchDiskWatermarkFlood` | critical | P1 | 2m | symptom | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchUnassignedShards` | warning | P2 | 10m | cause | `elasticsearch_cluster_health_unassigned_shards > 0` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchPendingTasks` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_number_of_pending_tasks > 100` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-| `ElasticsearchSnapshotFailed` | warning | P2 | 5m | cause | `elasticsearch_snapshot_stats_snapshot_number_of_failures > 0` | [elasticsearch.md](runbooks/databases/elasticsearch.md) |
-
-### `rules/metrics/databases/mongodb.yml`
+| `ElasticsearchMetricsCollectionFailed` | critical | P1 | 2m | cause | `elasticsearch_scrapelasticsearch.yaml| [elasticsearch.yamlelasticsearch.yamlases/elasticsearch.yaml) |
+| `ElasticsearchClusterRed` | critical | P0 | 1m | symptom | `elasticsearch_cluster_health_status{color="red"} == 1` | [elasticsearch.yamlml](runbooks/databaseelasticsearch.yamlyaml) |
+| `ElasticsearchClusterYellow` | warning | P2 | 10m | cause | `elasticsearch_cluster_health_status{color="yellow"} == 1` | elasticsearch.yamlaml](runbooks/databaselasticsearch.yaml.yaml) |
+| `ElasticsearchDiskSpaceLow` | warning | P2 | 10m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` |elasticsearch.yamlyaml](runbooks/databaelasticsearch.yamlh.yaml) |
+| `ElasticsearchDiskSpaceCritical` | critical | P1 | 2m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_elasticsearch.yamlarch.yaml](runbooks/delasticsearch.yamlsearch.yaml) |
+| `ElasticsearchJVMHeapHigh` | warning | P2 | 10m | cause | `elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvelasticsearch.yaml [elasticsearch.yaml]elasticsearch.yamlses/elasticsearch.yaml) |
+| `ElasticsearchCircuitBreakerTripped` | warning | P2 | 5m | symptom | `increase(elasticsearch_breakers_tripped[10m]) >= elasticsearch.yamlrch.yaml](runbooks/daelasticsearch.yamlearch.yaml) |
+| `ElasticsearchThreadPoolRejections` | warning | P2 | 5m | symptom | `( rate(elasticsearch_thread_pool_rejected_count{type=~"search\|search_coordinatielasticsearch.yamlrch.yaml](runbooks/daelasticsearch.yamlearch.yaml) |
+| `ElasticsearchIndexingFailures` | warning | P2 | 5m | symptom | `increase(elasticsearch_index_stats_indexing_index_failed_total[10m]) >= 5` | [elasticseaelasticsearch.yamlks/databases/elasticselasticsearch.yaml
+| `ElasticsearchClusterTasksDelayed` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_task_max_waiting_in_queuelasticsearch.yaml> 60` | [elasticsearcelasticsearch.yaml/databases/elasticsearch.yaml) |
+elasticsearch.yamlelasticsearch.yaml
+### `rules/metrics/databases/mongodb.yml`elasticsearch.yamlelasticsearch.yaml
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -496,6 +494,7 @@
 
 ## runbooks without alert rules
 
+- [gcp-load-balancer.yaml](runbooks/cloud/gcp-load-balancer.yaml)
 - [clickhouse.md](runbooks/databases/clickhouse.md)
 - [elasticsearch-cloud.yaml](runbooks/databases/elasticsearch-cloud.yaml)
 - [mongodb-atlas.yaml](runbooks/databases/mongodb-atlas.yaml)
@@ -505,4 +504,4 @@
 
 ---
 
-_331 alerts across 29 files in 8 categories._
+_329 alerts across 29 files in 8 categories._
