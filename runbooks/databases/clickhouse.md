@@ -738,7 +738,7 @@ unreachable shard usually shows up there as a growing write queue.
 
 ## ClickHouseNetworkErrors
 
-Network or DNS errors on this host. ClickHouse resolves replica and shard hostnames through
+More than 5 network or DNS errors on this host in 10 minutes. ClickHouse resolves replica and shard hostnames through
 cluster DNS on every new connection, so DNS trouble surfaces here before anywhere else.
 
 These come from two different places, and `system.errors` is the one that carries the

@@ -55,7 +55,7 @@
 | `ClickHouseDiskSpaceLow` | critical | P1 | 10m | cause | `chi_clickhouse_metric_DiskFreeBytes / chi_clickhouse_metric_DiskTotalBytes < 0.1` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseDiskWillFillWithin24h` | warning | P2 | 30m | cause | `predict_linear(chi_clickhouse_metric_DiskFreeBytes[6h], 24 * 3600) < 0 and chi_…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseDetachedPartsPresent` | warning | P2 | 15m | cause | `chi_clickhouse_metric_DetachedParts{reason!="detached_by_user"} > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
-| `ClickHouseNetworkErrors` | warning | P3 | 5m | cause | `increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseNetworkErrors` | warning | P3 | 5m | cause | `increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 
 ### `rules/metrics/databases/cnpg.yml`
 

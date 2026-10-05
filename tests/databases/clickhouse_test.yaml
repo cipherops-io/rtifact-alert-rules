@@ -1674,14 +1674,14 @@ tests:
   #       exp_alerts: []
 
   # ============================================================
-  # ClickHouseNetworkErrors: positive — one network error inside the
-  # 10m window. NETWORK_ERROR comes from system.errors; the DNSError
-  # half of the or is absent here.
+  # ClickHouseNetworkErrors: positive — six network errors inside the
+  # 10m window, one over the threshold of 5. NETWORK_ERROR comes from
+  # system.errors; the DNSError half of the or is absent here.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '0 1+0x10'
+        values: '0 6+0x10'
     alert_rule_test:
       - eval_time: 10m
         alertname: ClickHouseNetworkErrors
@@ -1695,14 +1695,14 @@ tests:
               category: "network"
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
-                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
-                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
-                or (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase(chi_clickhouse_event_DNSError[10m]) > 5
+                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                or (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
               summary: "ClickHouse is hitting network or DNS errors"
-              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 1 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 6 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
               runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousenetworkerrors"
 
   # ============================================================
@@ -1714,6 +1714,22 @@ tests:
         values: '0+0x10'
       - series: 'chi_clickhouse_event_DNSError{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '0+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseNetworkErrors: negative — exactly five network and five
+  # DNS errors inside the 10m window, which is at the threshold, not
+  # over it.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 5+0x10'
+      - series: 'chi_clickhouse_event_DNSError{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0 5+0x10'
     alert_rule_test:
       - eval_time: 10m
         alertname: ClickHouseNetworkErrors
@@ -2168,12 +2184,13 @@ tests:
 
   # ============================================================
   # ClickHouseNetworkErrors: positive — the counter appears for the
-  # first time at t=5m and never moves again.
+  # first time at t=5m already at 6, over the threshold of 5, and
+  # never moves again.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 1+0x40'
+        values: '_ _ _ _ _ 6+0x40'
     alert_rule_test:
       - eval_time: 11m
         alertname: ClickHouseNetworkErrors
@@ -2187,15 +2204,28 @@ tests:
               category: "network"
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
-                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 0 or increase(chi_clickhouse_event_DNSError[10m]) > 0
-                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 0 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
-                or (chi_clickhouse_event_DNSError > 0 unless chi_clickhouse_event_DNSError offset 10m)
+                increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase(chi_clickhouse_event_DNSError[10m]) > 5
+                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                or (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
               summary: "ClickHouse is hitting network or DNS errors"
-              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 1 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) recorded 6 network or DNS error(s) in the last 10m — NETWORK_ERROR in system.errors, or DNSError in system.events. ClickHouse resolves replica and shard hostnames through cluster DNS on every new connection, so DNS or network flakiness shows up as failed fetches, failed distributed queries and dropped Keeper sessions before it shows up as anything else."
               runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousenetworkerrors"
+
+  # ============================================================
+  # ClickHouseNetworkErrors: negative — the counter appears for the
+  # first time at t=5m at 5, which is at the threshold, not over it.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '_ _ _ _ _ 5+0x40'
+    alert_rule_test:
+      - eval_time: 11m
+        alertname: ClickHouseNetworkErrors
+        exp_alerts: []
 
   # ============================================================
   # ClickHouseNetworkErrors: negative — the counter has been sitting at
