@@ -33,7 +33,10 @@ description: >-
   has happened once since server start — the series is absent until then, and appears
   already carrying its value. That is why those rules are written as
   `increase(counter[W]) > 0 or (counter > 0 unless counter offset W)`: the second branch
-  catches a counter that JUST APPEARED. Two consequences for triage — a second-branch
+  catches a counter that JUST APPEARED. That branch is matched `on (chi, hostname)` and
+  guarded with `and on (chi, hostname) chi_clickhouse_event_Query offset W` (Uptime for
+  non-event counters), so an old total re-surfacing after a scrape gap or an exporter
+  pod restart is NOT treated as new. Two consequences for triage — a second-branch
   firing means the counter is brand new (read the raw counter and the server log at the
   alert start time), and these alerts SELF-RESOLVE within one window if the event does
   not recur, so a resolve is not evidence of a fix.
