@@ -17,6 +17,9 @@ enforces the machine-checkable parts:
   * runbook    must be a path that exists on disk
   * Every alert MUST have annotations: summary, description, runbook_url
   * runbook_url should match the runbook label path (warning, not error)
+  * notify_every (optional) must be in the closed set below; each value has a
+    matching Alertmanager child route, so any other value silently falls back
+    to the default repeat_interval
 
 Exits non-zero if any rule fails.
 """
@@ -66,6 +69,10 @@ ALLOWED_TECH_STACKS = {
     # runtimes
     "java-springboot", "python-fastapi",
 }
+ALLOWED_NOTIFY_EVERY = {
+    "2m", "3m", "5m", "7m", "10m", "15m", "30m",
+    "1h", "2h", "3h", "4h", "5h", "6h", "12h", "24h",
+}
 
 
 def fail(msg: str, errors: list[str]) -> None:
@@ -110,6 +117,10 @@ def validate_rule(file: Path, group_name: str, rule: dict, errors: list[str]) ->
     stack = labels.get("tech_stack")
     if stack is not None and stack not in ALLOWED_TECH_STACKS:
         fail(f"{where}: tech_stack={stack!r} not in allowed enum (add to validate_labels.py)", errors)
+
+    notify_every = labels.get("notify_every")
+    if notify_every is not None and notify_every not in ALLOWED_NOTIFY_EVERY:
+        fail(f"{where}: notify_every={notify_every!r} not in {sorted(ALLOWED_NOTIFY_EVERY)}", errors)
 
     runbook = labels.get("runbook")
     if runbook:

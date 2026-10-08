@@ -9,6 +9,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: argocd
           signal: cause
           category: gitops
@@ -26,6 +27,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -43,6 +45,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: argocd
           signal: cause
           category: gitops
@@ -63,6 +66,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -90,6 +94,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -116,6 +121,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -142,6 +148,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -168,6 +175,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: cause
           category: gitops
@@ -197,6 +205,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: cause
           category: gitops
@@ -226,6 +235,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: cause
           category: gitops
@@ -252,6 +262,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: symptom
           category: gitops
@@ -281,6 +292,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: argocd
           signal: cause
           category: gitops

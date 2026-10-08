@@ -18,6 +18,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P0
+          notify_every: "10m"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -43,6 +44,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
@@ -80,6 +82,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -123,6 +126,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -166,6 +170,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -212,6 +217,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -268,6 +274,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
@@ -327,6 +334,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "24h"
           tech_stack: nginx-ingress
           signal: cause
           category: security
@@ -358,6 +366,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P0
+          notify_every: "10m"
           tech_stack: nginx-ingress
           signal: symptom
           category: security
@@ -382,6 +391,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress
@@ -410,6 +420,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
@@ -445,6 +456,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: nginx-ingress
           signal: cause
           category: ingress
@@ -479,6 +491,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P1
+          notify_every: "30m"
           tech_stack: nginx-ingress
           signal: symptom
           category: ingress

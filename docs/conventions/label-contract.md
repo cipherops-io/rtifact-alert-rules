@@ -13,6 +13,26 @@ Every alert in `rtifact-alert-rules` must carry the same set of labels and annot
 | `category` | see enum in `scripts/validate_labels.py` | High-level grouping for routing (workload, data, network, control-plane, etc.) |
 | `runbook` | `runbooks/<category>/<stack>.{md,yaml}` | Path to the runbook for this stack, in this repo. Markdown runbooks are for humans; `.yaml` runbooks carry machine-readable diagnostic steps. |
 
+## Optional labels
+
+| Label | Allowed values | Purpose |
+|---|---|---|
+| `notify_every` | `2m`, `3m`, `5m`, `7m`, `10m`, `15m`, `30m`, `1h`, `2h`, `3h`, `4h`, `5h`, `6h`, `12h`, `24h` | How often Alertmanager re-sends the alert while it keeps firing. Each value has a matching Alertmanager child route that sets `repeat_interval` to that value and `group_by: ['...']` (one group per alert, so each alert keeps its own clock). Leave it out to use the receiver's default `repeat_interval`. |
+
+`notify_every` is a closed set because routing matches the exact string: a value with no route (e.g. `1d`, `24hr`) silently falls back to the default `repeat_interval`. The validator rejects anything outside the set. To add a value, add it to `ALLOWED_NOTIFY_EVERY` in `scripts/validate_labels.py` **and** add the matching route in every tenant Alertmanager that uses it.
+
+Re-sends only go out on `group_interval` ticks (1m in tenant Alertmanagers), so the real cadence is about `notify_every` + up to one `group_interval` (e.g. `10m` ≈ 11m).
+
+Rough guide, by priority:
+
+| Priority | Typical `notify_every` |
+|---|---|
+| P0 | `10m` |
+| P1 | `30m` |
+| P2, still getting worse (e.g. lag warnings) | `2h` |
+| P2, long-lasting state | `12h` – `24h` |
+| One-time events that clear by themselves | `24h` (in practice: notify once) |
+
 ## Required annotations
 
 | Annotation | Purpose |
@@ -69,5 +89,5 @@ These are explicitly disallowed by the contract. Most are caught by the validato
 1. **No `runbook_url`.** Every alert must have one. If you don't know what to write, write "investigate using the upstream documentation" — even that is better than nothing.
 2. **`for: 0s` on warnings.** A flap in a metric should not generate a notification. Use at least `for: 5m` for warnings, `for: 1m` for criticals.
 3. **`severity: page`.** Use `critical` and let `priority` decide who gets paged.
-4. **Adding labels not in the contract.** Routing logic depends on the contract being closed. If you need a new label, propose it via PR.
+4. **Adding labels not in the contract** (required or optional, above). Routing logic depends on the contract being closed. If you need a new label, propose it via PR.
 5. **Computing severity inside the expression.** `severity` should be a static label on the rule, not computed from a `vector(0)` trick.
