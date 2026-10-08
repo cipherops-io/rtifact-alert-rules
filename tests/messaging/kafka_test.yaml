@@ -24,6 +24,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "30m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -49,6 +50,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "30m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -72,6 +74,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "10m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -96,6 +99,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "30m"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -120,6 +124,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P3
+              notify_every: "30m"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -153,6 +158,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "30m"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -180,6 +186,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P3
+              notify_every: "12h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -205,6 +212,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "10m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -249,6 +257,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P3
+              notify_every: "24h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -272,6 +281,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "2h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -298,6 +308,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "30m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -324,6 +335,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "2h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -349,6 +361,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "2h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -375,6 +388,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "30m"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -399,6 +413,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "24h"
               tech_stack: kafka
               signal: symptom
               category: messaging
@@ -424,6 +439,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P3
+              notify_every: "12h"
               tech_stack: kafka
               signal: cause
               category: messaging
@@ -448,6 +464,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P3
+              notify_every: "24h"
               tech_stack: kafka
               signal: cause
               category: messaging

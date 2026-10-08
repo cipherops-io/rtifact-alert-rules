@@ -26,6 +26,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "30m"
               tech_stack: cnpg
               signal: symptom
               category: data
@@ -65,6 +66,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "30m"
               tech_stack: cnpg
               signal: symptom
               category: data
@@ -104,6 +106,7 @@ tests:
           - exp_labels:
               severity: warning
               priority: P2
+              notify_every: "2h"
               tech_stack: cnpg
               signal: cause
               category: data
@@ -119,6 +122,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P1
+              notify_every: "30m"
               tech_stack: cnpg
               signal: cause
               category: data
@@ -143,6 +147,7 @@ tests:
           - exp_labels:
               severity: critical
               priority: P0
+              notify_every: "10m"
               tech_stack: cnpg
               signal: symptom
               category: data

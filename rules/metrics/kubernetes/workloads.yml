@@ -12,6 +12,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -37,6 +38,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "24h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -68,6 +70,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: kubernetes
           signal: cause
           category: workload
@@ -97,6 +100,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: kubernetes
           signal: cause
           category: workload
@@ -116,6 +120,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -134,6 +139,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -153,6 +159,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: cause
           category: rollout
@@ -172,6 +179,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -191,6 +199,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -210,6 +219,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -229,6 +239,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "12h"
           tech_stack: kubernetes
           signal: symptom
           category: batch
@@ -248,6 +259,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
+          notify_every: "24h"
           tech_stack: kubernetes
           signal: cause
           category: batch
@@ -267,6 +279,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "24h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -285,6 +298,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: cause
           category: scheduling
@@ -304,6 +318,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: kubernetes
           signal: symptom
           category: storage
@@ -323,6 +338,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: cause
           category: storage
@@ -342,6 +358,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
+          notify_every: "30m"
           tech_stack: kubernetes
           signal: cause
           category: storage
@@ -366,6 +383,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: kubernetes
           signal: cause
           category: autoscaling
