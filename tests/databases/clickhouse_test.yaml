@@ -798,7 +798,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_ReplicatedDataLoss[10m]) > 0
-  #               or (chi_clickhouse_event_ReplicatedDataLoss > 0 unless chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #               or ((chi_clickhouse_event_ReplicatedDataLoss > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -842,7 +843,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
-                or (chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+                or ((chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -886,7 +888,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_DataAfterMergeDiffersFromReplica[15m]) > 0
-  #               or (chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #               or ((chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless on (chi, hostname) chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -971,7 +974,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
-                or (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+                or ((chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -1014,7 +1018,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_RejectedInserts[10m]) > 0
-                or (chi_clickhouse_event_RejectedInserts > 0 unless chi_clickhouse_event_RejectedInserts offset 10m)
+                or ((chi_clickhouse_event_RejectedInserts > 0 unless on (chi, hostname) chi_clickhouse_event_RejectedInserts offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -1058,7 +1063,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_DelayedInserts[10m]) > 0
-                or (chi_clickhouse_event_DelayedInserts > 0 unless chi_clickhouse_event_DelayedInserts offset 10m)
+                or ((chi_clickhouse_event_DelayedInserts > 0 unless on (chi, hostname) chi_clickhouse_event_DelayedInserts offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -1234,7 +1240,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_StorageBufferErrorOnFlush[15m]) > 0
-  #               or (chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #               or ((chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless on (chi, hostname) chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -1690,7 +1697,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_DistributedConnectionFailAtAll[10m]) > 0
-  #               or (chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #               or ((chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless on (chi, hostname) chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -1735,8 +1743,10 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase(chi_clickhouse_event_DNSError[10m]) > 5
-                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
-                or (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
+                or ((chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless on (chi, hostname) chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                    and on (chi, hostname) chi_clickhouse_metric_Uptime offset 10m)
+                or ((chi_clickhouse_event_DNSError > 5 unless on (chi, hostname) chi_clickhouse_event_DNSError offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -1797,7 +1807,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_KafkaConsumerErrors[30m]) > 0
-  #               or (chi_clickhouse_event_KafkaConsumerErrors > 0 unless chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #               or ((chi_clickhouse_event_KafkaConsumerErrors > 0 unless on (chi, hostname) chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 30m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -1840,7 +1851,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_KafkaCommitFailures[30m]) > 0
-  #               or (chi_clickhouse_event_KafkaCommitFailures > 0 unless chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #               or ((chi_clickhouse_event_KafkaCommitFailures > 0 unless on (chi, hostname) chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 30m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -1867,20 +1879,26 @@ tests:
   # # flat. increase() cannot see that 0 -> N step (there is no earlier sample
   # # to compare against), so each of these rules carries a second branch:
   # #   <counter> > 0 unless <counter> offset <window>
-  # # These cases cover exactly that: the series is absent until t=5m, then sits
+  # # These cases cover exactly that: the series is absent until t=15m, then sits
   # # at 1 forever. Without the second branch every one of them would be silent.
+  # # The branch is guarded by `and on (chi, hostname) <guard> offset <window>`
+  # # (chi_clickhouse_event_Query, or Uptime for system.errors), so each case
+  # # also feeds the guard from t=0 and the counter only appears once a full
+  # # window of history exists — in production the guard series is always there.
   # # ##########################################################################
 
   # # ============================================================
   # # ClickHouseReplicatedDataLoss: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=15m and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x15 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 7m
+  #     - eval_time: 17m
   #       alertname: ClickHouseReplicatedDataLoss
   #       exp_alerts:
   #         - exp_labels:
@@ -1894,7 +1912,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_ReplicatedDataLoss[10m]) > 0
-  #               or (chi_clickhouse_event_ReplicatedDataLoss > 0 unless chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #               or ((chi_clickhouse_event_ReplicatedDataLoss > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedDataLoss offset 10m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -1911,6 +1930,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_ReplicatedDataLoss{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 15m
   #       alertname: ClickHouseReplicatedDataLoss
@@ -1918,14 +1939,16 @@ tests:
 
   # ============================================================
   # ClickHouseReplicatedPartFetchFailures: positive — the counter appears for the
-  # first time at t=5m and never moves again.
+  # first time at t=15m and never moves again.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 1+0x40'
+        values: '_x15 1+0x40'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
-      - eval_time: 11m
+      - eval_time: 21m
         alertname: ClickHouseReplicatedPartFetchFailures
         exp_alerts:
           - exp_labels:
@@ -1939,7 +1962,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
-                or (chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+                or ((chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -1956,6 +1980,8 @@ tests:
     input_series:
       - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '7+0x60'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
       - eval_time: 20m
         alertname: ClickHouseReplicatedPartFetchFailures
@@ -1963,14 +1989,16 @@ tests:
 
   # # ============================================================
   # # ClickHouseDataAfterMergeDiffersFromReplica: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=15m and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x15 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 11m
+  #     - eval_time: 21m
   #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
   #       exp_alerts:
   #         - exp_labels:
@@ -1984,7 +2012,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_DataAfterMergeDiffersFromReplica[15m]) > 0
-  #               or (chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #               or ((chi_clickhouse_event_DataAfterMergeDiffersFromReplica > 0 unless on (chi, hostname) chi_clickhouse_event_DataAfterMergeDiffersFromReplica offset 15m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -2001,6 +2030,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_DataAfterMergeDiffersFromReplica{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 20m
   #       alertname: ClickHouseDataAfterMergeDiffersFromReplica
@@ -2008,14 +2039,16 @@ tests:
 
   # ============================================================
   # ClickHouseKeeperHardwareExceptions: positive — the counter appears for the
-  # first time at t=5m and never moves again.
+  # first time at t=15m and never moves again.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 1+0x40'
+        values: '_x15 1+0x40'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
-      - eval_time: 11m
+      - eval_time: 21m
         alertname: ClickHouseKeeperHardwareExceptions
         exp_alerts:
           - exp_labels:
@@ -2029,7 +2062,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
-                or (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+                or ((chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -2046,6 +2080,8 @@ tests:
     input_series:
       - series: 'chi_clickhouse_event_ZooKeeperHardwareExceptions{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '7+0x60'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
       - eval_time: 15m
         alertname: ClickHouseKeeperHardwareExceptions
@@ -2053,14 +2089,16 @@ tests:
 
   # ============================================================
   # ClickHouseRejectedInserts: positive — the counter appears for the
-  # first time at t=5m and never moves again.
+  # first time at t=15m and never moves again.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 1+0x40'
+        values: '_x15 1+0x40'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
-      - eval_time: 8m
+      - eval_time: 18m
         alertname: ClickHouseRejectedInserts
         exp_alerts:
           - exp_labels:
@@ -2074,7 +2112,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_RejectedInserts[10m]) > 0
-                or (chi_clickhouse_event_RejectedInserts > 0 unless chi_clickhouse_event_RejectedInserts offset 10m)
+                or ((chi_clickhouse_event_RejectedInserts > 0 unless on (chi, hostname) chi_clickhouse_event_RejectedInserts offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -2091,21 +2130,76 @@ tests:
     input_series:
       - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '7+0x60'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
       - eval_time: 15m
         alertname: ClickHouseRejectedInserts
         exp_alerts: []
 
   # ============================================================
+  # ClickHouseRejectedInserts: negative (regression) — the metrics-exporter
+  # stops being scraped for 15m, then comes back with the same old total.
+  # The counter looks "new" to `unless ... offset 10m`, but the guard
+  # (event_Query offset 10m) is missing too, so nothing fires. Before the
+  # guard this paged with $value = the whole historical total.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '108750x10 _x15 108750x20'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x10 _x15 300+10x20'
+    alert_rule_test:
+      - eval_time: 28m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+      - eval_time: 32m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+      - eval_time: 35m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseRejectedInserts: negative (regression) — the exporter pod is
+  # replaced, so every series comes back under a new `pod` label with the
+  # same old total. `unless on (chi, hostname)` still matches the old series,
+  # so the counter is not treated as new.
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0",pod="exporter-a"}'
+        values: '108750x15'
+      - series: 'chi_clickhouse_event_RejectedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0",pod="exporter-b"}'
+        values: '_x16 108750x20'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0",pod="exporter-a"}'
+        values: '100+10x15'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0",pod="exporter-b"}'
+        values: '_x16 260+10x20'
+    alert_rule_test:
+      - eval_time: 19m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+      - eval_time: 23m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+      - eval_time: 26m
+        alertname: ClickHouseRejectedInserts
+        exp_alerts: []
+
+  # ============================================================
   # ClickHouseDelayedInserts: positive — the counter appears for the
-  # first time at t=5m and never moves again.
+  # first time at t=15m and never moves again.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 1+0x40'
+        values: '_x15 1+0x40'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
-      - eval_time: 11m
+      - eval_time: 21m
         alertname: ClickHouseDelayedInserts
         exp_alerts:
           - exp_labels:
@@ -2119,7 +2213,8 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_event_DelayedInserts[10m]) > 0
-                or (chi_clickhouse_event_DelayedInserts > 0 unless chi_clickhouse_event_DelayedInserts offset 10m)
+                or ((chi_clickhouse_event_DelayedInserts > 0 unless on (chi, hostname) chi_clickhouse_event_DelayedInserts offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -2136,6 +2231,8 @@ tests:
     input_series:
       - series: 'chi_clickhouse_event_DelayedInserts{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '7+0x60'
+      - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '100+10x80'
     alert_rule_test:
       - eval_time: 15m
         alertname: ClickHouseDelayedInserts
@@ -2143,14 +2240,16 @@ tests:
 
   # # ============================================================
   # # ClickHouseStorageBufferErrorOnFlush: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=15m and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x15 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 11m
+  #     - eval_time: 21m
   #       alertname: ClickHouseStorageBufferErrorOnFlush
   #       exp_alerts:
   #         - exp_labels:
@@ -2164,7 +2263,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_StorageBufferErrorOnFlush[15m]) > 0
-  #               or (chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #               or ((chi_clickhouse_event_StorageBufferErrorOnFlush > 0 unless on (chi, hostname) chi_clickhouse_event_StorageBufferErrorOnFlush offset 15m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -2181,6 +2281,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_StorageBufferErrorOnFlush{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 20m
   #       alertname: ClickHouseStorageBufferErrorOnFlush
@@ -2188,14 +2290,16 @@ tests:
 
   # # ============================================================
   # # ClickHouseDistributedConnectionExceptions: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=15m and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x15 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 11m
+  #     - eval_time: 21m
   #       alertname: ClickHouseDistributedConnectionExceptions
   #       exp_alerts:
   #         - exp_labels:
@@ -2209,7 +2313,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_DistributedConnectionFailAtAll[10m]) > 0
-  #               or (chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #               or ((chi_clickhouse_event_DistributedConnectionFailAtAll > 0 unless on (chi, hostname) chi_clickhouse_event_DistributedConnectionFailAtAll offset 10m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -2226,6 +2331,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_DistributedConnectionFailAtAll{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 15m
   #       alertname: ClickHouseDistributedConnectionExceptions
@@ -2239,9 +2346,11 @@ tests:
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 6+0x40'
+        values: '_x15 6+0x40'
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '3600+60x80'
     alert_rule_test:
-      - eval_time: 11m
+      - eval_time: 21m
         alertname: ClickHouseNetworkErrors
         exp_alerts:
           - exp_labels:
@@ -2255,8 +2364,10 @@ tests:
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
                 increase(chi_clickhouse_metric_SystemErrors_NETWORK_ERROR[10m]) > 5 or increase(chi_clickhouse_event_DNSError[10m]) > 5
-                or (chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
-                or (chi_clickhouse_event_DNSError > 5 unless chi_clickhouse_event_DNSError offset 10m)
+                or ((chi_clickhouse_metric_SystemErrors_NETWORK_ERROR > 5 unless on (chi, hostname) chi_clickhouse_metric_SystemErrors_NETWORK_ERROR offset 10m)
+                    and on (chi, hostname) chi_clickhouse_metric_Uptime offset 10m)
+                or ((chi_clickhouse_event_DNSError > 5 unless on (chi, hostname) chi_clickhouse_event_DNSError offset 10m)
+                    and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
@@ -2271,9 +2382,11 @@ tests:
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '_ _ _ _ _ 5+0x40'
+        values: '_x15 5+0x40'
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '3600+60x80'
     alert_rule_test:
-      - eval_time: 11m
+      - eval_time: 21m
         alertname: ClickHouseNetworkErrors
         exp_alerts: []
 
@@ -2286,6 +2399,8 @@ tests:
     input_series:
       - series: 'chi_clickhouse_metric_SystemErrors_NETWORK_ERROR{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '7+0x60'
+      - series: 'chi_clickhouse_metric_Uptime{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '3600+60x80'
     alert_rule_test:
       - eval_time: 15m
         alertname: ClickHouseNetworkErrors
@@ -2293,14 +2408,16 @@ tests:
 
   # # ============================================================
   # # ClickHouseKafkaConsumerErrors: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=35m (past the 30m window, so the guard has history) and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x35 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 16m
+  #     - eval_time: 46m
   #       alertname: ClickHouseKafkaConsumerErrors
   #       exp_alerts:
   #         - exp_labels:
@@ -2314,7 +2431,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_KafkaConsumerErrors[30m]) > 0
-  #               or (chi_clickhouse_event_KafkaConsumerErrors > 0 unless chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #               or ((chi_clickhouse_event_KafkaConsumerErrors > 0 unless on (chi, hostname) chi_clickhouse_event_KafkaConsumerErrors offset 30m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 30m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -2331,6 +2449,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_KafkaConsumerErrors{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 35m
   #       alertname: ClickHouseKafkaConsumerErrors
@@ -2338,14 +2458,16 @@ tests:
 
   # # ============================================================
   # # ClickHouseKafkaCommitFailures: positive — the counter appears for the
-  # # first time at t=5m and never moves again.
+  # # first time at t=35m (past the 30m window, so the guard has history) and never moves again.
   # # ============================================================
   # - interval: 1m
   #   input_series:
   #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-  #       values: '_ _ _ _ _ 1+0x40'
+  #       values: '_x35 1+0x40'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
-  #     - eval_time: 16m
+  #     - eval_time: 46m
   #       alertname: ClickHouseKafkaCommitFailures
   #       exp_alerts:
   #         - exp_labels:
@@ -2359,7 +2481,8 @@ tests:
   #             runbook: "runbooks/databases/clickhouse.yaml"
   #             query: |
   #               increase(chi_clickhouse_event_KafkaCommitFailures[30m]) > 0
-  #               or (chi_clickhouse_event_KafkaCommitFailures > 0 unless chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #               or ((chi_clickhouse_event_KafkaCommitFailures > 0 unless on (chi, hostname) chi_clickhouse_event_KafkaCommitFailures offset 30m)
+  #                   and on (chi, hostname) chi_clickhouse_event_Query offset 30m)
   #             chi: "prod3"
   #             hostname: "chi-prod3-cluster-0-0"
   #           exp_annotations:
@@ -2376,6 +2499,8 @@ tests:
   #   input_series:
   #     - series: 'chi_clickhouse_event_KafkaCommitFailures{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
   #       values: '7+0x60'
+  #     - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+  #       values: '100+10x80'
   #   alert_rule_test:
   #     - eval_time: 35m
   #       alertname: ClickHouseKafkaCommitFailures
