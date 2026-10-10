@@ -203,6 +203,442 @@ pod_infra_panels: &pod_infra_panels
     panel_title: "ClickHouse Pod Restarts (1h)"
     panel_id: "ch-pod-restarts-1h"
 
+# ── Live system-table reads (MCP) ────────────────────────────────────────────
+# ClickHouse is read through the integration (MCP) clickhouse tools, not the
+# tunnel. Writes are prevented by the conductor (it sends every run_query with
+# readonly=1), by forge (it sends only a single read-only SELECT/WITH/SHOW/
+# EXPLAIN statement and refuses anything else before it leaves forge — write
+# keywords, a second statement, row locks, server/file/remote functions such as
+# url(), s3(), remote()) and by the connection's read-only ClickHouse user.
+# forge's check does not treat a backslash as a quote escape, so write a quote
+# inside a literal as '' (doubled), never \'.
+#
+# WHICH SERVER: the connection reaches ONE ClickHouse endpoint, but system.*
+# tables describe only the server they are read on. So every read below goes
+# through clusterAllReplicas('$ch_cluster', ...) — one call reads every server —
+# and tags each row with:
+#   server             hostName() of the server the row came from (the pod
+#                      name, e.g. chi-<chi>-<cluster>-0-2-0)
+#   is_alerting_server 1 when that server is the alert's `hostname` (its first
+#                      dot-segment, with or without the pod's "-0" suffix)
+# Rows of the alerting server sort first; the other rows are its peers, for
+# comparison. $ch_cluster is bound by *ch_find_cluster, which every live step
+# runs first. It is deliberately not called `cluster`: alerts carry
+# cluster=<kubernetes cluster>, and forge never replaces an alert's own label
+# with a bound value. If the lookup fails, forge marks the following reads NOT
+# RUN (unresolved $ch_cluster) rather than reading an arbitrary server.
+#
+# Scalar subqueries run once on the connected server, not per row; the only
+# ones left (merge_tree_settings in ch_live_parts) are server-wide defaults.
+# Query/command text goes through normalizeQuery(); error messages only have
+# quoted literals masked, so server names, ports and part names stay readable.
+# Output aliases never reuse the name of a column they read (cyclic-alias
+# errors on older servers). Every read sets rows/fields/max_rows: without them
+# forge's digest keeps only the first 5 rows. A failed or empty read is
+# reported as such, never as health.
+#
+# The connection's ClickHouse user needs SELECT on the system tables read below,
+# SHOW TABLES ON *.* (otherwise per-table rows in system.parts / replicas /
+# replication_queue / mutations / detached_parts / distribution_queue are
+# hidden), REMOTE ON *.* (clusterAllReplicas), and the user-level setting
+# skip_unavailable_shards = 1: without it one unreachable server fails the
+# whole cluster-wide read, and readonly=1 forbids setting it per query.
+
+ch_find_cluster: &ch_find_cluster
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Find the ClickHouse cluster that contains the alerting server; binds ch_cluster for the reads that follow."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT cluster, count() AS servers
+        FROM system.clusters
+        GROUP BY cluster
+        HAVING countIf(splitByChar('.', host_name)[1] IN (alert_host, concat(alert_host, '-0'))) > 0
+        ORDER BY servers DESC, cluster
+        LIMIT 1
+      params:
+        host: "$hostname"
+    bind:
+      ch_cluster: {from: "data", pick: "cluster"}
+    rows: "data[*]"
+    fields: [cluster, servers]
+    summary_chars: 500
+
+ch_live_server: &ch_live_server
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Every server's version, uptime and current query/connection counts — does the alerting server answer?"
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        any(version()) AS server_version, any(uptime()) AS uptime_s,
+        sumIf(value, metric = 'Query') AS running_queries,
+        sumIf(value, metric = 'TCPConnection') AS tcp_connections,
+        sumIf(value, metric = 'HTTPConnection') AS http_connections
+        FROM clusterAllReplicas('$ch_cluster', system.metrics)
+        WHERE metric IN ('Query', 'TCPConnection', 'HTTPConnection')
+        GROUP BY server
+        ORDER BY is_alerting_server DESC, server
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, server_version, uptime_s, running_queries, tcp_connections, http_connections]
+    summary_chars: 3000
+
+ch_live_processes: &ch_live_processes
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Running queries on every server, alerting server first and longest first, with user, memory and normalised text."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        query_id, initial_user AS query_user, round(elapsed, 1) AS elapsed_s, read_rows,
+        formatReadableSize(memory_usage) AS memory, is_cancelled,
+        substring(normalizeQuery(query), 1, 200) AS query_text
+        FROM clusterAllReplicas('$ch_cluster', system.processes)
+        WHERE initial_query_id != initialQueryID()
+        ORDER BY is_alerting_server DESC, elapsed DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, query_id, query_user, elapsed_s, read_rows, memory, is_cancelled, query_text]
+    summary_chars: 4000
+
+ch_live_processes_by_user: &ch_live_processes_by_user
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Running queries grouped by server and user — who is generating the concurrency."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        initial_user AS query_user, count() AS running, round(max(elapsed), 1) AS longest_s,
+        formatReadableSize(sum(memory_usage)) AS memory
+        FROM clusterAllReplicas('$ch_cluster', system.processes)
+        WHERE initial_query_id != initialQueryID()
+        GROUP BY server, query_user
+        ORDER BY is_alerting_server DESC, running DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, query_user, running, longest_s, memory]
+    summary_chars: 3000
+
+ch_live_connections: &ch_live_connections
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Open connections by protocol and running queries, one row per server."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        sumIf(value, metric = 'TCPConnection') AS tcp,
+        sumIf(value, metric = 'HTTPConnection') AS http,
+        sumIf(value, metric = 'InterserverConnection') AS interserver,
+        sumIf(value, metric = 'MySQLConnection') AS mysql,
+        sumIf(value, metric = 'PostgreSQLConnection') AS postgresql,
+        sumIf(value, metric = 'Query') AS running_queries
+        FROM clusterAllReplicas('$ch_cluster', system.metrics)
+        WHERE metric IN ('TCPConnection', 'HTTPConnection', 'InterserverConnection', 'MySQLConnection', 'PostgreSQLConnection', 'Query')
+        GROUP BY server
+        ORDER BY is_alerting_server DESC, server
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, tcp, http, interserver, mysql, postgresql, running_queries]
+    summary_chars: 3000
+
+ch_live_replicas: &ch_live_replicas
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Replicated tables on every server, alerting server first: readonly / session-expired flags, delay, queue sizes, Keeper exception."
+  params:
+    arguments:
+      # log_max_index, log_pointer, total_replicas and active_replicas are left
+      # out on purpose: each costs a Keeper request per table, which stalls this
+      # read in exactly the Keeper incidents it is used for. Peer rows show how
+      # many replicas are healthy instead.
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, is_readonly, is_session_expired, absolute_delay, queue_size,
+        inserts_in_queue, merges_in_queue,
+        substring(zookeeper_exception, 1, 200) AS keeper_exception
+        FROM clusterAllReplicas('$ch_cluster', system.replicas)
+        ORDER BY is_alerting_server DESC, is_readonly DESC, is_session_expired DESC, absolute_delay DESC, queue_size DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, is_readonly, is_session_expired, absolute_delay, queue_size, inserts_in_queue, merges_in_queue, keeper_exception]
+    summary_chars: 4000
+
+ch_live_replication_queue: &ch_live_replication_queue
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Replication queue per server, grouped by table and entry type, with retries, oldest entry age and a sample exception."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, type, count() AS entries, max(num_tries) AS max_tries,
+        dateDiff('second', min(create_time), now()) AS oldest_age_s,
+        anyIf(substring(last_exception, 1, 200), last_exception != '') AS sample_exception,
+        anyIf(postpone_reason, postpone_reason != '') AS sample_postpone_reason
+        FROM clusterAllReplicas('$ch_cluster', system.replication_queue)
+        GROUP BY server, database, table, type
+        ORDER BY is_alerting_server DESC, entries DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, type, entries, max_tries, oldest_age_s, sample_exception, sample_postpone_reason]
+    summary_chars: 4000
+
+ch_live_keeper: &ch_live_keeper
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Each server's Keeper/ZooKeeper connection(s), alerting server first."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server, *
+        FROM clusterAllReplicas('$ch_cluster', system.zookeeper_connection)
+        ORDER BY is_alerting_server DESC, server
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    # Columns vary by server version; ones a server does not have are skipped.
+    fields: [server, is_alerting_server, name, host, port, connected_time, session_uptime_elapsed_seconds, is_expired, keeper_api_version]
+    summary_chars: 3000
+
+ch_live_parts: &ch_live_parts
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Partitions with the most active parts per server, against parts_to_delay_insert / parts_to_throw_insert."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, partition_id, count() AS active_parts, sum(rows) AS total_rows,
+        formatReadableSize(sum(bytes_on_disk)) AS size, max(modification_time) AS newest_part,
+        (SELECT value FROM system.merge_tree_settings WHERE name = 'parts_to_delay_insert') AS parts_to_delay_insert,
+        (SELECT value FROM system.merge_tree_settings WHERE name = 'parts_to_throw_insert') AS parts_to_throw_insert
+        FROM clusterAllReplicas('$ch_cluster', system.parts)
+        WHERE active
+        GROUP BY server, database, table, partition_id
+        ORDER BY is_alerting_server DESC, active_parts DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, partition_id, active_parts, total_rows, size, newest_part, parts_to_delay_insert, parts_to_throw_insert]
+    summary_chars: 4000
+
+ch_live_merges: &ch_live_merges
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Merges (and mutations) running now per server, alerting server first, longest first, with progress."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, round(elapsed, 1) AS elapsed_s, round(progress * 100, 1) AS progress_pct,
+        num_parts, formatReadableSize(total_size_bytes_compressed) AS size, is_mutation, merge_type
+        FROM clusterAllReplicas('$ch_cluster', system.merges)
+        ORDER BY is_alerting_server DESC, elapsed DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, elapsed_s, progress_pct, num_parts, size, is_mutation, merge_type]
+    summary_chars: 3000
+
+ch_live_insert_batches: &ch_live_insert_batches
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): New parts created per server and table in the last 15 minutes (system.part_log) — the insert batching shape."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, count() AS new_parts_15m, round(avg(rows)) AS avg_rows_per_part,
+        min(rows) AS min_rows_per_part, round(count() / 15, 1) AS parts_per_min
+        FROM clusterAllReplicas('$ch_cluster', system.part_log)
+        WHERE event_type = 'NewPart' AND event_time > now() - INTERVAL 15 MINUTE
+        GROUP BY server, database, table
+        ORDER BY is_alerting_server DESC, new_parts_15m DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, new_parts_15m, avg_rows_per_part, min_rows_per_part, parts_per_min]
+    summary_chars: 3000
+
+ch_live_mutations: &ch_live_mutations
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Unfinished mutations per server, alerting server first and oldest first, with parts left and the latest failure reason."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, mutation_id, substring(normalizeQuery(command), 1, 200) AS command_text,
+        dateDiff('second', create_time, now()) AS age_s, parts_to_do, is_killed,
+        substring(latest_fail_reason, 1, 300) AS fail_reason
+        FROM clusterAllReplicas('$ch_cluster', system.mutations)
+        WHERE NOT is_done
+        ORDER BY is_alerting_server DESC, create_time
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, mutation_id, command_text, age_s, parts_to_do, is_killed, fail_reason]
+    summary_chars: 4000
+
+ch_live_distribution_queue: &ch_live_distribution_queue
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Distributed-table send queues per server: pending files, errors, broken files and the last exception."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, data_files, formatReadableSize(data_compressed_bytes) AS size,
+        error_count, broken_data_files, is_blocked,
+        substring(last_exception, 1, 300) AS send_exception
+        FROM clusterAllReplicas('$ch_cluster', system.distribution_queue)
+        ORDER BY is_alerting_server DESC, data_files DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, data_files, size, error_count, broken_data_files, is_blocked, send_exception]
+    summary_chars: 4000
+
+ch_live_disks: &ch_live_disks
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Free/total space per disk on every server, alerting server first."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        name AS disk, path, formatReadableSize(free_space) AS free, formatReadableSize(total_space) AS total,
+        round(100 * free_space / total_space, 1) AS free_pct, formatReadableSize(keep_free_space) AS keep_free
+        FROM clusterAllReplicas('$ch_cluster', system.disks)
+        ORDER BY is_alerting_server DESC, free_pct
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, disk, path, free, total, free_pct, keep_free]
+    summary_chars: 3000
+
+ch_live_table_sizes: &ch_live_table_sizes
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Largest tables by bytes on disk, alerting server first."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, formatReadableSize(sum(bytes_on_disk)) AS size, sum(rows) AS total_rows,
+        count() AS active_parts
+        FROM clusterAllReplicas('$ch_cluster', system.parts)
+        WHERE active
+        GROUP BY server, database, table
+        ORDER BY is_alerting_server DESC, sum(bytes_on_disk) DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, size, total_rows, active_parts]
+    summary_chars: 3000
+
+ch_live_detached_parts: &ch_live_detached_parts
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Detached parts per server, grouped by table and reason, with size and oldest timestamp."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        database, table, reason, count() AS parts, formatReadableSize(sum(bytes_on_disk)) AS size,
+        min(modification_time) AS oldest
+        FROM clusterAllReplicas('$ch_cluster', system.detached_parts)
+        GROUP BY server, database, table, reason
+        ORDER BY is_alerting_server DESC, parts DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, database, table, reason, parts, size, oldest]
+    summary_chars: 3000
+
+ch_live_errors: &ch_live_errors
+  tool_id: "mcp.clickhouse.run_query"
+  description: "Live (MCP): Server errors seen in the last hour (system.errors) per server, alerting server first; quoted literals masked."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        name, code, value AS count_since_start, last_error_time,
+        substring(replaceRegexpAll(last_error_message, '''[^'']*''', '?'), 1, 250) AS error_message, remote
+        FROM clusterAllReplicas('$ch_cluster', system.errors)
+        WHERE last_error_time > now() - INTERVAL 1 HOUR
+        ORDER BY is_alerting_server DESC, last_error_time DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, name, code, count_since_start, last_error_time, error_message, remote]
+    summary_chars: 4000
+
+ch_history_failed_fetches: &ch_history_failed_fetches
+  tool_id: "mcp.clickhouse.run_query"
+  description: "History (MCP): Part downloads that failed in the last hour (system.part_log), alerting server first — still there after the alert self-resolves."
+  params:
+    arguments:
+      query: >-
+        WITH splitByChar('.', {host:String})[1] AS alert_host
+        SELECT hostName() AS server, server IN (alert_host, concat(alert_host, '-0')) AS is_alerting_server,
+        event_time, database, table, part_name, error, substring(exception, 1, 250) AS error_text
+        FROM clusterAllReplicas('$ch_cluster', system.part_log)
+        WHERE event_type = 'DownloadPart' AND error != 0 AND event_time > now() - INTERVAL 1 HOUR
+        ORDER BY is_alerting_server DESC, event_time DESC
+        LIMIT 10
+      params:
+        host: "$hostname"
+    rows: "data[*]"
+    max_rows: 10
+    fields: [server, is_alerting_server, event_time, database, table, part_name, error, error_text]
+    summary_chars: 4000
+
 common_alerts:
   # ==================================================== OPERATOR / CONTROL PLANE
   - name: "ClickHouseOperatorMetricsAbsent"
@@ -1161,6 +1597,13 @@ common_alerts:
             description: "metrics-exporter logs filtered for the failing fetch_type, access-denied, timeout and unknown-table signatures."
             params:
               tail_lines: 200
+      - step: 4
+        title: "Prove whether the server itself answers (live, MCP)"
+        description: >-
+          The exporter failing to fetch metrics does not mean the server is down. server[] reads every server of the cluster: a row with is_alerting_server=1 means the alerting server is up and answering queries — the problem is the exporter's fetch path (its user, network policy or a slow system table), so report a visibility problem, not an outage. No is_alerting_server=1 row while its peers answered => the alerting server did not answer this read either; treat it as unreachable. If the read failed outright (e.g. ALL_CONNECTION_TRIES_FAILED), a server was unreachable and the connection's user lacks skip_unavailable_shards — say the server's state could not be verified live.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_server
     remediation: # suggestion-only
       - action: "grant_exporter_read_access"
         description: "When the log shows a privilege error: grant the exporter's ClickHouse user SELECT on the specific system table named. No restart of ClickHouse is needed."
@@ -1237,6 +1680,14 @@ common_alerts:
             description: "ClickHouse container logs (including the previous container) filtered for OOM, shutdown, exception and 'Loading data parts' signatures."
             params:
               tail_lines: 200
+      - step: 3
+        title: "Read the restarted server live — uptime, version and the errors around the restart (live, MCP)"
+        description: >-
+          uptime_s on the is_alerting_server=1 row confirms when the alerting server restarted; a server_version that differs from its peers' rows points to an upgrade or a rollout in progress. errors[] lists what the alerting server recorded in the last hour: MEMORY_LIMIT_EXCEEDED / CANNOT_ALLOCATE_MEMORY point to memory pressure, KEEPER_EXCEPTION / TABLE_IS_READ_ONLY to a coordination problem after start. count_since_start is cumulative since THIS start. No errors is not proof of a clean restart — combine with the logs from step 2. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_server
+          - *ch_live_errors
     remediation: # suggestion-only — usually no action for a planned restart
       - action: "close_as_expected_change"
         description: "If the restart belongs to a rolling upgrade or an approved CHI change and step 2 shows the host caught up, close it as expected — record which host and when."
@@ -1345,6 +1796,14 @@ common_alerts:
             description: "ClickHouse container logs filtered for ZooKeeper/Keeper session, 'readonly', 'No node' and table-attach failures."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Name the read-only tables and the Keeper state live (live, MCP)"
+        description: >-
+          replicas[] lists the alerting server's replicated tables first, read-only ones first: quote database.table for every is_readonly=1 row and its keeper_exception. is_session_expired=1 alongside => the server lost its Keeper session and every replicated table on it went read-only together (a Keeper problem, not a table problem). Only some tables read-only with a specific keeper_exception => metadata for those tables is missing/corrupt in Keeper. Peer rows that are read-only too => the problem is shard- or cluster-wide, not this server. keeper[] shows each server's Keeper connection; if it fails with an unknown table, the servers are older than 23.x — say so. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_replicas
+          - *ch_live_keeper
     remediation: # suggestion-only — never drop/recreate replicated tables without an owner
       - action: "restore_keeper_availability"
         description: "Primary path when step 2 shows session loss: fix the Keeper/ZooKeeper ensemble (quorum, slow disk, GC pauses, network). Replicas leave read-only on their own once sessions are stable — no ClickHouse change is needed."
@@ -1466,6 +1925,14 @@ common_alerts:
                 - name: insert_query_rate_by_host
                   unit: "inserts/s"
                   query: 'sum by (chi, hostname) (rate(chi_clickhouse_event_InsertQuery[5m]))'
+      - step: 4
+        title: "Name the lagging tables and what their queues are stuck on (live, MCP)"
+        description: >-
+          replicas[] gives absolute_delay and queue_size per replicated table, alerting server first — name the table(s) with the largest delay. replication_queue[] groups the pending entries per server: GET_PART entries with high max_tries and a sample_exception => fetches from another replica are failing (network, the source replica, or disk); MERGE_PARTS entries piling up => the server is slow to merge (CPU/IO); a sample_postpone_reason explains entries waiting on purpose (e.g. a part still being merged elsewhere). oldest_age_s is how long the oldest entry has waited. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_replicas
+          - *ch_live_replication_queue
     remediation: # suggestion-only
       - action: "relieve_the_lagging_host"
         description: "Shift read traffic away from the lagging replica while it catches up (clients get stale results from it anyway), and pause non-urgent heavy queries/backfills so the background pool can drain the queue."
@@ -1563,6 +2030,15 @@ common_alerts:
             description: "ClickHouse logs filtered for replication queue entries, 'Cannot fetch', 'No active replica' and checksum errors."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Break the queue down by table and entry type, and check for stuck mutations (live, MCP)"
+        description: >-
+          replication_queue[] shows WHICH tables and entry types make up the queue, alerting server first; quote the top rows with entries, max_tries and oldest_age_s. A large MUTATE_PART share together with mutations[] showing an old mutation with parts_to_do > 0 or a fail_reason => a stuck mutation is what fills the queue (name it). Repeated sample_exception text says why entries fail. replicas[] adds inserts_in_queue / merges_in_queue per table. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_replication_queue
+          - *ch_live_replicas
+          - *ch_live_mutations
     remediation: # suggestion-only — queue surgery is destructive and needs an owner
       - action: "unblock_the_failing_entry"
         description: "When one entry blocks the queue: restore the source (repair the replica, free its disk, fix interserver connectivity) so the fetch can succeed. Dropping or skipping a queue entry loses the part on this replica and must be an explicit, approved decision."
@@ -1662,6 +2138,15 @@ common_alerts:
             description: "ClickHouse logs filtered for fetch failures, interserver connection errors, 'No active replica' and checksum mismatches."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Read why part fetches fail (live, MCP)"
+        description: >-
+          replication_queue[] GET_PART rows with high max_tries carry the fetch error in sample_exception — quote it: connection refused / timeouts naming another server => that source replica or the network between them; checksum / no such part => the part is gone or damaged on the source; 'No active replica has part' => no replica holds it. This alert self-resolves once a retry succeeds, so the live queue may already be empty: failed_fetches[] (system.part_log) lists the downloads that failed in the last hour with their error_text — quote the alerting server's rows; if it fails with an unknown table, part_log is disabled on the servers, say so. errors[] corroborates with NETWORK_ERROR / SOCKET_TIMEOUT / CHECKSUM_DOESNT_MATCH counts and last times. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_replication_queue
+          - *ch_history_failed_fetches
+          - *ch_live_errors
     remediation: # suggestion-only
       - action: "restore_the_source_replica"
         description: "Bring the source replica back (or free its disk / fix its overload) so fetches can succeed. This clears both the fetch failures and the replication queue behind them."
@@ -1752,6 +2237,14 @@ common_alerts:
             description: "ClickHouse logs filtered for ZooKeeper/Keeper session expiry, reconnect and timeout lines."
             params:
               tail_lines: 200
+      - step: 3
+        title: "Read the Keeper connection and its effect on replicated tables live (live, MCP)"
+        description: >-
+          keeper[] shows each server's Keeper connection(s), alerting server first: more than one row for it, a recent connected_time or session_uptime_elapsed_seconds near zero => the session was just re-established (consistent with the alert). Peers showing the same => the Keeper ensemble, not this server. replicas[] shows the impact: is_session_expired=1 or is_readonly=1 rows mean writes to those tables are failing right now. If the keeper call fails (unknown table), say the connection could not be read live. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_keeper
+          - *ch_live_replicas
     remediation: # suggestion-only — the fix is usually on the ensemble, not the database
       - action: "stabilise_the_keeper_ensemble"
         description: "Check the Keeper/ZooKeeper ensemble for quorum, slow disk (fsync latency), memory/GC pauses and session-timeout settings. Sessions stabilise from the ensemble side; restarting ClickHouse does not fix an unhealthy ensemble."
@@ -1838,6 +2331,14 @@ common_alerts:
             description: "ClickHouse logs filtered for ZooKeeper connection-loss, operation-timeout and 'Cannot get ZooKeeper' lines."
             params:
               tail_lines: 200
+      - step: 3
+        title: "Read the Keeper connection and the errors behind the exceptions (live, MCP)"
+        description: >-
+          errors[] names what failed in the last hour, alerting server first: KEEPER_EXCEPTION / ZOOKEEPER-related codes with their error_message say whether it is timeouts, connection loss or session expiry. keeper[] shows which Keeper host each server is connected to now — only the alerting server erroring while connected to a different Keeper host than its peers points at that Keeper node. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_keeper
+          - *ch_live_errors
     remediation: # suggestion-only
       - action: "investigate_the_keeper_ensemble"
         description: "Check quorum, per-node latency, fsync/disk performance and resource pressure on the Keeper/ZooKeeper nodes. Treat this as a Keeper incident before treating it as a ClickHouse one."
@@ -1964,6 +2465,15 @@ common_alerts:
             description: "ClickHouse logs filtered for 'Too many parts', 'parts_to_delay_insert', merge failures and the table names involved."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Name the partition that hit the parts limit and the insert pattern behind it (live, MCP)"
+        description: >-
+          Inserts are delayed at parts_to_delay_insert and rejected at parts_to_throw_insert ACTIVE parts in one partition (server defaults, shown on every row; table-level overrides are not included). parts[] names the partition(s) at or near those limits, alerting server first — quote database.table, partition_id and active_parts. insert_batches[] shows how that table is being written: many new parts per minute with small avg_rows_per_part => too-frequent small inserts are creating parts faster than merges can combine them (the usual root cause — fix batching or use async inserts). merges[] shows whether merges are running for that table; none running or very slow progress_pct => merges are starved (CPU/IO, or a stuck mutation). Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_parts
+          - *ch_live_merges
+          - *ch_live_insert_batches
     remediation: # suggestion-only — the durable fix is on the writers, not the server
       - action: "batch_the_writers"
         description: "Primary fix when rows per insert is small: batch on the client (tens of thousands of rows or a time-based flush) or put async_insert in front of those writers. This is the root cause of most too-many-parts incidents and the only fix that holds."
@@ -2065,6 +2575,15 @@ common_alerts:
             description: "ClickHouse logs filtered for merge selection/failure lines, 'Too many parts' and the database.table names involved."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Name the partition with too many parts and why merges are not keeping up (live, MCP)"
+        description: >-
+          parts[] names the partition(s) with the most active parts versus parts_to_delay_insert / parts_to_throw_insert, alerting server first — quote them. merges[] shows what is merging now; nothing running for that table => merges are not being scheduled (look at mutations[]: an unfinished mutation with parts_to_do > 0 or a fail_reason blocks merges on the parts it covers). Long-running merges with low progress_pct => the server lacks CPU/IO to merge. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_parts
+          - *ch_live_merges
+          - *ch_live_mutations
     remediation: # suggestion-only
       - action: "fix_writer_batching"
         description: "When batches are small: batch client-side or enable async_insert for those writers. This is the durable fix; merge tuning only buys time."
@@ -2171,6 +2690,13 @@ common_alerts:
             description: "ClickHouse logs filtered for Distributed send failures, connection refusals/timeouts and the target shard addresses."
             params:
               tail_lines: 250
+      - step: 4
+        title: "Name the Distributed table whose send queue is backing up, and why (live, MCP)"
+        description: >-
+          distribution_queue[] lists each Distributed table's pending data_files and size per server, alerting server first; quote the top table. error_count > 0 with send_exception => sends to the remote shard are failing (quote it: connection refused / timeout => the shard or network; too many parts => the remote shard is rejecting inserts — cross-link to the rejected-inserts alert). is_blocked=1 => sending is paused. broken_data_files > 0 => files that will never be sent. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_distribution_queue
     remediation: # suggestion-only — never delete the queued files casually, they are unsent rows
       - action: "restore_the_target_shard"
         description: "Bring the failing shard back or clear whatever makes it refuse writes (too many parts, readonly replica, connectivity). The backlog drains automatically once the destination accepts writes again."
@@ -2266,6 +2792,14 @@ common_alerts:
             description: "ClickHouse logs filtered for frequent small-part creation and the table names receiving them."
             params:
               tail_lines: 200
+      - step: 3
+        title: "Name the tables written in small batches (live, MCP)"
+        description: >-
+          insert_batches[] ranks tables by parts created in the last 15 minutes, alerting server first: quote the top table with parts_per_min and avg_rows_per_part — thousands of parts per hour with tiny averages is the small-batch pattern (batch on the client, or enable async_insert). parts[] shows whether that table is already accumulating active parts towards the insert limits. Empty insert_batches means system.part_log recorded no new parts in 15 minutes on any server (or part_log is disabled). Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_insert_batches
+          - *ch_live_parts
     remediation: # suggestion-only — the fix is in the writers
       - action: "batch_on_the_client"
         description: "Accumulate rows in the producer and insert in large batches (tens of thousands of rows, or a time-based flush). This is the direct fix and it reduces parts, merges, CPU and disk churn at once."
@@ -2367,6 +2901,14 @@ common_alerts:
             description: "ClickHouse logs filtered for 'Too many simultaneous queries', 'Memory limit exceeded' and long-running query signatures."
             params:
               tail_lines: 300
+      - step: 4
+        title: "Name who is running the queries and the heaviest ones (live, MCP)"
+        description: >-
+          processes_by_user[] shows which user generates the concurrency on each server — one query_user holding most running queries on the alerting server points at a specific client or job (name it). query_user is the initial user, so a distributed query is attributed to whoever sent it, not to the internal interserver user. processes[] lists the longest-running queries with elapsed_s, memory and query_text; long elapsed with high memory are the ones occupying slots. A burst of short queries from one user => client retry/fan-out; a few very long ones => heavy analytical queries blocking capacity. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_processes_by_user
+          - *ch_live_processes
     remediation: # suggestion-only — killing queries is disruptive
       - action: "shed_or_reschedule_load"
         description: "Pause or reschedule the non-critical workload driving the concurrency (backfills, ad-hoc reports, dashboard refresh storms). If a few heavy queries are holding slots, cancelling those specific queries is the targeted action — confirm ownership first."
@@ -2455,6 +2997,13 @@ common_alerts:
             description: "ClickHouse logs filtered for long-running query execution, memory-limit and timeout signatures to identify the query and its user."
             params:
               tail_lines: 250
+      - step: 3
+        title: "Name the long-running query live (live, MCP)"
+        description: >-
+          processes[] lists running queries, alerting server first and longest first: quote the top is_alerting_server=1 row's query_user, elapsed_s, read_rows, memory and query_text — that is the query the alert measured, if it is still running. is_cancelled=1 => it was already cancelled and is winding down. No is_alerting_server=1 rows => it finished before this read; say so rather than naming another server's query. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_processes
     remediation: # suggestion-only — cancelling someone's query needs their agreement
       - action: "tune_or_cancel_the_query"
         description: "Identify the query and its owner from the log, then either fix it (add a partition/PREWHERE filter, bound the JOIN, add a LIMIT) or cancel it if it is abandoned. Cancelling an unattended query frees memory and slots immediately but must be an approved decision."
@@ -2535,6 +3084,14 @@ common_alerts:
                   query: 'sum without (__name__) ({__name__=~"chi_clickhouse_metric_(HTTPConnection|TCPConnection|MySQLConnection|PostgreSQLConnection)"})'
                 - name: effective_running_queries
                   query: '(max by (chi, hostname) (chi_clickhouse_metric_Query) - max by (chi, hostname) (chi_clickhouse_metric_PendingAsyncInsert)) or max by (chi, hostname) (chi_clickhouse_metric_Query)'
+      - step: 3
+        title: "Show what is competing for capacity (live, MCP)"
+        description: >-
+          Preemption happens when higher-priority queries take the slots. processes_by_user[] shows who is running queries now on each server and processes[] which ones are longest/heaviest — name the users/queries competing on the alerting server. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_processes_by_user
+          - *ch_live_processes
     remediation: # suggestion-only
       - action: "rebalance_query_priorities"
         description: "When the host has headroom: soften the priority settings for the starved profile (or give it a guaranteed share) so low-priority work still progresses instead of waiting indefinitely."
@@ -2624,6 +3181,14 @@ common_alerts:
             description: "ClickHouse logs filtered for connection-limit, 'Too many simultaneous queries' and client-disconnect signatures."
             params:
               tail_lines: 200
+      - step: 3
+        title: "Break the connections down live (live, MCP)"
+        description: >-
+          connections[] gives one row per server with tcp / http / interserver / mysql / postgresql connection counts and running_queries, alerting server first — the protocol that dominates on the alerting server says which kind of client is opening them (native TCP clients and drivers vs HTTP). processes_by_user[] shows who is actually running queries; many connections but few running queries => idle connections held open by a pool (client-side pool sizing). Counts include this diagnostic's own connection and query, about one per server. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_connections
+          - *ch_live_processes_by_user
     remediation: # suggestion-only
       - action: "fix_the_client_pool"
         description: "When the pattern is a leak: cap and reuse connections in the offending client (bounded pool size, idle timeout, ensure connections are closed). ClickHouse connections are expensive per thread — fewer, reused connections are strictly better."
@@ -2754,6 +3319,15 @@ common_alerts:
             description: "ClickHouse logs filtered for 'Not enough space', merge failures, readonly and write-error signatures."
             params:
               tail_lines: 250
+      - step: 4
+        title: "Name what is using the disk (live, MCP)"
+        description: >-
+          disks[] gives free/total per disk on every server, alerting server first — confirm against the alert's disk. table_sizes[] names the largest tables on the alerting server (system tables such as query_log/trace_log/part_log growing without a TTL are a common surprise). detached_parts[] shows space held by detached parts that the server no longer uses — quote the size by reason; those are reclaimable only by an operator. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_disks
+          - *ch_live_table_sizes
+          - *ch_live_detached_parts
     remediation: # suggestion-only — deleting data is irreversible; resizing needs headroom
       - action: "reclaim_space_safely"
         description: "Drop partitions that are already past retention (verify with the data owners), and remove detached parts only after confirming they are not needed for recovery. Do not delete files from the volume directly — ClickHouse must be the one to remove parts."
@@ -2860,6 +3434,13 @@ common_alerts:
             description: "ClickHouse logs filtered for 'Part is broken', checksum mismatch, 'Detaching' and merge-failure signatures with table names."
             params:
               tail_lines: 300
+      - step: 4
+        title: "List the detached parts and why they were detached (live, MCP)"
+        description: >-
+          detached_parts[] groups by server, table and reason, alerting server first: 'broken' / 'unexpected' / 'noquorum' parts were detached by the server itself (a crash, disk or replication problem) — quote table, reason, count and oldest; 'ignored' or user-detached parts ('' reason) came from an ALTER ... DETACH. Detached parts still occupy disk until dropped. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_detached_parts
     remediation: # suggestion-only — attaching or dropping parts changes data; never automatic
       - action: "recover_rows_from_a_healthy_replica"
         description: "Preferred path when siblings have the data: let the replica re-fetch the affected parts (or drop the broken part on this replica so it refetches). Confirm the other replicas are complete BEFORE removing anything here."
@@ -2972,6 +3553,13 @@ common_alerts:
             description: "ClickHouse logs filtered for DNS resolution failures, connection refused/reset, and timeouts naming peer addresses."
             params:
               tail_lines: 250
+      - step: 4
+        title: "Read which network errors the server recorded (live, MCP)"
+        description: >-
+          errors[] lists the last hour's errors per server, alerting server first: NETWORK_ERROR / SOCKET_TIMEOUT / DNS_ERROR / ALL_CONNECTION_TRIES_FAILED with their error_message (quoted literals masked; server names and ports kept) and remote=1 when the error came from another server. Quote the dominant name, its count_since_start, last_error_time and the peer the message names. Several servers reporting errors against the same peer => that peer or its network is the problem. Rows with is_alerting_server=1 are the alerting server; the others are its peers, for comparison.
+        tool_calls:
+          - *ch_find_cluster
+          - *ch_live_errors
     remediation: # suggestion-only
       - action: "fix_cluster_dns"
         description: "When DNS errors dominate: check CoreDNS health, capacity and the pods' resolver configuration. ClickHouse resolves peers on every new connection, so DNS instability produces broad, confusing symptoms."

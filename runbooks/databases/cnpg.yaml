@@ -305,6 +305,29 @@ common_alerts:
               container: "postgres"
               min_duration_seconds: 60
               limit: 5
+      - step: 7
+        title: "Measure the damage — dead rows piling up and vacuum held back (live read)"
+        description: >-
+          A long transaction's cost is not the query itself but the snapshot it pins: while it
+          is open, vacuum cannot remove rows deleted after it began, so dead rows accumulate
+          and tables bloat. This live read (read-only session on $pod, in the largest
+          application database) shows it. Interpret: xmin_horizon.oldest_backend is the
+          session pinning the horizon — if its pid matches the step 6 culprit, the transaction
+          IS what blocks vacuum; quote its xmin_age and tx_age_seconds. tables[] with high
+          n_dead_tup / dead_pct and last_autovacuum older than the transaction start => bloat
+          is accruing because of it (name those tables). running_vacuums non-empty with low
+          scanned_pct => vacuum is running but cannot finish its work. xmin_horizon.prepared_xacts
+          > 0 or oldest_slot_xmin_age high => something OTHER than the session also holds the
+          horizon — say so instead of blaming the transaction alone. If this step failed, report
+          the bloat impact as not verified.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live vacuum view on the alerting pod: tables with the most dead rows, running vacuums, and what holds the xmin horizon."
+            params:
+              engine: "postgres"
+              query_id: "vacuum"
+              container: "postgres"
+              limit: 5
     remediation: # suggestion-only — forge.* are never auto-executed; CNPG backends must be cleared via psql, not k8s
       - action: "cancel_long_running_query"
         description: "ONLY when step 2 shows state=active AND step 3/4 prove impact (waiting backends, commit-rate drop, or deadlocks). Cancel the offending query (non-destructive, keeps the connection): connect to $pod and run SELECT pg_cancel_backend(<pid>) using the pid step 6 reported — quote that pid in the action, do not tell the operator to go find it."
@@ -559,6 +582,38 @@ common_alerts:
                   panel_id: "cnpg-max-slot-retained-bytes"
                 - name: archive_failures_30m
                   query: 'sum(increase(cnpg_pg_stat_archiver_failed_count{namespace="$namespace",pod=~"$service-[0-9]+"}[30m])) or vector(0)'
+      - step: 4
+        title: "Read replication live on the alerting pod — lag per standby, slots, and replay conflicts"
+        description: >-
+          Live read on $pod (read-only session). On the PRIMARY (is_primary=true) standbys[]
+          gives each replica's write/flush/replay lag in seconds AND replay_lag_bytes — name the
+          laggiest application_name and say whether the gap is time-only (idle primary: no new
+          WAL, so lag seconds grow while bytes stay ~0 — NOT a real lag) or bytes too (real
+          backlog). On a STANDBY (is_primary=false) the standby block gives replay_delay_seconds
+          and receive_replay_gap_bytes: a large receive_replay_gap_bytes with wal_receiver_status
+          "streaming" => WAL arrives but replay is slow (CPU/IO, or a conflicting query — see the
+          second call); wal_receiver_status not "streaming" => the replica is disconnected
+          (network / primary side). slots[].retained_wal_bytes large => the lagging replica's
+          slot is pinning WAL on the primary (disk risk). The second call lists long transactions
+          on this pod: on a standby, a long-running read query is the classic cause of replay
+          pausing (recovery conflict / hot_standby_feedback) — name it if present. If a call
+          failed, say the live view was not available and keep the metric-based reading.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live replication view: per-standby lag (seconds and bytes), slots with retained WAL, and the standby's own replay delay."
+            params:
+              engine: "postgres"
+              query_id: "replication"
+              container: "postgres"
+              limit: 5
+          - tool_id: "tool.query_db_activity"
+            description: "Long-running transactions on the alerting pod — on a standby these can hold up WAL replay."
+            params:
+              engine: "postgres"
+              query_id: "long_transactions"
+              container: "postgres"
+              min_duration_seconds: 30
+              limit: 5
     remediation: # suggestion-only — investigate the replica; never restart the primary (forces failover)
       - action: "recover_disconnected_replica"
         description: "If step 2 shows wal_receiver_up=0 or streaming_replicas below expected, focus on the laggiest replica from step 1: check its pod health / node IO / network to the primary. An operator-driven restart of THAT replica pod (approval-gated) can re-establish streaming — never restart the primary."
@@ -791,6 +846,27 @@ common_alerts:
                 - name: replication_lag_s
                   unit: "s"
                   query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
+      - step: 3
+        title: "Read the slots live — which slot, active or not, and exactly how much WAL it holds"
+        description: >-
+          Live read of pg_replication_slots and pg_stat_replication (read-only session). The pod
+          is the alert's, or the cluster's primary when the alert names none. Interpret:
+          slots[] lists slot_name, active, wal_status and retained_wal_bytes — the dead slot is
+          the one with active=false AND large retained_wal_bytes; quote both. wal_status
+          "extended" or "unreserved" => the slot is already beyond max_wal_size / close to
+          max_slot_wal_keep_size and the primary is at risk; "lost" => the slot is already
+          invalid and can no longer serve its replica. standbys[] shows which replicas ARE
+          streaming — a slot whose name matches no streaming standby is the orphan left by a
+          removed replica. Run on a standby (is_primary=false), the slot list reflects that
+          standby only — say so rather than reporting it as the primary's.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live replication slots with retained WAL and wal_status, plus the standbys currently streaming."
+            params:
+              engine: "postgres"
+              query_id: "replication"
+              container: "postgres"
+              limit: 10
     remediation: # suggestion-only — dropping a slot is a manual psql action; never drop a slot still in use
       - action: "drop_orphaned_replication_slot"
         description: "ONLY when step 1 names an inactive slot with large/growing retained WAL AND step 2 confirms its consumer replica is permanently gone: drop the orphan on the primary via psql — SELECT pg_drop_replication_slot('<slot_name>') — to release the retained WAL. Never drop a slot whose replica is merely temporarily disconnected and expected back."
@@ -915,6 +991,36 @@ common_alerts:
                   panel: true
                   panel_title: "Rollback Rate"
                   panel_id: "cnpg-rollback-rate"
+      - step: 4
+        title: "Name who holds the connections and what the server is busy with (live read)"
+        description: >-
+          Metrics give counts; this names the owners. Live read on $pod (read-only session).
+          Interpret: top_clients[] groups connections by usename + application_name + datname +
+          client_addr — the top row(s) are the services to name in the RCA and the escalation;
+          a single client holding most connections with active≈0 is an oversized/leaking pool.
+          idle_in_transaction.count and oldest_seconds confirm a transaction leak (cross-link
+          to the long-transaction alert). active_waits shows what active sessions wait on —
+          Lock:* dominating => contention, not load; IO:*/LWLock:* => the server is saturated.
+          The second call ranks statements by total execution time since stats were last
+          reset: the top one or two are where the server's time goes — quote their normalised
+          text and calls/mean_exec_ms. available=false means pg_stat_statements is not
+          installed on this server: say that statement-level attribution is not available,
+          do not guess. Query literals are normalised to "?" by design.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live connection breakdown: totals vs max_connections, state mix, top clients, and active wait events."
+            params:
+              engine: "postgres"
+              query_id: "connections"
+              container: "postgres"
+              limit: 8
+          - tool_id: "tool.query_db_activity"
+            description: "Heaviest statements by total execution time (pg_stat_statements), normalised."
+            params:
+              engine: "postgres"
+              query_id: "top_statements"
+              container: "postgres"
+              limit: 5
     remediation: # suggestion-only — config / app-side fixes, gated
       - action: "add_or_rightsize_connection_pooler"
         description: "Primary fix when step 2 shows mostly-idle connections: front PostgreSQL with a PgBouncer Pooler CR (or right-size the app's existing pool) so a few server connections are multiplexed. Far cheaper and safer than raising max_connections."
@@ -932,3 +1038,89 @@ common_alerts:
     follow_up:
       - "If connections are mostly idle, standardise on a pooler and cap per-service pool sizes so the sum cannot exceed max_connections."
       - "If idle-in-transaction dominates, treat alongside CNPGClusterLongRunningTransaction — the same leak drives both alerts."
+
+  - name: "CNPGClusterXIDWraparound"
+    patterns:
+      [
+        "CNPGClusterXIDWraparoundWarning",
+        "CNPGClusterXIDWraparoundCritical",
+        "CNPGClusterMultixactWraparoundWarning",
+        "CNPGClusterXIDWraparound",
+        "CNPGClusterMultixactWraparound",
+        "xid wraparound",
+        "transaction id wraparound",
+        "multixact wraparound",
+        "xid age",
+        "datfrozenxid",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the age, which database, and whether it is still climbing"
+        description: >-
+          The rules fire on cnpg_pg_database_xid_age (or _mxid_age) > 1e9 for one database
+          (the alert's datname) on $pod; PostgreSQL stops accepting writes at ~2.1e9 (2^31)
+          to protect itself, so the gap to that is the urgency. Interpret: xid_age_by_db
+          names the database and its distance to the limit; a steadily RISING line over the
+          window => anti-wraparound vacuum is not keeping up (something blocks it — step 2);
+          a sawtooth that drops back => vacuum IS freezing and this is a transient peak.
+          Report both XID and multixact ages: multixact wraparound has the same outcome and a
+          different cause (heavy row locking / foreign keys).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Transaction-ID and multixact age per database on the alerting pod."
+            params:
+              queries:
+                - name: xid_age_by_db
+                  query: 'max by (datname) (cnpg_pg_database_xid_age{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "XID Age by Database"
+                  panel_id: "cnpg-xid-age-by-db"
+                - name: mxid_age_by_db
+                  query: 'max by (datname) (cnpg_pg_database_mxid_age{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "Multixact Age by Database"
+                  panel_id: "cnpg-mxid-age-by-db"
+      - step: 2
+        title: "Find what stops vacuum from freezing, and the oldest tables (live read)"
+        description: >-
+          Live read on $pod in the alert's database (read-only session). The age only falls
+          when vacuum can freeze old rows, and vacuum cannot freeze past the OLDEST snapshot
+          anyone holds. Interpret xmin_horizon first — it names the blocker: oldest_backend
+          (a long transaction / idle-in-transaction session: quote pid, usename,
+          application_name, tx_age_seconds), prepared_xacts > 0 with a large
+          oldest_prepared_xact_age (an abandoned two-phase transaction — only an operator can
+          resolve it), oldest_slot_xmin_age (a replication slot, often a dead one), or
+          oldest_standby_feedback_xmin_age (a standby running long queries with
+          hot_standby_feedback). If none of these is old, vacuum is simply not getting to the
+          tables: oldest_xid_tables[] lists them (relation, xid_age, size) — huge tables take
+          longest to freeze. running_vacuums[] with to_prevent_wraparound=true and a low
+          scanned_pct => the emergency vacuum is already running; estimate, do not promise, its
+          finish. autovacuum="off" => that alone explains it. If this step failed, say the
+          blocker could not be identified live and fall back to step 1.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live vacuum view in the alert's database: xmin horizon holders, oldest-frozen tables, running (anti-wraparound) vacuums, per-database XID/MXID age."
+            params:
+              engine: "postgres"
+              query_id: "vacuum"
+              container: "postgres"
+              database: "$datname"
+              limit: 8
+    remediation: # suggestion-only — every action here changes the database and needs a DBA
+      - action: "remove_the_horizon_blocker"
+        description: "Primary fix: clear whatever step 2 named as holding the xmin horizon — end the old session (pg_terminate_backend(<pid>) for the pid step 2 reported, after confirming with its owner), COMMIT/ROLLBACK PREPARED the abandoned prepared transaction, or drop the dead replication slot that is pinning xmin. Vacuum can only make progress once this is gone."
+        tool_id: ""
+        requires_approval: true
+      - action: "vacuum_freeze_oldest_tables"
+        description: "Once nothing blocks the horizon: run VACUUM (FREEZE, VERBOSE) on the oldest tables step 2 listed, biggest first, ideally off-peak. Do not cancel an anti-wraparound autovacuum that is already running — it restarts from the beginning."
+        tool_id: ""
+        requires_approval: true
+      - action: "tune_autovacuum_for_freeze"
+        description: "Prevent recurrence: raise autovacuum_max_workers / maintenance_work_mem or lower autovacuum_freeze_max_age for the hot tables so freezing keeps pace with the write rate."
+        tool_id: ""
+        requires_approval: true
+    escalation: "On-call DBA / platform team immediately for Critical (writes stop near 2.1 billion). Include the blocker step 2 named so the owning team of that session, slot or prepared transaction is pulled in."
+    follow_up:
+      - "Track the age falling after the blocker is removed; it drops only when vacuum completes on the oldest table, which can take hours on large tables."
+      - "Add an alert on long-lived idle-in-transaction sessions and on inactive replication slots — they are the usual root cause of wraparound pressure."

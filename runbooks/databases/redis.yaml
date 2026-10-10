@@ -40,6 +40,15 @@ description: >-
   Dragonfly instances (an exporter sentinel for "unavailable") — never report -1 as a
   real rejected-connection count.
 
+# LIVE READS: the tool.query_db_activity steps read the alerting pod through the
+# tenant tunnel (SLOWLOG / CLIENT LIST / CONFIG / INFO). Where the integration
+# Redis tool can answer the same question, a call carries `fallback: mcp.redis.info`
+# — it runs ONLY if the tunnel read failed, and only with `target: child`, i.e.
+# when a platform routing rule (mcp.mcp_config_registry) maps this alert to the
+# MCP operator for THIS Redis instance; without a matching rule it is NOT RUN, so
+# it can never describe a different instance. Its output is labelled
+# "(fallback for tool.query_db_activity)" and is coarser (INFO counters, no
+# per-client or per-command list) — say so when it is the source.
 match_keywords:
   - redis
   - dragonfly
@@ -1046,11 +1055,27 @@ common_alerts:
               engine: "redis"
               query_id: "clients"
               limit: 10
+            fallback:
+              - tool_id: "mcp.redis.info"
+                target: "child"
+                description: "Fallback when the tunnel read fails: INFO clients from the MCP Redis tool — counts only (connected_clients, blocked_clients, maxclients), no per-client list."
+                params:
+                  arguments:
+                    section: "clients"
+                  summary_chars: 2500
           - tool_id: "tool.query_db_activity"
             description: "Live CONFIG GET for the authoritative maxclients/timeout and memory policy."
             params:
               engine: "redis"
               query_id: "config"
+            fallback:
+              - tool_id: "mcp.redis.info"
+                target: "child"
+                description: "Fallback when the tunnel read fails: INFO clients from the MCP Redis tool, whose maxclients is the configured limit (no other CONFIG values)."
+                params:
+                  arguments:
+                    section: "clients"
+                  summary_chars: 2500
     remediation: # suggestion-only — fix the client/pool; raising maxclients defers the problem
       - action: "fix_client_pooling_or_leak"
         description: "Primary fix: the cause is almost always client-side — add/right-size connection pooling, fix a connection leak (connections opened per request and never closed/reused), or cap the per-service pool so the sum cannot exhaust maxclients. Identify the offending service from step 2 and fix it rather than raising the limit."
@@ -1249,6 +1274,14 @@ common_alerts:
               engine: "redis"
               query_id: "clients"
               limit: 10
+            fallback:
+              - tool_id: "mcp.redis.info"
+                target: "child"
+                description: "Fallback when the tunnel read fails: INFO clients from the MCP Redis tool — counts only (connected_clients, blocked_clients, maxclients), no per-client list."
+                params:
+                  arguments:
+                    section: "clients"
+                  summary_chars: 2500
     remediation: # suggestion-only
       - action: "address_consumer_or_downstream_slowness"
         description: "When step 2 shows blocked clients rising with slow commands or a dropped processing rate: the consumers are stuck — investigate the downstream dependency they call after popping work, a poison message, or far too few producers for the waiters. Scale/fix the consumers or unblock the dependency."
@@ -1508,6 +1541,14 @@ common_alerts:
               engine: "redis"
               query_id: "commandstats"
               limit: 5
+            fallback:
+              - tool_id: "mcp.redis.info"
+                target: "child"
+                description: "Fallback when the tunnel read fails: INFO commandstats from the MCP Redis tool (raw per-command calls / usec_per_call)."
+                params:
+                  arguments:
+                    section: "commandstats"
+                  summary_chars: 2500
           - tool_id: "tool.query_db_activity"
             description: "Live SLOWLOG GET for the exact expensive commands and their keys/clients."
             params:
