@@ -2,198 +2,310 @@ groups:
   - name: elasticsearch.rules
     interval: 30s
     rules:
-      - alert: ElasticsearchDown
-        expr: up{job=~"elasticsearch.*"} == 0
-        for: 1m
+      # Default Elasticsearch alerts using the available exporter metrics.
+      # Preserve series labels so clients, clusters, nodes, disks, indices and
+      # thread pools are evaluated independently. Exporter node names use name.
+
+      # --------------------------------------------------------------------------
+      # Metric collection and cluster availability
+      # --------------------------------------------------------------------------
+
+      # This detects a reported collector failure. Exporter disappearance or an
+      # unreachable scrape endpoint requires the platform's target monitoring.
+      - alert: ElasticsearchMetricsCollectionFailed
+        expr: elasticsearch_scrape_success == 0
+        for: 2m
         labels:
+          sourceType: metric
           severity: critical
           priority: P1
           tech_stack: elasticsearch
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: up{job=~"elasticsearch.*"} == 0
+          signal: cause
+          category: monitoring
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: elasticsearch_scrape_success == 0
         annotations:
-          summary: "Elasticsearch instance is down"
-          description: "Elasticsearch instance {{ $labels.instance }} has been unreachable for more than 1 minute."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdown"
+          summary: "Elasticsearch metric collection is failing"
+          description: "Collector {{ $labels.collector }} at exporter target {{ $labels.instance }} has reported failed
+            Elasticsearch metric collection for at least 2 minutes (scrape_success={{ $value }}; 1 means success).
+            Metrics supplied by this collector may be missing or outdated, leaving dependent alerts unable to assess
+            current health. Possible causes include Elasticsearch API timeouts, connection or TLS failures, insufficient
+            permissions, or an unsupported API response. A collector failure can occur while Elasticsearch still serves
+            application traffic. Check the exporter logs for this collector, its Elasticsearch endpoint and credentials,
+            and API reachability from the exporter before concluding that the cluster is down."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
       - alert: ElasticsearchClusterRed
         expr: elasticsearch_cluster_health_status{color="red"} == 1
         for: 1m
         labels:
+          sourceType: metric
           severity: critical
           priority: P0
           tech_stack: elasticsearch
           signal: symptom
           category: data
-          runbook: runbooks/databases/elasticsearch.md
+          runbook: runbooks/databases/elasticsearch.yaml
           query: elasticsearch_cluster_health_status{color="red"} == 1
         annotations:
-          summary: "Elasticsearch cluster status is RED"
-          description: "Elasticsearch cluster {{ $labels.cluster }} status is RED — primary shards are missing, data unavailable."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusterred"
+          summary: "Elasticsearch primary shards are unavailable"
+          description: "Cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, has remained RED for at least
+            1 minute. One or more primary shards are unassigned, so data in those shards is unavailable; searches may
+            fail or return partial results, and writes targeting those shards may fail. Other shards can remain
+            operational. Possible causes include a lost data node, disk or allocation restrictions, or failure to recover
+            a valid shard copy. Identify the affected primary shards and inspect the cluster allocation explanation,
+            node membership, disk capacity and recovery errors to determine whether an existing shard copy can recover."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
+      # Yellow remains enabled for single-node clusters as agreed. Replicas
+      # configured on a single eligible data node can keep this alert firing.
       - alert: ElasticsearchClusterYellow
         expr: elasticsearch_cluster_health_status{color="yellow"} == 1
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: elasticsearch
-          signal: cause
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_cluster_health_status{color="yellow"} == 1
-        annotations:
-          summary: "Elasticsearch cluster status is YELLOW"
-          description: "Elasticsearch cluster {{ $labels.cluster }} status is YELLOW — replica shards are unassigned."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchclusteryellow"
-
-      - alert: ElasticsearchNodeLeft
-        expr: elasticsearch_cluster_health_number_of_nodes < (elasticsearch_cluster_health_number_of_nodes offset 5m)
-        for: 2m
-        labels:
-          severity: critical
-          priority: P1
-          tech_stack: elasticsearch
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_cluster_health_number_of_nodes < (elasticsearch_cluster_health_number_of_nodes offset 5m)
-        annotations:
-          summary: "An Elasticsearch node has left the cluster"
-          description: "An Elasticsearch node has left the cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchnodeleft"
-
-      - alert: ElasticsearchJVMHeapHigh
-        expr: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: elasticsearch
-          signal: cause
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
-        annotations:
-          summary: "Elasticsearch JVM heap usage is high"
-          description: "Elasticsearch JVM heap usage is {{ $value | humanizePercentage }} on {{ $labels.node }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmheaphigh"
-
-      - alert: ElasticsearchJVMGCDurationHigh
-        expr: rate(elasticsearch_jvm_gc_collection_seconds_sum[5m]) > 2
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: elasticsearch
-          signal: cause
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: rate(elasticsearch_jvm_gc_collection_seconds_sum[5m]) > 2
-        annotations:
-          summary: "Elasticsearch JVM garbage collection duration is high"
-          description: "Elasticsearch JVM GC is consuming {{ $value | humanize }}s/s on {{ $labels.node }}. Excessive GC indicates
-            heap pressure."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchjvmgcdurationhigh"
-
-      - alert: ElasticsearchCircuitBreakerTripped
-        expr: rate(elasticsearch_breakers_tripped[5m]) > 0
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: elasticsearch
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: rate(elasticsearch_breakers_tripped[5m]) > 0
-        annotations:
-          summary: "Elasticsearch circuit breaker is being tripped"
-          description: "Elasticsearch circuit breaker {{ $labels.breaker }} is being tripped on {{ $labels.node }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchcircuitbreakertripped"
-
-      - alert: ElasticsearchDiskWatermarkHigh
-        expr: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.85
-        for: 5m
-        labels:
-          severity: warning
-          priority: P2
-          tech_stack: elasticsearch
-          signal: cause
-          category: storage
-          runbook: runbooks/databases/elasticsearch.md
-          query: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.85
-        annotations:
-          summary: "Elasticsearch disk usage has reached the high watermark"
-          description: "Elasticsearch disk usage is {{ $value | humanizePercentage }} on {{ $labels.node }} — high watermark
-            reached, no new shards will be allocated."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkhigh"
-
-      - alert: ElasticsearchDiskWatermarkFlood
-        expr: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.95
-        for: 2m
-        labels:
-          severity: critical
-          priority: P1
-          tech_stack: elasticsearch
-          signal: symptom
-          category: storage
-          runbook: runbooks/databases/elasticsearch.md
-          query: (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.95
-        annotations:
-          summary: "Elasticsearch disk usage has reached the flood-stage watermark"
-          description: "Elasticsearch disk usage is {{ $value | humanizePercentage }} on {{ $labels.node }} — FLOOD stage,
-            all indices are read-only."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchdiskwatermarkflood"
-
-      - alert: ElasticsearchUnassignedShards
-        expr: elasticsearch_cluster_health_unassigned_shards > 0
         for: 10m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: elasticsearch
           signal: cause
           category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_cluster_health_unassigned_shards > 0
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: elasticsearch_cluster_health_status{color="yellow"} == 1
         annotations:
-          summary: "Elasticsearch cluster has unassigned shards"
-          description: "Elasticsearch has {{ $value }} unassigned shards in cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchunassignedshards"
+          summary: "Elasticsearch replica shards remain unavailable"
+          description: "Cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, has remained YELLOW for at
+            least 10 minutes. All primary shards are assigned, but at least one replica shard is unassigned. The affected
+            data has fewer available copies than configured, reducing fault tolerance and potentially read capacity;
+            another node failure could make that data unavailable. Check replica allocation explanations, eligible data
+            nodes, disk watermarks and allocation filters. An intentional single-node cluster with replicas configured
+            can remain yellow because a primary and its replica cannot share a node; this rule includes that case."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
-      - alert: ElasticsearchPendingTasks
-        expr: elasticsearch_cluster_health_number_of_pending_tasks > 100
+      # --------------------------------------------------------------------------
+      # Disk capacity: mutually exclusive warning and critical conditions
+      # --------------------------------------------------------------------------
+
+      # These are fixed capacity thresholds, not measurements of the configured
+      # Elasticsearch watermarks. At 95%, warning clears and critical becomes
+      # pending for 2 minutes. A non-positive capacity is excluded from ratios.
+      - alert: ElasticsearchDiskSpaceLow
+        expr: |
+          (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.85
+          and
+          (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) < 0.95
+          and
+          elasticsearch_filesystem_data_size_bytes > 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: elasticsearch
+          signal: cause
+          category: storage
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: |
+            (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) > 0.85
+            and
+            (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) < 0.95
+            and
+            elasticsearch_filesystem_data_size_bytes > 0
+        annotations:
+          summary: "Elasticsearch data disk space is running low"
+          description: "Data disk mounted at {{ $labels.mount }} (data path {{ $labels.path }}) on node
+            {{ $labels.name }} in cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, is
+            {{ $value | humanizePercentage }} used, calculated from available space and total capacity. Usage has stayed
+            above 85% and below 95% for at least 10 minutes. Falling available space can restrict shard allocation or
+            trigger relocation depending on the configured disk watermarks and headroom limits. Continued growth can
+            eventually block writes to affected indices. Check actual free bytes, index growth and retention, configured
+            watermarks and shard allocation decisions, then plan capacity expansion or approved data cleanup."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      - alert: ElasticsearchDiskSpaceCritical
+        expr: |
+          (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) >= 0.95
+          and
+          elasticsearch_filesystem_data_size_bytes > 0
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          tech_stack: elasticsearch
+          signal: cause
+          category: storage
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: |
+            (1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_data_size_bytes) >= 0.95
+            and
+            elasticsearch_filesystem_data_size_bytes > 0
+        annotations:
+          summary: "Elasticsearch data disk is critically short of space"
+          description: "Data disk mounted at {{ $labels.mount }} (data path {{ $labels.path }}) on node
+            {{ $labels.name }} in cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, is
+            {{ $value | humanizePercentage }} used, calculated from available space and total capacity. Usage has stayed
+            at or above 95% for at least 2 minutes. If the configured flood-stage watermark is exceeded, Elasticsearch
+            can block writes to indices with shards on this node; exhausting the filesystem can also disrupt shard
+            operations. This percentage alone does not establish whether write blocks are active because watermark
+            settings and headroom limits can vary. Urgently check free bytes, effective watermarks, index write blocks
+            and allocation decisions, then restore capacity through expansion or approved cleanup."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      # --------------------------------------------------------------------------
+      # JVM memory pressure and memory protection
+      # --------------------------------------------------------------------------
+
+      - alert: ElasticsearchJVMHeapHigh
+        expr: |
+          elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
+          and
+          elasticsearch_jvm_memory_max_bytes{area="heap"} > 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: elasticsearch
+          signal: cause
+          category: data
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: |
+            elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max_bytes{area="heap"} > 0.85
+            and
+            elasticsearch_jvm_memory_max_bytes{area="heap"} > 0
+        annotations:
+          summary: "Elasticsearch JVM heap usage remains high"
+          description: "Node {{ $labels.name }} in cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, is
+            using {{ $value | humanizePercentage }} of its maximum JVM heap and has remained above 85% for at least
+            10 minutes. Sustained heap pressure can increase garbage collection overhead, slow searches and indexing,
+            and trigger circuit breakers or an out-of-memory failure. Possible contributors include expensive
+            aggregations, large bulk requests, high request concurrency, excessive shards or an undersized heap. Check
+            heap and GC trends, breaker trips, hot threads, active requests and shard distribution before changing heap
+            settings or restarting the node."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      - alert: ElasticsearchCircuitBreakerTripped
+        expr: increase(elasticsearch_breakers_tripped[10m]) >= 3
         for: 5m
         labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: elasticsearch
-          signal: cause
+          signal: symptom
           category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_cluster_health_number_of_pending_tasks > 100
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: increase(elasticsearch_breakers_tripped[10m]) >= 3
         annotations:
-          summary: "Elasticsearch cluster has a high number of pending tasks"
-          description: "Elasticsearch has {{ $value }} pending cluster tasks in {{ $labels.cluster }}. Master node may be
-            overloaded."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchpendingtasks"
+          summary: "Elasticsearch is repeatedly rejecting operations to protect memory"
+          description: "Circuit breaker {{ $labels.breaker }} on node {{ $labels.name }} in cluster
+            {{ $labels.cluster }}, reported by {{ $labels.instance }}, has an estimated
+            {{ $value | humanize }} trips in the last 10 minutes. The rolling count has stayed at or above 3 for at least
+            5 minutes. Operations reaching this breaker are being rejected to protect memory, so affected clients may
+            receive circuit_breaking_exception errors and need to retry or reduce request size. Large aggregations,
+            bulk requests or sustained memory pressure are possible causes. Inspect the named breaker's usage and
+            limit, the rejected requests and JVM heap before changing breaker limits; increasing a limit can expose the
+            node to memory exhaustion."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
-      - alert: ElasticsearchSnapshotFailed
-        expr: elasticsearch_snapshot_stats_snapshot_number_of_failures > 0
+      # --------------------------------------------------------------------------
+      # Request failures and delayed cluster management
+      # --------------------------------------------------------------------------
+
+      # Match search/write pools across exporter and Elasticsearch versions.
+      # At least 100 completed + rejected tasks per 5m avoids a high percentage
+      # from only a handful of requests. Pool task counts are not HTTP counts.
+      - alert: ElasticsearchThreadPoolRejections
+        expr: |
+          (
+            rate(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+            /
+            (
+              rate(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+              + rate(elasticsearch_thread_pool_completed_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+            )
+          ) > 0.05
+          and
+          (
+            increase(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+            + increase(elasticsearch_thread_pool_completed_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+          ) >= 100
         for: 5m
         labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: elasticsearch
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: |
+            (
+              rate(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+              /
+              (
+                rate(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                + rate(elasticsearch_thread_pool_completed_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+              )
+            ) > 0.05
+            and
+            (
+              increase(elasticsearch_thread_pool_rejected_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+              + increase(elasticsearch_thread_pool_completed_count{type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+            ) >= 100
+        annotations:
+          summary: "Elasticsearch search or write tasks are being rejected"
+          description: "Thread pool {{ $labels.type }} on node {{ $labels.name }} in cluster {{ $labels.cluster }},
+            reported by {{ $labels.instance }}, has a rejection ratio of {{ $value | humanizePercentage }} over the last
+            5 minutes. Rejected tasks have exceeded 5% of completed plus rejected tasks, with at least 100 such tasks in
+            the rolling 5-minute window, for at least 5 minutes. Affected search or write requests may fail with HTTP 429
+            or es_rejected_execution_exception, and retries can increase load. This ratio measures pool tasks rather
+            than distinct client requests. Check queue depth, active threads, CPU and heap pressure, hot shards and
+            incoming concurrency to identify why the node cannot keep up."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      - alert: ElasticsearchIndexingFailures
+        expr: increase(elasticsearch_index_stats_indexing_index_failed_total[10m]) >= 5
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          tech_stack: elasticsearch
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: increase(elasticsearch_index_stats_indexing_index_failed_total[10m]) >= 5
+        annotations:
+          summary: "Elasticsearch is recording indexing failures"
+          description: "Index {{ $labels.index }} in cluster {{ $labels.cluster }}, reported by {{ $labels.instance }},
+            has an estimated {{ $value | humanize }} failed indexing operations in the last 10 minutes. The rolling
+            failure count has stayed at or above 5 for at least 5 minutes. Affected document writes have failed, which
+            can delay data availability or leave gaps if the producer does not retry successfully. The counter does not
+            identify the error reason or confirm permanent data loss. Inspect individual bulk response errors, producer
+            retries and Elasticsearch logs for the affected index; check mapping or document validation errors, version
+            conflicts, shard availability and resource pressure according to the reported error."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      - alert: ElasticsearchClusterTasksDelayed
+        expr: elasticsearch_cluster_health_task_max_waiting_in_queue_millis / 1000 > 60
+        for: 5m
+        labels:
+          sourceType: metric
           severity: warning
           priority: P2
           tech_stack: elasticsearch
           signal: cause
           category: data
-          runbook: runbooks/databases/elasticsearch.md
-          query: elasticsearch_snapshot_stats_snapshot_number_of_failures > 0
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: elasticsearch_cluster_health_task_max_waiting_in_queue_millis / 1000 > 60
         annotations:
-          summary: "Elasticsearch snapshot has failed"
-          description: "Elasticsearch snapshot failed on cluster {{ $labels.cluster }}."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.md#elasticsearchsnapshotfailed"
+          summary: "Elasticsearch cluster management tasks are waiting too long"
+          description: "Cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, has a longest pending
+            cluster-task wait of {{ $value | humanizeDuration }}. The maximum queue wait has remained above 60 seconds
+            for at least 5 minutes. Cluster-state changes such as index creation, mapping updates and shard allocation
+            may be delayed even while existing searches and writes continue. This metric measures time waiting in the
+            cluster management queue, not query latency or task execution time. Inspect pending task sources and
+            priorities, the elected master's CPU, heap and GC, and cluster-state publication or node connectivity
+            problems to determine what is delaying progress."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
