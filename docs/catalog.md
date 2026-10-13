@@ -88,18 +88,18 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `ElasticsearchMetricsCollectionFailed` | critical | P1 | 2m | cause | `elasticsearch_scrapelasticsearch.yaml| [elasticsearch.yamlelasticsearch.yamlases/elasticsearch.yaml) |
-| `ElasticsearchClusterRed` | critical | P0 | 1m | symptom | `elasticsearch_cluster_health_status{color="red"} == 1` | [elasticsearch.yamlml](runbooks/databaseelasticsearch.yamlyaml) |
-| `ElasticsearchClusterYellow` | warning | P2 | 10m | cause | `elasticsearch_cluster_health_status{color="yellow"} == 1` | elasticsearch.yamlaml](runbooks/databaselasticsearch.yaml.yaml) |
-| `ElasticsearchDiskSpaceLow` | warning | P2 | 10m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` |elasticsearch.yamlyaml](runbooks/databaelasticsearch.yamlh.yaml) |
-| `ElasticsearchDiskSpaceCritical` | critical | P1 | 2m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_elasticsearch.yamlarch.yaml](runbooks/delasticsearch.yamlsearch.yaml) |
-| `ElasticsearchJVMHeapHigh` | warning | P2 | 10m | cause | `elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvelasticsearch.yaml [elasticsearch.yaml]elasticsearch.yamlses/elasticsearch.yaml) |
-| `ElasticsearchCircuitBreakerTripped` | warning | P2 | 5m | symptom | `increase(elasticsearch_breakers_tripped[10m]) >= elasticsearch.yamlrch.yaml](runbooks/daelasticsearch.yamlearch.yaml) |
-| `ElasticsearchThreadPoolRejections` | warning | P2 | 5m | symptom | `( rate(elasticsearch_thread_pool_rejected_count{type=~"search\|search_coordinatielasticsearch.yamlrch.yaml](runbooks/daelasticsearch.yamlearch.yaml) |
-| `ElasticsearchIndexingFailures` | warning | P2 | 5m | symptom | `increase(elasticsearch_index_stats_indexing_index_failed_total[10m]) >= 5` | [elasticseaelasticsearch.yamlks/databases/elasticselasticsearch.yaml
-| `ElasticsearchClusterTasksDelayed` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_task_max_waiting_in_queuelasticsearch.yaml> 60` | [elasticsearcelasticsearch.yaml/databases/elasticsearch.yaml) |
-elasticsearch.yamlelasticsearch.yaml
-### `rules/metrics/databases/mongodb.yml`elasticsearch.yamlelasticsearch.yaml
+| `ElasticsearchMetricsCollectionFailed` | critical | P1 | 2m | cause | `elasticsearch_scrape_success == 0` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchClusterRed` | critical | P0 | 1m | symptom | `elasticsearch_cluster_health_status{color="red"} == 1` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchClusterYellow` | warning | P2 | 10m | cause | `elasticsearch_cluster_health_status{color="yellow"} == 1` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchDiskSpaceLow` | warning | P2 | 10m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchDiskSpaceCritical` | critical | P1 | 2m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchJVMHeapHigh` | warning | P2 | 10m | cause | `elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchCircuitBreakerTripped` | warning | P2 | 5m | symptom | `increase(elasticsearch_breakers_tripped[10m]) >= 3` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchThreadPoolRejections` | warning | P2 | 5m | symptom | `( rate(elasticsearch_thread_pool_rejected_count{type=~"search\|search_coordinati…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchIndexingFailures` | warning | P2 | 5m | symptom | `increase(elasticsearch_index_stats_indexing_index_failed_total[10m]) >= 5` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchClusterTasksDelayed` | warning | P2 | 5m | cause | `elasticsearch_cluster_health_task_max_waiting_in_queue_millis / 1000 > 60` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+
+### `rules/metrics/databases/mongodb.yml`
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
@@ -305,7 +305,7 @@ elasticsearch.yamlelasticsearch.yaml
 | `KubePodOOMKilled` | critical | P1 | 0m | symptom | `increase(kube_pod_container_status_restarts_total[10m]) > 0 and on(namespace, p…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodCPUThrottlingHigh` | warning | P2 | 10m | cause | `( sum by (rtf_cluster_id, rtf_env, namespace, pod, container) ( rate(container_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeContainerWaiting` | warning | P2 | 1h | cause | `kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
-| `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0 unless on(namespace, pod) kube_pod…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeDeploymentReplicasMismatch` | warning | P2 | 15m | symptom | `kube_deployment_spec_replicas != kube_deployment_status_replicas_available` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeDeploymentRolloutStuck` | warning | P2 | 15m | cause | `kube_deployment_status_condition{condition="Progressing",status="false"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeStatefulSetReplicasMismatch` | critical | P1 | 10m | symptom | `kube_statefulset_status_replicas_ready != kube_statefulset_replicas` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
@@ -346,21 +346,21 @@ elasticsearch.yamlelasticsearch.yaml
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `RabbitMQDown` | critical | P1 | 1m | symptom | `up{job=~"rabbitmq.*"} == 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQQueueDepthHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_ready > 10000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQQueueDepthCritical` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 100000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNoConsumers` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQUnackedMessagesHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_unacknowledged > 1000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQMemoryHigh` | warning | P2 | 5m | cause | `rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes >…` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQMemoryAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_memory_used_watermark == 1` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDiskFreeAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_free_disk_space_watermark == 1` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDiskFreeWarning` | warning | P2 | 5m | cause | `rabbitmq_disk_space_available_bytes < 1073741824` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNodeDown` | critical | P1 | 2m | symptom | `rabbitmq_cluster_nodes_running < rabbitmq_cluster_nodes_total` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNetworkPartition` | critical | P0 | 1m | symptom | `rabbitmq_cluster_partitions > 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQChannelCountHigh` | warning | P2 | 5m | cause | `rabbitmq_channels > 10000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDeadLetterQueueGrowing` | warning | P2 | 10m | symptom | `deriv(rabbitmq_queue_messages_ready{queue=~".*dead.*\|.*dlq.*\|.*dlx.*"}[10m]) > 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQConnectionCountHigh` | warning | P2 | 5m | cause | `rabbitmq_connections > 5000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQRedeliveryRateHigh` | warning | P2 | 5m | symptom | `rate(rabbitmq_queue_messages_redelivered_total[5m]) / rate(rabbitmq_queue_messa…` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
+| `RabbitMQDown` | critical | P1 | 1m | symptom | `up{job=~"rabbitmq.*"} == 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQQueueDepthHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_ready > 10000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQQueueDepthCritical` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 100000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNoConsumers` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQUnackedMessagesHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_unacknowledged > 1000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQMemoryHigh` | warning | P2 | 5m | cause | `rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes >…` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQMemoryAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_memory_used_watermark == 1` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDiskFreeAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_free_disk_space_watermark == 1` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDiskFreeWarning` | warning | P2 | 5m | cause | `rabbitmq_disk_space_available_bytes < 1073741824` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNodeDown` | critical | P1 | 2m | symptom | `rabbitmq_cluster_nodes_running < rabbitmq_cluster_nodes_total` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNetworkPartition` | critical | P0 | 1m | symptom | `rabbitmq_cluster_partitions > 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQChannelCountHigh` | warning | P2 | 5m | cause | `rabbitmq_channels > 10000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDeadLetterQueueGrowing` | warning | P2 | 10m | symptom | `deriv(rabbitmq_queue_messages_ready{queue=~".*dead.*\|.*dlq.*\|.*dlx.*"}[10m]) > 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQConnectionCountHigh` | warning | P2 | 5m | cause | `rabbitmq_connections > 5000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQRedeliveryRateHigh` | warning | P2 | 5m | symptom | `rate(rabbitmq_queue_messages_redelivered_total[5m]) / rate(rabbitmq_queue_messa…` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
 
 ## observability
 
@@ -500,6 +500,7 @@ elasticsearch.yamlelasticsearch.yaml
 - [mongodb-atlas.yaml](runbooks/databases/mongodb-atlas.yaml)
 - [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
 - [service-error-logs.yaml](runbooks/logs/service-error-logs.yaml)
+- [rabbitmq.md](runbooks/messaging/rabbitmq.md)
 - [service-latency.yaml](runbooks/observability/service-latency.yaml)
 
 ---
