@@ -340,6 +340,7 @@ tests:
               sourceType: metric
               severity: warning
               priority: P2
+              notify_every: "2h"
               tech_stack: elasticsearch
               signal: cause
               category: data
