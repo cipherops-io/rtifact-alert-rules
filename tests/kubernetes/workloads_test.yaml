@@ -40,6 +40,91 @@ tests:
               runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
   # ============================================================
+  # KubeContainerRestartingFrequently: positive — 3 restarts spaced 20m apart (never crash-loops)
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="prod",pod="api-7c",container="api"}'
+        values: '0x69 1x19 2x19 3x29'
+    alert_rule_test:
+      - eval_time: 100m
+        alertname: KubeContainerRestartingFrequently
+        exp_alerts: []
+      - eval_time: 116m
+        alertname: KubePodCrashLooping
+        exp_alerts: []
+      - eval_time: 116m
+        alertname: KubeContainerRestartingFrequently
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              notify_every: "2h"
+              tech_stack: kubernetes
+              signal: symptom
+              category: workload
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: |
+                increase(
+                  (max by (rtf_cluster_id, rtf_env, namespace, pod, container) (kube_pod_container_status_restarts_total))[1h:1m]
+                ) >= 3
+              namespace: "prod"
+              pod: "api-7c"
+              container: "api"
+            exp_annotations:
+              summary: "container restarting frequently: prod/api-7c container=api"
+              description: "Container api in pod prod/api-7c restarted 3 times in the last 1h. Context: cluster=, env=, service=api-7c. Restarts spaced minutes apart (liveness-probe kills, slow memory growth, exits after a period of normal running) never reach CrashLoopBackOff, so check the last terminated reason, exit code, and liveness probe timing."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+  # ============================================================
+  # KubeContainerRestartingFrequently: positive — StatefulSet pod recreated under the same name
+  # (new uid, counter back to 0): 2 restarts before + 2 after must still count as 4
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="prod",pod="db-0",container="db",uid="u1"}'
+        values: '8x79 10x9'
+      - series: 'kube_pod_container_status_restarts_total{namespace="prod",pod="db-0",container="db",uid="u2"}'
+        values: '_x90 0x14 1x9 2x10'
+    alert_rule_test:
+      - eval_time: 124m
+        alertname: KubeContainerRestartingFrequently
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              notify_every: "2h"
+              tech_stack: kubernetes
+              signal: symptom
+              category: workload
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: |
+                increase(
+                  (max by (rtf_cluster_id, rtf_env, namespace, pod, container) (kube_pod_container_status_restarts_total))[1h:1m]
+                ) >= 3
+              namespace: "prod"
+              pod: "db-0"
+              container: "db"
+            exp_annotations:
+              summary: "container restarting frequently: prod/db-0 container=db"
+              description: "Container db in pod prod/db-0 restarted 4 times in the last 1h. Context: cluster=, env=, service=db-0. Restarts spaced minutes apart (liveness-probe kills, slow memory growth, exits after a period of normal running) never reach CrashLoopBackOff, so check the last terminated reason, exit code, and liveness probe timing."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+  # ============================================================
+  # KubeContainerRestartingFrequently: negative — 2 restarts in 1h
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'kube_pod_container_status_restarts_total{namespace="prod",pod="api-7c",container="api"}'
+        values: '0x69 1x29 2x40'
+    alert_rule_test:
+      - eval_time: 130m
+        alertname: KubeContainerRestartingFrequently
+        exp_alerts: []
+
+  # ============================================================
   # KubePodNotReady: positive — pod not ready for > 15m
   # ============================================================
   - interval: 1m
