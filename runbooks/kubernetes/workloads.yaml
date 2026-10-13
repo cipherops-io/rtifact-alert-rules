@@ -24,7 +24,7 @@ categories:
 
 common_alerts:
   - name: "KubePodCrashLooping"
-    patterns: ["KubePodCrashLooping", "CrashLoopBackOff", "container restart loop"]
+    patterns: ["KubePodCrashLooping", "KubeContainerRestartingFrequently", "CrashLoopBackOff", "container restart loop"]
     priority: P1
     diagnostic_steps:
       - step: 1

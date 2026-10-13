@@ -54,6 +54,33 @@ groups:
             limits/requests, memory leaks, and burst behavior before repeated restarts impact availability."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
+      - alert: KubeContainerRestartingFrequently
+        expr: |
+          increase(
+            (max by (rtf_cluster_id, rtf_env, namespace, pod, container) (kube_pod_container_status_restarts_total))[1h:1m]
+          ) >= 3
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: kubernetes
+          signal: symptom
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            increase(
+              (max by (rtf_cluster_id, rtf_env, namespace, pod, container) (kube_pod_container_status_restarts_total))[1h:1m]
+            ) >= 3
+        annotations:
+          summary: "container restarting frequently: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} restarted {{ printf \"%.0f\" $value }} times
+            in the last 1h. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}.
+            Restarts spaced minutes apart (liveness-probe kills, slow memory growth, exits after a period of normal running) never
+            reach CrashLoopBackOff, so check the last terminated reason, exit code, and liveness probe timing."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
       - alert: KubePodCPUThrottlingHigh
         expr: |
           (
