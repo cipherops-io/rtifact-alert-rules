@@ -1,0 +1,1067 @@
+tech_stack: rabbitmq
+version: "1.1"
+description: >-
+  Runbook for the 15 alerts emitted by rules/metrics/messaging/rabbitmq.yml.
+  Distinguish scrape visibility, broker availability, queue processing, resource
+  backpressure and cluster membership. RabbitMQDown is a failed Prometheus scrape,
+  not proof that AMQP is unavailable; a vanished target does not satisfy up == 0.
+  Queue depth counts ready messages, not messages already delivered and awaiting
+  acknowledgement. Resource alarms on one node can block publishers across that
+  RabbitMQ cluster while consume-only connections continue draining queues.
+  SCOPING: no RabbitMQ deployment or exporter label convention is established in
+  this repo. Queries deliberately retain the full source labels instead of guessing
+  a service, pod, namespace or cluster selector. Match the firing series' cluster or
+  tenant labels, job, instance, node, vhost and queue before attributing results;
+  same-named queues in different vhosts or clusters are different objects. Peer
+  comparison is valid only inside the same verified RabbitMQ cluster. The scrape
+  instance may name an exporter endpoint rather than a broker. Cluster-wide gauges
+  may be repeated by multiple exporters: compare views, do not sum them.
+  METRIC CONTRACT: these rules mix names that are not universal across exporters.
+  Verify the deployed plugin/exporter version and endpoint before interpreting an
+  empty result. The built-in plugin normally aggregates object metrics on /metrics;
+  queue diagnosis needs per-object metrics with queue and vhost labels, for example
+  /metrics/per-object. /metrics/detailed uses rabbitmq_detailed_* names and is not a
+  drop-in replacement for these selectors. The built-in collector uses
+  rabbitmq_queue_messages_unacked, whereas these rules use
+  rabbitmq_queue_messages_unacknowledged; delivery counters and cluster membership
+  names also depend on exporter schema. Missing metrics mean unavailable evidence,
+  not zero or healthy. Binary expressions here use default full-label matching;
+  mismatched label sets can silently yield no result. Do not combine differently
+  scoped gauges or counters just to obtain a value. Use current scrape timestamps
+  and alert history; after failed collection, broker values can be last-known.
+  All remediation entries are suggestions requiring approval. Diagnostic tools
+  query metrics, read logs and use the conductor's read-only RabbitMQ Management
+  API actions. Operator commands that still appear are fallback checks or capabilities
+  not exposed by the integration. No queue purge, node
+  reset, forced recovery, message replay or policy change is an automatic action.
+
+match_keywords:
+  - rabbitmq
+  - rabbit mq
+  - amqp
+  - rabbitmq exporter
+  - queue backlog
+  - unacknowledged messages
+  - dead letter queue
+  - redelivery
+  - memory alarm
+  - disk alarm
+  - network partition
+  - quorum queue
+
+categories:
+  - MESSAGING
+
+# Raw vectors preserve deployment-specific cluster/node labels and avoid adding
+# replicas, exporter copies or unrelated vhosts together. Match alert labels first.
+queue_panels: &queue_panels
+  - name: ready_messages
+    query: 'rabbitmq_queue_messages_ready'
+    panel: true
+    panel_title: "RabbitMQ Ready Messages"
+    panel_id: "rabbitmq-ready-messages"
+  - name: ready_growth_per_second
+    unit: "messages/s"
+    query: 'deriv(rabbitmq_queue_messages_ready[10m])'
+    panel: true
+    panel_title: "RabbitMQ Ready Message Growth (10m)"
+    panel_id: "rabbitmq-ready-growth"
+  - name: unacknowledged_messages
+    query: 'rabbitmq_queue_messages_unacknowledged'
+    panel: true
+    panel_title: "RabbitMQ Unacknowledged Messages"
+    panel_id: "rabbitmq-unacknowledged"
+  - name: consumers
+    query: 'rabbitmq_queue_consumers'
+    panel: true
+    panel_title: "RabbitMQ Consumers"
+    panel_id: "rabbitmq-consumers"
+
+resource_panels: &resource_panels
+  - name: resident_memory_bytes
+    unit: "B"
+    query: 'rabbitmq_process_resident_memory_bytes'
+  - name: memory_watermark_bytes
+    unit: "B"
+    query: 'rabbitmq_resident_memory_limit_bytes'
+  - name: memory_watermark_percent
+    unit: "%"
+    query: '100 * rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes'
+    panel: true
+    panel_title: "RabbitMQ Memory as % of Watermark"
+    panel_id: "rabbitmq-memory-watermark-percent"
+  - name: memory_alarm
+    query: 'rabbitmq_alarms_memory_used_watermark'
+    panel: true
+    panel_title: "RabbitMQ Memory Alarm"
+    panel_id: "rabbitmq-memory-alarm"
+  - name: disk_free_bytes
+    unit: "B"
+    query: 'rabbitmq_disk_space_available_bytes'
+    panel: true
+    panel_title: "RabbitMQ Free Disk Space"
+    panel_id: "rabbitmq-disk-free"
+  - name: disk_alarm
+    query: 'rabbitmq_alarms_free_disk_space_watermark'
+    panel: true
+    panel_title: "RabbitMQ Disk Alarm"
+    panel_id: "rabbitmq-disk-alarm"
+
+membership_panels: &membership_panels
+  - name: running_nodes
+    query: 'rabbitmq_cluster_nodes_running'
+  - name: expected_nodes
+    query: 'rabbitmq_cluster_nodes_total'
+  - name: missing_nodes
+    query: 'rabbitmq_cluster_nodes_total - rabbitmq_cluster_nodes_running'
+    panel: true
+    panel_title: "RabbitMQ Missing Cluster Members"
+    panel_id: "rabbitmq-missing-members"
+  - name: partitions
+    query: 'rabbitmq_cluster_partitions'
+    panel: true
+    panel_title: "RabbitMQ Cluster Partitions"
+    panel_id: "rabbitmq-partitions"
+
+# Live reads use stable app/action references, never a tenant's minted tool name.
+# Forge unwraps the conductor's data envelope before summarizing: object fields
+# are relative to the returned object; list rows use [*], not data[*].
+# Verify the registered connection belongs to the alert's RabbitMQ deployment.
+# overview.node identifies the answering broker; a load-balanced endpoint can
+# choose a different member for each call. Node-local health calls are therefore
+# connected-node evidence, never automatically evidence about the alerting node.
+# Explicit $vhost/$queue placeholders fail closed in runbook_executor when absent;
+# do not omit them and silently use the credential's default vhost (including /).
+# Send raw vhost/queue names: conductor performs URL encoding.
+# Health 503 bodies are returned with conductor success=true. Interpret status,
+# reason and alarms inside the data, not the transport success flag. 401/403,
+# unsupported endpoint/version and network errors are evidence gaps, not health.
+# Queue/message stats can be disabled or omitted: missing fields are not zeros.
+# Lists below are bounded only in the RCA digest, except list_queues which uses
+# API pagination. A truncated first page/first N rows cannot rule out offenders,
+# rank the worst client, or establish that a queue/node is absent. The digest
+# character budget can truncate even before max_rows is reached. No pagination
+# parameters exist for the current connection/channel/consumer actions.
+
+rmq_overview: &rmq_overview
+  tool_id: "mcp.rabbitmq.overview"
+  description: "Live: identify the connected cluster/node and RabbitMQ version; compare cluster message and object totals."
+  params:
+    arguments: {}
+    fields: [cluster_name, node, rabbitmq_version, queue_totals, object_totals, message_stats]
+    summary_chars: 3000
+
+rmq_queue: &rmq_queue
+  tool_id: "mcp.rabbitmq.get_queue"
+  description: "Live: read exactly the alert's queue/vhost, with ready/in-flight messages, subscriptions, rates, type and policy arguments."
+  params:
+    arguments: {name: "$queue", vhost: "$vhost"}
+    fields:
+      - name
+      - vhost
+      - node
+      - type
+      - state
+      - messages_ready
+      - messages_unacknowledged
+      - consumers
+      - message_stats.publish_details.rate
+      - message_stats.deliver_get_details.rate
+      - message_stats.ack_details.rate
+      - message_stats.redeliver_details.rate
+      - arguments
+      - policy
+      - effective_policy_definition
+    summary_chars: 4000
+
+rmq_consumers: &rmq_consumers
+  tool_id: "mcp.rabbitmq.list_consumers"
+  description: "Live: subscriptions in the alert's explicit vhost; match queue.name and queue.vhost to the alert before attributing clients."
+  params:
+    arguments: {vhost: "$vhost"}
+    rows: "[*]"
+    fields: [queue.name, queue.vhost, consumer_tag, ack_required, prefetch_count, active, channel_details]
+    max_rows: 20
+    summary_chars: 4000
+
+rmq_nodes: &rmq_nodes
+  tool_id: "mcp.rabbitmq.list_nodes"
+  description: "Live: member identity, running state, partition views and memory/disk headroom; match the alerting member by verified broker identity."
+  params:
+    arguments: {}
+    rows: "[*]"
+    fields: [name, running, partitions, mem_used, mem_limit, mem_alarm, disk_free, disk_free_limit, disk_free_alarm, fd_used, fd_total, uptime]
+    max_rows: 20
+    summary_chars: 4000
+
+rmq_alarms: &rmq_alarms
+  tool_id: "mcp.rabbitmq.health_alarms"
+  description: "Live: cluster-wide resource alarm check; status failed is unhealthy even when the conductor call succeeds."
+  params:
+    arguments: {}
+    fields: [status, reason, alarms]
+    summary_chars: 3000
+
+rmq_vhosts: &rmq_vhosts
+  tool_id: "mcp.rabbitmq.health_virtual_hosts"
+  description: "Live: virtual-host health on the node answering the request; this is not a per-queue or cluster-wide availability test."
+  params:
+    arguments: {}
+    fields: [status, reason]
+    summary_chars: 2000
+
+rmq_quorum: &rmq_quorum
+  tool_id: "mcp.rabbitmq.health_quorum_queue"
+  description: "Live: whether the answering node is quorum-critical; failed means taking that node down threatens availability, not that all queues are already down."
+  params:
+    arguments: {}
+    fields: [status, reason, queues]
+    summary_chars: 3000
+
+rmq_connections: &rmq_connections
+  tool_id: "mcp.rabbitmq.list_connections"
+  description: "Live: connection identity, node, user/peer, channel counts, state and client properties; first 20 rows are a sample, not the busiest clients."
+  params:
+    arguments: {}
+    rows: "[*]"
+    fields: [name, node, vhost, user, peer_host, peer_port, channels, state, client_properties]
+    max_rows: 20
+    summary_chars: 4000
+
+rmq_channels: &rmq_channels
+  tool_id: "mcp.rabbitmq.list_channels"
+  description: "Live: channels with connection attribution, unacked deliveries, prefetch, consumers and acknowledgement rates."
+  params:
+    arguments: {}
+    rows: "[*]"
+    fields: [name, node, vhost, user, number, connection_details, consumer_count, messages_unacknowledged, prefetch_count, message_stats.ack_details.rate]
+    max_rows: 20
+    summary_chars: 4000
+
+rmq_queue_sample: &rmq_queue_sample
+  tool_id: "mcp.rabbitmq.list_queues"
+  description: "Live: first 25 queues in the connection's configured default vhost, or all vhosts when no default is set; a partial view of workload pressure."
+  params:
+    arguments: {page: 1, pageSize: 25}
+    rows: "items[*]"
+    fields: [name, vhost, node, type, state, messages_ready, messages_unacknowledged, consumers]
+    max_rows: 25
+    summary_chars: 4000
+
+client_panels: &client_panels
+  - name: connections
+    query: 'rabbitmq_connections'
+    panel: true
+    panel_title: "RabbitMQ Connections"
+    panel_id: "rabbitmq-connections"
+  - name: channels
+    query: 'rabbitmq_channels'
+    panel: true
+    panel_title: "RabbitMQ Channels"
+    panel_id: "rabbitmq-channels"
+  - name: connection_growth_per_second
+    unit: "connections/s"
+    query: 'deriv(rabbitmq_connections[10m])'
+  - name: channel_growth_per_second
+    unit: "channels/s"
+    query: 'deriv(rabbitmq_channels[10m])'
+
+common_alerts:
+  - name: "RabbitMQDown"
+    patterns: ["RabbitMQDown", "RabbitMQ node is unreachable", "rabbitmq scrape failed"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Separate a failed scrape from a broker outage"
+        description: >-
+          Fires when up for a rabbitmq.* job stays zero for 1m. Identify the exact
+          job/instance and whether it is the broker's plugin or a separate exporter.
+          up_now = 1 means scraping recovered; repeated toggles suggest an unstable
+          target or network. An empty result can mean target removal, not recovery.
+          Inspect Prometheus's scrape error for timeout, HTTP status, TLS or connection
+          failure. Broker metrics during a collection failure are not reliable live
+          evidence. This job regex also misses deployments with differently named jobs.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Scrape state, scrape duration and flapping with target labels preserved."
+            params:
+              queries:
+                - name: up_now
+                  query: 'up{job=~"rabbitmq.*"}'
+                  panel: true
+                  panel_title: "RabbitMQ Scrape Health"
+                  panel_id: "rabbitmq-scrape-health"
+                - name: up_changes_30m
+                  query: 'changes(up{job=~"rabbitmq.*"}[30m])'
+                - name: scrape_duration_seconds
+                  unit: "s"
+                  query: 'scrape_duration_seconds{job=~"rabbitmq.*"}'
+      - step: 2
+        title: "Confirm AMQP impact and find the failing component"
+        description: >-
+          Check application connection errors and publisher-confirm failures against
+          this broker, separately from metrics reachability. On the identified broker
+          use rabbitmq-diagnostics check_running, rabbitmq-diagnostics listeners and
+          rabbitmq-diagnostics check_local_alarms. Read broker/exporter logs and pod
+          events for OOM, startup failure, storage errors, auth or TLS failures. If
+          clients work while scraping fails, report a visibility outage. If clients
+          fail too, name the affected queues/services and verify cluster membership.
+          Use the live overview to verify the registered cluster and answering node first. A
+          working Management API proves management reachability only, not AMQP or the original
+          scrape path. Live nodes running/partition views and virtual-host health narrow the
+          fault; node-local results apply only to the answering node. Preserve client evidence for
+          actual publish/consume impact.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_alarms
+          - *rmq_vhosts
+          - tool_id: "tool.read_logs"
+            description: "Logs for the identified broker/exporter; correlate crash, connection, TLS, storage and alarm errors with alert start."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "restore_target_or_broker"
+        description: "Repair the proven scrape/configuration fault or broker startup/network/storage fault. Verify queue replica health before considering a broker restart."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Observability owner for scrape-only failure; RabbitMQ platform and affected application owners for confirmed AMQP failure."
+    follow_up:
+      - "Verify the target returns up = 1 and clients can publish with confirms and consume; re-evaluate alerts hidden by the collection gap."
+
+  - name: "RabbitMQQueueDepthHigh"
+    patterns: ["RabbitMQQueueDepthHigh", "RabbitMQ queue depth is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the queue and decide whether backlog is draining"
+        description: >-
+          More than 10,000 ready messages for 5m fires this warning. Match vhost,
+          queue and deployment labels; require per-queue series before naming a queue.
+          Ready messages await delivery; unacknowledged messages are already in flight.
+          Positive ready_growth_per_second means accumulation, negative means draining.
+          A large but shrinking batch can be expected; compare with the queue's age/SLO
+          and baseline. The critical tier also fires above 100,000; it does not suppress
+          this warning. No consumers routes to RabbitMQNoConsumers; high unacked with
+          consumers present routes to slow/stuck processing rather than absent consumers.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Ready backlog, its slope, in-flight deliveries and consumer count for the matching queue."
+            params: {queries: *queue_panels}
+      - step: 2
+        title: "Explain why consumption is behind production"
+        description: >-
+          On the correct vhost inspect rabbitmqctl list_queues -p <vhost> name
+          messages_ready messages_unacknowledged consumers and the queue's management
+          view for publish, delivery and acknowledgement rates. Verify producer volume,
+          consumer processing latency and downstream dependency failures. Consumer
+          count alone does not prove throughput. Name the responsible consumer service
+          from its subscription/connection, not from a guessed queue-to-service mapping.
+          The exact get_queue result supplies current ready/unacked counts, message_stats and
+          consumer count. Compare its name/vhost with the alert; missing stats are unavailable.
+          list_consumers links matching queue subscriptions to channel_details, ack_required and
+          prefetch_count. Its bounded summary may omit the offending subscription.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - tool_id: "tool.read_logs"
+            description: "Identified consumer logs for slow processing, dependency failures, rejected messages or reconnects."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "restore_processing_capacity"
+        description: "Fix the consumer bottleneck or scale consumers when queue semantics and downstream capacity allow. Coordinate producer throttling if ingress exceeds sustainable throughput."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Consumer owner; involve the RabbitMQ platform owner if resource alarms or broker failures explain the backlog."
+    follow_up:
+      - "Confirm backlog drains within the service's processing SLO without increasing redeliveries or downstream overload."
+
+  - name: "RabbitMQQueueDepthCritical"
+    patterns: ["RabbitMQQueueDepthCritical", "RabbitMQ queue depth is critically high", "critical backlog"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Measure critical backlog and remaining broker headroom"
+        description: >-
+          More than 100,000 ready messages for 5m fires P1. Identify the exact
+          queue/vhost and verify collection is current. Determine whether the backlog
+          is growing or draining and whether consumers are absent or merely slow.
+          Inspect resource alarms on members of this same cluster: a queue backlog can
+          coincide with publisher blocking, but message count alone does not quantify
+          memory or disk usage. Obtain oldest-message age and business impact from the
+          queue/application; do not infer processing delay from count alone.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Queue backlog and processing state."
+            params: {queries: *queue_panels}
+          - tool_id: "tool.query_metrics"
+            description: "Cluster members' memory/disk pressure and alarms; match the affected cluster first."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Locate the processing bottleneck and quantify application impact"
+        description: >-
+          Compare queue publish, delivery and ack rates in the management view with
+          consumer logs and dependency health. A halted consumer, slow database, burst
+          of production and broker alarm need different repairs. Record which workflows
+          are delayed and whether retention, message TTL or queue limits threaten loss.
+          Read the exact queue and its subscriptions, then match its hosting node to list_nodes
+          and cluster alarm state. Use message_stats publish/deliver/ack rates when present to
+          explain net accumulation. This gives current evidence alongside the historical
+          Prometheus slope; a partial consumer list is not proof of absence.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - *rmq_nodes
+          - *rmq_alarms
+          - tool_id: "tool.read_logs"
+            description: "Affected consumer and broker logs around backlog growth, including dependency and alarm errors."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "contain_backlog_and_restore_drain"
+        description: "Coordinate consumer recovery/capacity and producer throttling. Do not purge the queue or impose dropping policies as an incident shortcut; obtain the data owner's decision for any intentional loss."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Page the consumer owner and RabbitMQ platform team; include the business owner when processing SLO or retention is threatened."
+    follow_up:
+      - "Confirm ready count falls below both tiers and oldest-message age, resource headroom and consumer error rates recover."
+
+  - name: "RabbitMQNoConsumers"
+    patterns: ["RabbitMQNoConsumers", "RabbitMQ queue has messages but no consumers"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Verify zero subscriptions on the queue that has ready work"
+        description: >-
+          Ready > 0 and consumers == 0 for 5m fires this alert; its value is the
+          ready message count. The conjunction needs matching full label sets. Check
+          that both series refer to the same queue/vhost and are per-object, rather
+          than broker totals. A polling basic.get client does not register a consumer,
+          and a parked retry/DLQ can intentionally have no subscribers. Establish the
+          expected consumption model before declaring a stopped consumer service.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Queue ready count, subscription count, slope and in-flight messages."
+            params: {queries: *queue_panels}
+      - step: 2
+        title: "Find why the expected consumer did not subscribe"
+        description: >-
+          Inspect rabbitmqctl list_consumers -p <vhost> and the owning application's
+          deployment, connection and subscription logs. Distinguish scaled-to-zero or
+          crashed workers from auth/TLS errors, wrong vhost/queue, queue declaration
+          mismatch or lost connections. Check whether a rollout changed queue names
+          or credentials. Report missing ownership evidence instead of guessing a pod.
+          Use get_queue consumers as the authoritative current queue count when available, and
+          match list_consumers queue.name/queue.vhost to find subscription identity. Do not infer
+          zero subscriptions from a truncated list. A 404 can mean the queue was deleted, renamed
+          or the connection targets the wrong deployment; it is not automatically recovery.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - tool_id: "tool.read_logs"
+            description: "Expected consumer logs for startup, subscription, permissions, declaration and reconnect failures."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "restore_expected_subscription"
+        description: "Restore the owning worker or correct its verified connection/vhost/queue configuration. For intentional parking or polling, review the alert selector with the owner."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Consumer application owner; RabbitMQ platform owner if subscription failures are broker-side."
+    follow_up:
+      - "Verify the intended consumers subscribe and acknowledge work, or document the intentional non-subscriber queue design."
+
+  - name: "RabbitMQUnackedMessagesHigh"
+    patterns: ["RabbitMQUnackedMessagesHigh", "RabbitMQ unacknowledged message count is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Distinguish legitimate in-flight work from stalled acknowledgements"
+        description: >-
+          More than 1,000 unacknowledged messages for 5m fires this warning. These
+          messages have been delivered but not acked; they are not ready backlog.
+          Compare count and trend with consumer count, configured prefetch and normal
+          processing time. A steady high count with healthy acknowledgement throughput
+          may be expected; rising unacked and falling ack rate suggests a processing
+          stall. If the rule's metric is absent, verify the exporter spelling (the native
+          plugin uses rabbitmq_queue_messages_unacked) before interpreting the result.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Ready and in-flight counts, consumer subscriptions and backlog slope."
+            params: {queries: *queue_panels}
+      - step: 2
+        title: "Locate stalled consumers or excessive prefetch"
+        description: >-
+          Inspect the queue's consumer/channel view for prefetch, ack rate and
+          connection churn. Read the identified consumer's logs for blocked calls,
+          long transactions, missing ack paths or ack timeouts. Connection loss can
+          requeue unacked deliveries and produce duplicates; account for consumer
+          idempotency before restarting a worker. Check RabbitMQRedeliveryRateHigh too.
+          get_queue reads messages_unacknowledged directly even when the exporter uses a different
+          metric spelling. Compare matching subscriptions and channels for prefetch_count,
+          messages_unacknowledged and ack statistics. channel_details/connection_details help
+          identify the responsible client. Keep vhost and node attribution; bounded lists cannot
+          rank all offenders.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - *rmq_channels
+          - tool_id: "tool.read_logs"
+            description: "Affected consumer logs for processing stalls, ack errors, timeouts and lost connections."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "repair_acknowledgement_flow"
+        description: "Fix slow processing/dependencies or missing acknowledgements; tune prefetch with the consumer owner. Restart a stuck consumer only after considering redelivery and duplicate effects."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Consumer owner; involve RabbitMQ platform if broker-side channel/connection failures prevent acknowledgements."
+    follow_up:
+      - "Confirm ack throughput recovers and in-flight count settles at the expected concurrency/prefetch level."
+
+  - name: "RabbitMQMemoryHigh"
+    patterns: ["RabbitMQMemoryHigh", "RabbitMQ memory usage is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure headroom to the RabbitMQ memory watermark"
+        description: >-
+          Resident memory divided by resident_memory_limit_bytes > 0.80 for 5m
+          fires this warning. The denominator is the RabbitMQ alarm watermark, not
+          necessarily the container limit or machine RAM. Verify it is positive and
+          both operands have matching labels. Compare resident bytes and alarm state
+          on the same node; container OOM risk also needs pod memory limits/events.
+          An empty division is an evidence gap, not healthy headroom.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Memory footprint, configured watermark and local resource alarms."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Explain the memory growth"
+        description: >-
+          On the affected node use rabbitmq-diagnostics memory_breakdown and compare
+          queue growth with connections/channels and workload baseline. Distinguish
+          queued message pressure from client churn or other Erlang allocations.
+          Do not assume message count is proportional to bytes. Inspect pod events
+          and broker logs for OOM, alarm transitions and connection surges.
+          Match list_nodes.name to the affected broker and compare mem_used, mem_limit and
+          mem_alarm. Queue and connection reads show possible pressure sources, but the queue list
+          is only its first page within the credential default scope. The integration has no
+          memory-breakdown action; keep that operator check when aggregate figures cannot explain
+          allocation.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_queue_sample
+          - *rmq_connections
+          - tool_id: "tool.query_metrics"
+            description: "Queue backlog and client counts to correlate with the node's memory increase."
+            params: {queries: *queue_panels}
+          - tool_id: "tool.query_metrics"
+            description: "Connection/channel footprint and trend."
+            params: {queries: *client_panels}
+          - tool_id: "tool.read_logs"
+            description: "Broker logs for memory pressure, resource alarms and client churn."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "reduce_proven_memory_pressure"
+        description: "Restore queue drain or fix client leaks according to the memory breakdown. Review resources/watermark with actual container headroom; raising the watermark alone can turn backpressure into an OOM."
+        tool_id: ""
+        requires_approval: true
+    escalation: "RabbitMQ platform owner; page immediately if a memory alarm or OOM appears and notify the responsible workload owner."
+    follow_up:
+      - "Verify memory declines with adequate watermark and container headroom under normal traffic."
+
+  - name: "RabbitMQMemoryAlarm"
+    patterns: ["RabbitMQMemoryAlarm", "RabbitMQ memory alarm is active"]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the alarmed node and verify cluster publisher impact"
+        description: >-
+          Memory alarm == 1 for 1m fires P0. Identify every alarmed member in the
+          same cluster and inspect publisher blocked notifications and confirms.
+          Memory alarms propagate publishing backpressure cluster-wide; consume-only
+          connections can continue. An alarm does not prove every application is
+          currently publishing or failing. Use rabbitmq-diagnostics check_local_alarms
+          on the identified nodes; an empty metric is unavailable evidence.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Memory footprint/watermark and both resource alarm types on cluster members."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Find the memory owner and preserve the path that drains work"
+        description: >-
+          Use rabbitmq-diagnostics memory_breakdown on the alarmed node and queue,
+          connection and channel views to identify message accumulation or client
+          pressure. Check whether consumers still acknowledge messages and whether
+          shared publishing/consuming connections impair draining. Read broker and
+          application logs for alarm transitions, blocked publishers and consumer
+          failures. Identify the cause before changing resource limits or restarting.
+          Match each node mem_alarm and use health_alarms to confirm cluster resource alarms.
+          status failed/reason/alarms is an unhealthy result even if tool execution succeeded.
+          Compare mem_used/mem_limit with queue and client evidence. Queue/client summaries are
+          partial and do not explain all allocation categories; memory breakdown still requires
+          the operator check.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_alarms
+          - *rmq_queue_sample
+          - *rmq_connections
+          - tool_id: "tool.query_metrics"
+            description: "Queue drain and in-flight state."
+            params: {queries: *queue_panels}
+          - tool_id: "tool.query_metrics"
+            description: "Client counts and growth."
+            params: {queries: *client_panels}
+          - tool_id: "tool.read_logs"
+            description: "Broker and identified client logs for memory alarms, blocked publishers and consumer processing errors."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "clear_memory_pressure_without_losing_work"
+        description: "Coordinate producer throttling and restore consumers if queued work drives memory; repair client leaks when proven. Validate resources before any watermark adjustment. Do not purge queues or restart the whole cluster to clear an alarm."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Page RabbitMQ platform and affected producer/consumer owners immediately; record the cluster-wide publish impact."
+    follow_up:
+      - "Verify memory alarms clear on all members and blocked publishers resume with successful confirms, without a redelivery surge."
+
+  - name: "RabbitMQDiskFreeAlarm"
+    patterns: ["RabbitMQDiskFreeAlarm", "RabbitMQ disk free space alarm is active"]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Identify the alarmed data volume and blocked publishers"
+        description: >-
+          Disk alarm == 1 for 1m fires P0. Match the node and cluster; confirm
+          the broker's data filesystem and its configured disk_free_limit using
+          node status/configuration. A local disk alarm can block publishing across
+          that cluster while consume-only connections continue. Compare free bytes
+          with the actual configured alarm threshold; the separate 1 GiB warning
+          is not the configured watermark. Verify application blocked/confirm evidence.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Free disk bytes and memory/disk alarms on matching cluster members."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Find what fills the filesystem and whether queues can drain"
+        description: >-
+          Inspect filesystem capacity, PVC usage, broker logs and queue storage
+          on the identified node. Distinguish growing message stores from logs or
+          unrelated files sharing the volume. Ready/unacked counts locate workload
+          pressure but do not measure its byte footprint. Account for replicas,
+          retention and delayed space reclamation; queue drain need not immediately
+          free disk. Never remove live RabbitMQ database/message-store files.
+          list_nodes provides the actual disk_free and disk_free_limit plus disk_free_alarm for
+          each returned member. health_alarms confirms cluster alarm state independently of metric
+          names. Match the broker and filesystem using deployment evidence; queue counts on the
+          partial first page cannot quantify storage bytes or identify every source of growth.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_alarms
+          - *rmq_queue_sample
+          - tool_id: "tool.query_metrics"
+            description: "Queue buildup and drain state for the affected cluster."
+            params: {queries: *queue_panels}
+          - tool_id: "tool.read_logs"
+            description: "Broker logs for disk alarm transitions, write failures, storage errors and queue pressure."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "restore_disk_headroom"
+        description: "Expand the correct volume, remove only verified unrelated disposable files, or restore consumer drain. Coordinate ingress throttling. Do not lower disk protection thresholds or delete broker data as a shortcut."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Page RabbitMQ platform, storage owner and affected application owners immediately."
+    follow_up:
+      - "Confirm alarms clear across the cluster, free bytes remain above the configured limit, and publisher confirms resume."
+
+  - name: "RabbitMQDiskFreeWarning"
+    patterns: ["RabbitMQDiskFreeWarning", "RabbitMQ disk free space is below 1GB"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure free disk and its trend against the real alarm threshold"
+        description: >-
+          Less than 1,073,741,824 bytes (1 GiB) free for 5m fires this warning.
+          It is an absolute threshold, not a percentage or the configured disk alarm
+          limit. Check disk_alarm first: it can already be active even above 1 GiB
+          if the configured limit is higher. Identify the data filesystem and compare
+          its actual disk_free_limit. A negative free_disk_growth_per_second means
+          shrinking headroom; do not treat an empty query as a full disk or recovery.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Disk headroom, alarms and free-space trend."
+            params:
+              queries:
+                - name: free_disk_bytes
+                  unit: "B"
+                  query: 'rabbitmq_disk_space_available_bytes'
+                  panel: true
+                  panel_title: "RabbitMQ Free Disk Space"
+                  panel_id: "rabbitmq-disk-free"
+                - name: free_disk_growth_per_second
+                  unit: "B/s"
+                  query: 'deriv(rabbitmq_disk_space_available_bytes[30m])'
+                - name: disk_alarm
+                  query: 'rabbitmq_alarms_free_disk_space_watermark'
+      - step: 2
+        title: "Trace growth to workload or other filesystem users"
+        description: >-
+          Inspect PVC/filesystem usage and queue sizes on the affected broker.
+          Compare message backlog with logs and other files on the same mount.
+          If growth is sustained, estimate time to the configured alarm threshold
+          using a stable measured byte trend and report its uncertainty. Check
+          retention and consumption before proposing capacity or cleanup changes.
+          Use list_nodes disk_free/disk_free_limit to compare the 1 GiB rule with the broker
+          watermark and verify disk_free_alarm/health_alarms. The first queue page can show
+          workload buildup but is not a complete inventory. Storage mount, PVC usage and
+          unrelated-file attribution still require infrastructure checks.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_alarms
+          - *rmq_queue_sample
+          - tool_id: "tool.query_metrics"
+            description: "Queue backlog and drain as possible causes of disk growth."
+            params: {queries: *queue_panels}
+    remediation:
+      - action: "prevent_disk_alarm"
+        description: "Plan volume expansion or fix backlog/retention according to evidence. Clean only confirmed disposable non-broker files; coordinate any message expiry or deletion with the data owner."
+        tool_id: ""
+        requires_approval: true
+    escalation: "RabbitMQ platform and storage owner; elevate immediately if the disk alarm activates or exhaustion is imminent."
+    follow_up:
+      - "Verify free-space trend stabilizes and headroom is adequate for the workload and configured alarm threshold."
+
+  - name: "RabbitMQNodeDown"
+    patterns: ["RabbitMQNodeDown", "RabbitMQ cluster node is down"]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Compare membership views without double-counting exporters"
+        description: >-
+          Running nodes < total nodes for 2m fires P1. The alert value is the
+          running-node count, not the missing-node count. Compare running/expected
+          values for each matched label set and inspect partitions. Missing operands
+          or mismatched labels make the expression empty. Cluster counts may be
+          repeated per scrape target; do not sum them. These gauges describe a
+          membership view, not queue replica quorum or the missing node's identity.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Per-target cluster membership deficit and partition views."
+            params: {queries: *membership_panels}
+      - step: 2
+        title: "Name the missing member and verify queue availability"
+        description: >-
+          Run rabbitmqctl cluster_status on surviving members and compare configured
+          membership with running nodes and pod/host status. Read node logs/events for
+          OOM, storage failures, startup errors or broken inter-node connectivity.
+          Check affected quorum queues/streams for an online majority and classic
+          queues for their hosting node. One missing node can reduce redundancy
+          without an outage; multiple losses can remove quorum. Use
+          rabbitmq-diagnostics check_if_node_is_quorum_critical before taking another
+          member down; confirm command support on the deployed version.
+          list_nodes names running/non-running members and their partition views, subject to
+          returned-list completeness. health_quorum_queue answers whether the responding node is
+          unsafe to take down, not whether the alerting node or every queue has quorum. An ok
+          response on one member does not authorize restarting another. health_virtual_hosts is
+          also answering-node local.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_quorum
+          - *rmq_vhosts
+          - tool_id: "tool.read_logs"
+            description: "Missing and surviving broker logs for node-down, connection, boot and storage failures."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "recover_missing_member"
+        description: "Repair the proven node/network/storage fault while preserving surviving replicas. Forgetting a node, resetting it or forcing quorum recovery needs a topology and data-safety plan; do not treat a temporary outage as permanent loss."
+        tool_id: ""
+        requires_approval: true
+    escalation: "RabbitMQ platform owner; include application owners immediately if queues are unavailable or quorum is lost."
+    follow_up:
+      - "Verify running membership and replica health recover in every surviving node's view, then confirm publish/consume behavior."
+
+  - name: "RabbitMQNetworkPartition"
+    patterns: ["RabbitMQNetworkPartition", "RabbitMQ cluster network partition detected"]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Establish which members disagree and which queues remain available"
+        description: >-
+          Partitions > 0 for 1m fires P0. Match the affected cluster and compare
+          each node's reported view; the count alone does not identify sides, prove
+          data divergence or prescribe recovery. Use rabbitmqctl cluster_status on
+          reachable members and check queue type, online replicas, leader and majority.
+          Quorum queues can remain available on their majority side while a minority
+          cannot serve them; behavior also depends on RabbitMQ version and partition
+          handling configuration. Do not equate every partition with total outage.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Partition counts and membership views for each reporting node/exporter."
+            params: {queries: *membership_panels}
+      - step: 2
+        title: "Find the inter-node communication failure before changing membership"
+        description: >-
+          Check inter-node DNS, routing, firewall/NetworkPolicy, Erlang distribution
+          connectivity and pod/host pauses. Read logs from both sides for connection
+          loss and partition handling actions. Correlate deployment/network changes
+          with alert start. Record publisher-confirm failures and unavailable queues.
+          Recover connectivity first where possible; any restart/rejoin plan must
+          account for queue replicas and potentially divergent classic-queue data.
+          Compare list_nodes partitions/running fields with the alert and surviving-member views.
+          The connection can see only its reachable side; it cannot establish all partition sides
+          alone. A failed quorum-critical check is a warning against taking the answering node
+          down. Confirm answering-node identity for each local check if the management endpoint is
+          load balanced.
+        tool_calls:
+          - *rmq_nodes
+          - *rmq_quorum
+          - *rmq_vhosts
+          - tool_id: "tool.read_logs"
+            description: "Broker logs from partition sides for distribution failures, node-down and partition handling decisions."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "restore_connectivity_and_plan_rejoin"
+        description: "Repair the network fault. Let the platform owner choose a version/topology-specific recovery plan; do not reset nodes, force boot, restart all sides or automatically select an authoritative partition."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Page RabbitMQ platform and network owners immediately; include affected applications and a data owner if recovery could discard divergent data."
+    follow_up:
+      - "Confirm all membership views agree, partition metrics clear, queue majorities are healthy and confirms/consumption recover."
+
+  - name: "RabbitMQChannelCountHigh"
+    patterns: ["RabbitMQChannelCountHigh", "RabbitMQ open channel count is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Distinguish normal channel concurrency from unbounded growth"
+        description: >-
+          More than 10,000 channels for 5m fires this warning. Confirm whether the
+          exporter reports node, cluster or individual-object values and compare the
+          same scope over time. A high count alone does not prove a leak. Rising
+          channels with stable connections suggests channel creation without cleanup;
+          both rising can indicate client scaling or connection leakage. Correlate
+          memory pressure and the recent deployment baseline.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Connection/channel counts and their growth."
+            params: {queries: *client_panels}
+          - tool_id: "tool.query_metrics"
+            description: "Resource pressure associated with growing client objects."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Identify the client creating channels"
+        description: >-
+          Inspect rabbitmqctl list_connections name user peer_host channels state
+          and rabbitmqctl list_channels connection number user consumer_count
+          messages_unacknowledged on the identified node. Map offending peers/users
+          to an application and inspect its pool lifecycle, exception cleanup and
+          retry behavior. Shared users and NAT addresses may not identify one service;
+          state that limitation and seek client connection names/logs.
+          list_connections channels and client_properties plus list_channels connection_details
+          identify sampled clients. Match node/vhost and corroborate ownership before attributing
+          a leak. These actions fetch whole lists and have no pagination inputs; max_rows limits
+          only the summary. First rows are not sorted by count and cannot prove the largest
+          offender.
+        tool_calls:
+          - *rmq_connections
+          - *rmq_channels
+          - *rmq_nodes
+          - tool_id: "tool.read_logs"
+            description: "Identified client's logs for channel-open retries, channel exceptions and pool cleanup failures."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "repair_channel_lifecycle"
+        description: "Fix channel reuse/cleanup in the responsible client or right-size legitimate concurrency. Closing channels can requeue unacked work; coordinate any targeted disconnect with its owner."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Identified client owner and RabbitMQ platform team; raise urgency if memory alarms or connection failures appear."
+    follow_up:
+      - "Verify channel count stabilizes under normal load and the client no longer accumulates abandoned channels."
+
+  - name: "RabbitMQDeadLetterQueueGrowing"
+    patterns: ["RabbitMQDeadLetterQueueGrowing", "RabbitMQ dead letter queue is growing"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Verify the queue is actually a DLQ and measure net accumulation"
+        description: >-
+          A positive 10m derivative of ready messages, continuously for another
+          10m, fires this alert. The value is net messages/s, not backlog size or a
+          dead-letter event count. Queue matching is the case-sensitive naming
+          heuristic .*dead.*|.*dlq.*|.*dlx.*; a matching name is not proof of DLQ
+          routing and DLQs with other names are missed. Verify queue/vhost and source
+          dead-letter policies/bindings. Growing ready count can reflect reduced DLQ
+          drain as well as increased dead-letter arrivals.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Ready count, net growth and consumer state for the exact matching queue."
+            params: {queries: *queue_panels}
+      - step: 2
+        title: "Determine the dead-letter reason and original failing workload"
+        description: >-
+          Ask the queue owner for an approved message sample or existing captured
+          headers; retrieving messages through get/consume can change delivery state.
+          Inspect x-death metadata for original queue/exchange and reason: rejected,
+          expired, maxlen or delivery_limit. TTL and queue-length policies can cause
+          dead letters without a consumer exception. Correlate source-consumer logs,
+          dependency errors and policy changes; identify poison-message/schema failures
+          before replay. Record whether this DLQ has an intended processing consumer.
+          get_queue exposes arguments, policy and effective_policy_definition when provided, which
+          can corroborate TTL, length, delivery-limit or dead-letter settings. It does not read
+          message headers or bindings, despite its action description mentioning bindings. No
+          message-get, binding-list or policy-list tool exists here; source routing and x-death
+          reasons still need approved external evidence.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - tool_id: "tool.read_logs"
+            description: "Original source consumer logs for rejection, retry exhaustion, schema errors and dependency failures."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "fix_dead_letter_cause_before_replay"
+        description: "Repair the proven source processing or policy issue. Replay requires an owner-approved plan for idempotency, ordering and rate limits; never purge or blindly replay the DLQ."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Source consumer/data owner; RabbitMQ platform team for routing, TTL, length or delivery-limit policy faults."
+    follow_up:
+      - "Verify new failures stop and approved DLQ handling reduces backlog without reintroducing the same messages into a retry loop."
+
+  - name: "RabbitMQConnectionCountHigh"
+    patterns: ["RabbitMQConnectionCountHigh", "RabbitMQ connection count is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Assess connection growth and resource pressure"
+        description: >-
+          More than 5,000 connections for 5m fires this warning. Verify the metric's
+          node/cluster scope and compare with expected application replicas and pools.
+          A steady count can be legitimate; increasing count after stable workloads
+          suggests a leak, while oscillation may be reconnect churn. Correlate channel
+          count, memory pressure and client failures. Do not sum repeated exporter
+          views or infer the responsible service from the scrape endpoint.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Client object counts and trends."
+            params: {queries: *client_panels}
+          - tool_id: "tool.query_metrics"
+            description: "Memory and disk alarm state as possible effects or triggers of client churn."
+            params: {queries: *resource_panels}
+      - step: 2
+        title: "Find whether clients leak connections or reconnect excessively"
+        description: >-
+          Inspect rabbitmqctl list_connections name user peer_host channels state
+          on affected nodes and correlate client names/peers with deployments. Read
+          client and broker logs for heartbeat loss, TLS/auth errors, reconnect loops
+          and missing close/pool cleanup. Verify broker file-descriptor/socket limits
+          from node status and host telemetry when connection acceptance is failing.
+          Inspect live connection name/node/user/peer/state/client_properties, then corresponding
+          channel connection_details and node fd_used/fd_total. The unsorted first 20 rows are
+          only a sample; the tool fetches the complete list without pagination and the digest can
+          omit offenders. Attribute clients with observed names/peers rather than guessed service
+          names.
+        tool_calls:
+          - *rmq_connections
+          - *rmq_channels
+          - *rmq_nodes
+          - tool_id: "tool.read_logs"
+            description: "Broker and identified client logs for connection churn, heartbeat, handshake and resource-limit failures."
+            params: {tail_lines: 200}
+    remediation:
+      - action: "repair_connection_pool_or_reconnect_cause"
+        description: "Fix the offending client's pooling/cleanup or proven network/heartbeat fault. Review capacity for legitimate load. Coordinate any targeted connection closure because unacked deliveries can be requeued."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Responsible application owner and RabbitMQ platform team; elevate when connections are rejected or publishing is blocked."
+    follow_up:
+      - "Verify connections settle at the expected pool size, reconnect errors stop and resource headroom recovers."
+
+  - name: "RabbitMQRedeliveryRateHigh"
+    patterns: ["RabbitMQRedeliveryRateHigh", "RabbitMQ message redelivery rate is high"]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Validate the redelivery ratio and its traffic denominator"
+        description: >-
+          The 5m redelivered/delivered rate ratio > 0.10 for 5m fires this warning.
+          Compare both raw rates on the same queue and label set; a tiny delivery
+          denominator can make a few retries dominate the ratio. A positive numerator
+          divided by zero gives +Inf and can fire; 0/0 gives NaN and does not. Missing
+          or mismatched series are unavailable evidence. Verify the exporter defines
+          delivered_total as the intended total delivery population: native-plugin
+          delivery counters use channel-based names and separate acknowledgement modes.
+          Do not substitute them into this ratio without reconciling scope/semantics.
+        tool_calls:
+          - *rmq_overview
+          - tool_id: "tool.query_metrics"
+            description: "Both traffic rates and the unchanged rule ratio, preserving all labels."
+            params:
+              queries:
+                - name: redelivered_per_second
+                  unit: "messages/s"
+                  query: 'rate(rabbitmq_queue_messages_redelivered_total[5m])'
+                  panel: true
+                  panel_title: "RabbitMQ Redeliveries per Second"
+                  panel_id: "rabbitmq-redeliveries"
+                - name: delivered_per_second
+                  unit: "messages/s"
+                  query: 'rate(rabbitmq_queue_messages_delivered_total[5m])'
+                - name: redelivery_ratio
+                  query: 'rate(rabbitmq_queue_messages_redelivered_total[5m]) / rate(rabbitmq_queue_messages_delivered_total[5m])'
+      - step: 2
+        title: "Separate requeue loops from connection loss and slow processing"
+        description: >-
+          Read the identified consumer's logs for nack/reject with requeue, exceptions,
+          dependency failures and poison messages; read broker/client logs for channel
+          closure, acknowledgement timeout and lost connections. Unacked deliveries
+          can be requeued when channels/connections close. Redelivery is possible even
+          after application side effects completed but before an ack reached the broker;
+          verify idempotency rather than assuming every redelivered attempt failed.
+          Compare unacked, ready growth and any DLQ growth to locate the retry chain.
+          get_queue message_stats supplies current queue rates when management statistics are
+          enabled; compare them with the exporter ratio after checking definitions. Consumer
+          ack_required/prefetch and channel unacked/ack statistics narrow retry causes. Rate
+          windows need not match the Prometheus 5m window; missing fields and truncated client
+          lists do not rule out a retry loop.
+        tool_calls:
+          - *rmq_queue
+          - *rmq_consumers
+          - *rmq_channels
+          - tool_id: "tool.query_metrics"
+            description: "In-flight work, backlog and consumer state alongside retries."
+            params: {queries: *queue_panels}
+          - tool_id: "tool.read_logs"
+            description: "Consumer and broker logs for explicit requeues, processing errors, ack timeouts and connection loss."
+            params: {tail_lines: 300}
+    remediation:
+      - action: "stop_the_proven_redelivery_cause"
+        description: "Repair dependency/consumer or connection faults. Coordinate bounded retries, backoff and dead-letter handling with the owner; assess duplicate side effects before restarts or replay."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Consumer owner; include RabbitMQ/network team for broker-side disconnects and the data owner if duplicate side effects are possible."
+    follow_up:
+      - "Verify absolute redelivery rate and ratio fall under representative traffic, ack throughput recovers and duplicate effects are reconciled."
+
+escalation: "P0 resource alarms/partitions: page RabbitMQ platform immediately. P1 broker/queue outages: involve affected applications. Attribute every finding to verified cluster, node and queue/vhost labels."
+follow_up:
+  - "Verify current collection, publisher confirms, consumer acknowledgements and queue replica health rather than relying on alert resolution alone."
+  - "Review exporter schema, endpoint and per-object labels for every rule; missing series or label mismatches can silently disable alerts."
+  - "Tune backlog, unacked and connection/channel thresholds against workload baselines and processing SLOs after the incident."
+
+references:
+  - "https://www.rabbitmq.com/docs/http-api-reference"
+  - "https://www.rabbitmq.com/docs/prometheus"
+  - "https://github.com/rabbitmq/rabbitmq-server/blob/main/deps/rabbitmq_prometheus/src/collectors/prometheus_rabbitmq_core_metrics_collector.erl"
+  - "https://www.rabbitmq.com/docs/alarms"
+  - "https://www.rabbitmq.com/docs/consumers"
+  - "https://www.rabbitmq.com/docs/confirms"
+  - "https://www.rabbitmq.com/docs/dlx"
+  - "https://www.rabbitmq.com/docs/partitions"
