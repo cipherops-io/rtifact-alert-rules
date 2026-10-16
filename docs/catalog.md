@@ -207,6 +207,8 @@
 | `IstioGatewayDestinationHigh5xxErrorRate` | warning | P2 | 5m | symptom | `( sum by (cluster, namespace, job, destination_service_namespace, destination_s…` | [istio-gateway.yaml](runbooks/ingress/istio-gateway.yaml) |
 | `IstioGatewayDestinationLowTrafficHigh5xxErrorRate` | warning | P2 | 5m | symptom | `( sum by (cluster, namespace, job, destination_service_namespace, destination_s…` | [istio-gateway.yaml](runbooks/ingress/istio-gateway.yaml) |
 | `IstioGatewayDestinationHigh4xxErrorRate` | warning | P3 | 10m | symptom | `( sum by (cluster, namespace, job, destination_service_namespace, destination_s…` | [istio-gateway.yaml](runbooks/ingress/istio-gateway.yaml) |
+| `IstioGatewayHighLatency` | warning | P2 | 10m | symptom | `histogram_quantile( 0.99, sum by (le, cluster, namespace, job) ( rate(istio_req…` | [istio-gateway.yaml](runbooks/ingress/istio-gateway.yaml) |
+| `IstioGatewayDestinationHighLatency` | warning | P3 | 15m | symptom | `histogram_quantile( 0.99, sum by (le, cluster, namespace, job, destination_serv…` | [istio-gateway.yaml](runbooks/ingress/istio-gateway.yaml) |
 
 ### `rules/metrics/ingress/nginx-ingress.yml`
 
@@ -518,4 +520,4 @@
 
 ---
 
-_338 alerts across 30 files in 8 categories._
+_340 alerts across 30 files in 8 categories._
