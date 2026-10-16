@@ -25,19 +25,17 @@ description: >-
   response) and 1xx (websocket 101) are excluded from the error ratio. Report DC volume
   separately if it is large, but it is not a server error.
 
+# Opt-in for forge's URL-less path (runbook_loader.auto_execute_runbook_path). Keywords are matched
+# as substrings against title + alert context, so they must stay specific: the generic ones this
+# runbook would otherwise carry (5xx, 4xx, 503, envoy, knative, bare istio) would claim unrelated
+# ingress/nginx alerts.
+auto_execute: true
+
 match_keywords:
-  - istio
-  - istio ingress
+  - istiogateway
   - istio gateway
-  - ingress gateway
-  - envoy
-  - service mesh
-  - 5xx
-  - 4xx
-  - 503
-  - 504
-  - response_flags
-  - knative
+  - istio-ingress
+  - istio_requests_total
 
 categories:
   - INGRESS
