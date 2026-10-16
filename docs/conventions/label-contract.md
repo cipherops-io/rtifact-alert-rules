@@ -53,7 +53,7 @@ Currently:
 - **messaging**: `kafka`, `rabbitmq`
 - **caching**: `memcached`
 - **observability**: `prometheus`, `alertmanager`, `grafana`, `prometheus-operator`, `victoriametrics`, `vmagent`, `vmalert`, `loki`
-- **ingress**: `nginx-ingress`
+- **ingress**: `nginx-ingress`, `istio`
 - **runtimes**: `java-springboot`, `python-fastapi`
 
 ## Severity vs priority — pick the right combo

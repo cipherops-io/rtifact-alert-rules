@@ -1,0 +1,253 @@
+tech_stack: istio
+version: "1.0"
+description: >-
+  Runbook for the Istio ingress gateway HTTP error alerts, grounded in the standard
+  istio_requests_total counter as reported by the gateway's own Envoy
+  (reporter="source"). Each assessment names WHICH object fired: either the gateway
+  (by `cluster` + `namespace` + `job`) or a destination service seen through it (adds
+  `destination_service_namespace` + `destination_service_name`). It then classifies the
+  failure as an application error or an Envoy-generated one using `response_flags`:
+  '-' means the upstream itself answered with the error, while UH/UF/UR/UT/NR/URX/UO/RL/DC
+  mean Envoy produced or recorded the failure (no healthy upstream, connect failure,
+  upstream reset, route timeout, no route, retry limit, overflow/circuit breaker,
+  rate limited, downstream disconnect).
+  SCOPING: `namespace` and `job` on these series are the GATEWAY's (e.g. istio-ingress /
+  istio-ingress), not the backend's; the backend is destination_service_namespace /
+  destination_service_name. For Knative services, destination_workload is `activator`
+  (in knative-serving) and destination_service_name is the revision service (e.g.
+  my-svc-00003), so name the revision service rather than the activator.
+  DEDUPLICATION CAVEATS: (1) other scrape jobs such as knative-local-gateway can scrape
+  the SAME gateway pods, so every query keeps job=~"istio-ingress.*" to avoid
+  double-counting. (2) Some pipelines also emit a parallel copy of istio_requests_total
+  without request_protocol / response_flags that carries the same values; every query
+  keeps request_protocol=~"http|http2" so only the standard series is counted.
+  (3) response_code="0" (usually response_flags=DC, the client disconnected before a
+  response) and 1xx (websocket 101) are excluded from the error ratio. Report DC volume
+  separately if it is large, but it is not a server error.
+
+match_keywords:
+  - istio
+  - istio ingress
+  - istio gateway
+  - ingress gateway
+  - envoy
+  - service mesh
+  - 5xx
+  - 4xx
+  - 503
+  - 504
+  - response_flags
+  - knative
+
+categories:
+  - INGRESS
+  - NETWORKING
+  - SERVICE_MESH
+
+common_alerts:
+  # ============================================================ GATEWAY 5xx / 4xx
+  - name: "IstioGatewayErrorRate"
+    patterns:
+      [
+        "IstioGatewayHigh5xxErrorRate",
+        "IstioGatewayHigh4xxErrorRate",
+        "istio gateway 5xx",
+        "istio gateway 4xx",
+        "istio ingress error rate",
+        "ingress gateway errors",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Recompute the gateway error ratio and gauge absolute impact"
+        description: >-
+          This entry serves IstioGatewayHigh5xxErrorRate (more than 5% 5xx over 5m with at least 20
+          errors and 300 completed requests, critical/P1) and IstioGatewayHigh4xxErrorRate (more than
+          20% 4xx over 10m with at least 100 errors and 600 requests, warning/P2). Note which one fired.
+          error_pct_5xx / error_pct_4xx are the gateway-wide shares; total_rps is completed HTTP
+          request volume; dc_rps is client disconnects (response_code=0), which are excluded from
+          the ratio. Interpret: a high ratio with high total_rps means major user-facing impact. A
+          high ratio with low total_rps means a severe ratio but a small absolute blast radius. A
+          sudden drop in total_rps at the same time can mean clients are giving up or an upstream
+          LB stopped sending traffic. Always report against the alert's own gateway
+          ($namespace/$job in $cluster).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Gateway-wide 5xx and 4xx share, completed request rate and client-disconnect rate."
+            params:
+              queries:
+                - name: error_pct_5xx
+                  unit: "%"
+                  query: '100 * sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"5.."}[5m])) / sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m]))'
+                  panel: true
+                  panel_title: "Gateway 5xx %"
+                  panel_id: "istio-gw-5xx-pct"
+                - name: error_pct_4xx
+                  unit: "%"
+                  query: '100 * sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"4.."}[10m])) / sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[10m]))'
+                  panel: true
+                  panel_title: "Gateway 4xx %"
+                  panel_id: "istio-gw-4xx-pct"
+                - name: total_rps
+                  query: 'sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m]))'
+                  panel: true
+                  panel_title: "Gateway Completed Requests/s"
+                  panel_id: "istio-gw-total-rps"
+                - name: dc_rps
+                  query: 'sum by (cluster, namespace, job) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code="0"}[5m])) or vector(0)'
+      - step: 2
+        title: "Find which destinations, status codes and Envoy flags carry the errors"
+        description: >-
+          errors_by_destination lists the destination services producing the errors;
+          errors_by_code_flags breaks the errors down by response_code and response_flags.
+          Interpret: one or two destinations dominate, so the problem is backend-specific (continue
+          with the IstioGatewayDestinationErrorRate entry for that service). Errors spread across
+          many destinations point to a gateway-wide or shared cause: gateway pod saturation, a bad
+          Gateway/VirtualService push, mTLS or certificate problems, or a shared dependency.
+          Flag '-' means the upstream application returned the error. 503 UH = no healthy upstream
+          (no ready endpoints or all ejected by outlier detection). 503 UF = upstream connect
+          failure. 503 UR/URX = upstream reset or retries exhausted. 504 UT = route timeout.
+          404 NR = no route matched (routing config). 403 with an RBAC-denied flag = AuthorizationPolicy.
+          429 RL = rate limited. 503 UO = circuit breaker overflow.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Error volume by destination service, and by response_code + response_flags."
+            params:
+              queries:
+                - name: errors_by_destination
+                  query: 'topk(10, sum by (destination_service_namespace, destination_service_name, response_code) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[45].."}[5m])))'
+                  panel: true
+                  panel_title: "Errors by Destination"
+                  panel_id: "istio-gw-errors-by-destination"
+                - name: errors_by_code_flags
+                  query: 'topk(10, sum by (response_code, response_flags) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[45].."}[5m])))'
+                  panel: true
+                  panel_title: "Errors by Code and Flags"
+                  panel_id: "istio-gw-errors-by-code-flags"
+      - step: 3
+        title: "Rule out the gateway pods themselves"
+        description: >-
+          When errors are spread across destinations, check the gateway pods. Restarts, OOM kills,
+          not-ready pods or CPU throttling on the gateway explain gateway-wide 503s and resets.
+          A recent istiod config push (Gateway, VirtualService, DestinationRule, AuthorizationPolicy,
+          PeerAuthentication) that lines up with the error onset is the most common cause of a
+          sudden gateway-wide 404 NR or 503 spike.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Gateway pod restarts, termination reasons and readiness."
+            params:
+              queries:
+                - name: gateway_pod_restarts_30m
+                  query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$namespace",container="istio-proxy"}[30m]))'
+                - name: gateway_pod_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",container="istio-proxy",reason=~"OOMKilled|Error"} == 1'
+                - name: gateway_pod_notready
+                  query: 'kube_pod_status_ready{namespace="$namespace",condition="true"} == 0'
+          - tool_id: "tool.read_logs"
+            description: "istio-proxy access logs on the gateway pods filtered for 5xx/4xx responses and their response flags and upstream cluster."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "fix_failing_backend"
+        description: "When step 2 shows one or a few destinations dominating: treat it as a backend incident. Restore ready endpoints, roll back a bad deployment or fix the dependency (see IstioGatewayDestinationErrorRate)."
+        tool_id: ""
+        requires_approval: true
+      - action: "revert_mesh_config_change"
+        description: "When a recent Gateway/VirtualService/DestinationRule/AuthorizationPolicy change lines up with the onset (NR, RBAC-denied, mTLS failures): revert or correct the resource and confirm the error ratio recovers."
+        tool_id: ""
+        requires_approval: true
+      - action: "recover_gateway_pods"
+        description: "When the gateway pods are OOMKilled, crashlooping or throttled: raise their resources, scale the gateway deployment, or restart unhealthy replicas."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+    escalation: "Platform/networking on-call immediately for IstioGatewayHigh5xxErrorRate (user-facing outage risk, P1). IstioGatewayHigh4xxErrorRate is usually a config, auth or client issue; work it during the day unless it follows a mesh config change that broke a production route."
+    follow_up:
+      - "Confirm the gateway 5xx/4xx share returns below threshold and total request volume returns to baseline."
+      - "If a mesh config change caused it, add validation (istioctl analyze in CI) for that resource type."
+
+  # ============================================================ DESTINATION 5xx / 4xx
+  - name: "IstioGatewayDestinationErrorRate"
+    patterns:
+      [
+        "IstioGatewayDestinationHigh5xxErrorRate",
+        "IstioGatewayDestinationHigh4xxErrorRate",
+        "istio destination 5xx",
+        "istio destination 4xx",
+        "backend error rate through gateway",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Recompute the destination's error ratio and classify it with response_flags"
+        description: >-
+          This entry serves IstioGatewayDestinationHigh5xxErrorRate (more than 5% 5xx over 5m with at
+          least 10 errors and 150 requests, warning/P2) and IstioGatewayDestinationHigh4xxErrorRate
+          (more than 20% 4xx over 10m with at least 50 errors and 300 requests, warning/P3).
+          Name the destination as $destination_service_namespace/$destination_service_name.
+          codes_and_flags splits its errors by response_code and response_flags. Interpret: flag '-'
+          means the application answered with the error (look at the app). UH means no healthy or
+          ready endpoints. UF/UR mean connections to the pods fail or reset (pods crashing, wrong
+          port, mTLS mismatch). UT means the route timeout was hit (slow backend). For Knative
+          revisions, 503/504 through the activator usually mean the revision failed to scale from
+          zero or its pods are not becoming ready.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "The destination's error share, request rate and breakdown by response_code + response_flags."
+            params:
+              queries:
+                - name: error_pct_5xx
+                  unit: "%"
+                  query: '100 * sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"5.."}[5m])) / sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"[2-5].."}[5m]))'
+                  panel: true
+                  panel_title: "Destination 5xx %"
+                  panel_id: "istio-dest-5xx-pct"
+                - name: error_pct_4xx
+                  unit: "%"
+                  query: '100 * sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"4.."}[10m])) / sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"[2-5].."}[10m]))'
+                  panel: true
+                  panel_title: "Destination 4xx %"
+                  panel_id: "istio-dest-4xx-pct"
+                - name: total_rps
+                  query: 'sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"[2-5].."}[5m]))'
+                - name: codes_and_flags
+                  query: 'sum by (response_code, response_flags) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name",response_code=~"[45].."}[5m]))'
+                  panel: true
+                  panel_title: "Destination Errors by Code and Flags"
+                  panel_id: "istio-dest-errors-by-code-flags"
+      - step: 2
+        title: "Check the destination pods"
+        description: >-
+          Check readiness, restarts and termination reasons for the pods behind the destination
+          service. Not-ready or crashlooping pods explain UH/UF/UR. OOMKilled points to memory
+          limits. If the pods look healthy and the flag is '-', read the application logs for the
+          error responses and compare against the latest deployment.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Destination pod readiness, restarts and termination reasons."
+            params:
+              queries:
+                - name: dest_pod_notready
+                  query: 'kube_pod_status_ready{namespace="$destination_service_namespace",condition="true"} == 0'
+                - name: dest_pod_restarts_30m
+                  query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$destination_service_namespace"}[30m]))'
+                - name: dest_pod_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$destination_service_namespace",reason=~"OOMKilled|Error"} == 1'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod state, events and recent rollouts in the destination namespace."
+          - tool_id: "tool.read_logs"
+            description: "Application logs for the destination pods filtered for errors around the alert onset."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "rollback_or_fix_destination"
+        description: "When the error onset lines up with a deployment of the destination service: roll back. When pods are not ready or crashlooping: fix the cause (resources, config, dependency) so endpoints return."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "fix_routing_or_auth_config"
+        description: "For 4xx (404 NR, 403 RBAC-denied, 401) or mTLS-related UF: correct the VirtualService, AuthorizationPolicy, RequestAuthentication or DestinationRule for this service."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning team of the destination service for 5xx with flag '-' (application errors). Platform/networking on-call when flags show UH/UF/UR across replicas, or when a mesh config change is involved."
+    follow_up:
+      - "Confirm the destination's 5xx/4xx share returns below threshold."
+      - "If the service regularly scales from zero (Knative), review min-scale and readiness so cold starts do not surface as 503/504 at the gateway."
