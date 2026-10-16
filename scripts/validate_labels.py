@@ -65,7 +65,7 @@ ALLOWED_TECH_STACKS = {
     "prometheus", "alertmanager", "grafana", "prometheus-operator",
     "victoriametrics", "vmagent", "vmalert", "loki",
     # ingress
-    "nginx-ingress",
+    "nginx-ingress", "istio",
     # runtimes
     "java-springboot", "python-fastapi",
 }

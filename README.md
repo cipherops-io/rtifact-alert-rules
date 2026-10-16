@@ -21,7 +21,7 @@ It is **not** a "kitchen-sink" of every alert that has ever been written. Qualit
 | **Databases** | `postgresql`, `cnpg`, `mysql`, `mongodb`, `redis`, `elasticsearch`, `clickhouse` |
 | **Messaging** | `kafka`, `rabbitmq` |
 | **Caching** | `memcached` |
-| **Ingress** | `nginx-ingress` |
+| **Ingress** | `nginx-ingress`, `istio-gateway` |
 | **Observability** | `prometheus`, `prometheus-operator`, `alertmanager`, `grafana`, `victoriametrics`, `vmagent`, `vmalert`, `loki` |
 | **Runtimes** | `java-springboot`, `python-fastapi` |
 
