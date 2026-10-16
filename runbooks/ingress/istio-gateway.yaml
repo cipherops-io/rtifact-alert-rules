@@ -45,11 +45,108 @@ categories:
   - SERVICE_MESH
 
 common_alerts:
+  # ============================================================ GATEWAY AVAILABILITY
+  - name: "IstioGatewayDown"
+    patterns:
+      [
+        "IstioGatewayDown",
+        "IstioGatewayReplicaDown",
+        "istio gateway down",
+        "istio ingress unreachable",
+        "gateway replica down",
+      ]
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm how many gateway targets exist and how many are healthy (full vs partial outage)"
+        description: >-
+          This entry serves IstioGatewayDown (every target of the gateway job down, or the targets
+          disappeared within the last 24h, for 5m, critical/P0) and IstioGatewayReplicaDown (one
+          target up==0 for 5m, warning/P2). targets_total counts the gateway's current scrape
+          targets, targets_healthy how many are up, and up_by_pod names each replica's state.
+          Interpret: targets_total==0 with targets_seen_24h>0 means the targets DISAPPEARED (gateway
+          Deployment scaled to 0 or deleted, pods evicted, or service discovery stopped finding
+          them). targets_total>0 and targets_healthy==0 means every replica is unreachable (full
+          outage). targets_healthy < targets_total means a partial outage: name the pod(s) with
+          up==0. This is scrape availability, so confirm traffic impact in step 2.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Current vs healthy gateway scrape targets, targets seen in the last 24h, and each replica's up state."
+            params:
+              queries:
+                - name: targets_total
+                  query: 'count(up{cluster="$cluster",namespace="$namespace",job="$job"}) or vector(0)'
+                  panel: true
+                  panel_title: "Gateway Targets Total"
+                  panel_id: "istio-gw-targets-total"
+                - name: targets_healthy
+                  query: 'sum(up{cluster="$cluster",namespace="$namespace",job="$job"}) or vector(0)'
+                  panel: true
+                  panel_title: "Gateway Targets Healthy"
+                  panel_id: "istio-gw-targets-healthy"
+                - name: targets_seen_24h
+                  query: 'count(max_over_time(up{cluster="$cluster",namespace="$namespace",job="$job"}[24h])) or vector(0)'
+                - name: up_by_pod
+                  query: 'max by (pod, instance) (up{cluster="$cluster",namespace="$namespace",job="$job"})'
+                  panel: true
+                  panel_title: "Up by Gateway Pod"
+                  panel_id: "istio-gw-up-by-pod"
+      - step: 2
+        title: "Separate a real gateway outage from a scrape problem"
+        description: >-
+          request_rate is the traffic the gateway is still recording; the pod-state queries name a
+          crashed, OOMKilled, pending or not-ready gateway pod. Interpret: request_rate dropping to 0
+          together with pod failures means a real outage. Pods Running and Ready but up==0 means the
+          metrics agent cannot reach port 15090 (network policy, agent problem) while the gateway may
+          still serve traffic. If many unrelated jobs lost their targets at the same moment, the
+          metrics agent itself is down, not the gateway. No gateway pods at all means the Deployment
+          was scaled to 0 or deleted.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Gateway request rate and KSM state of the gateway pods."
+            params:
+              queries:
+                - name: request_rate
+                  query: 'sum(rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2"}[5m])) or vector(0)'
+                  panel: true
+                  panel_title: "Gateway Request Rate"
+                  panel_id: "istio-gw-request-rate"
+                - name: gateway_pod_restarts_30m
+                  query: 'topk(5, increase(kube_pod_container_status_restarts_total{namespace="$namespace",container="istio-proxy"}[30m]))'
+                - name: gateway_pod_last_terminated
+                  query: 'kube_pod_container_status_last_terminated_reason{namespace="$namespace",container="istio-proxy",reason=~"OOMKilled|Error|ContainerCannotRun"} == 1'
+                - name: gateway_pod_waiting
+                  query: 'kube_pod_container_status_waiting_reason{namespace="$namespace",container="istio-proxy",reason=~"CrashLoopBackOff|ImagePullBackOff|ErrImagePull|CreateContainerConfigError"} == 1'
+                - name: gateway_pod_notready
+                  query: 'kube_pod_status_ready{namespace="$namespace",condition="true"} == 0'
+                - name: gateway_deployment_replicas
+                  query: 'kube_deployment_status_replicas_available{namespace="$namespace"}'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Gateway pod state, restarts, OOM and scheduling events in the gateway namespace."
+          - tool_id: "tool.read_logs"
+            description: "istio-proxy logs on the gateway pods filtered for xDS connection errors to istiod, certificate errors, OOM, panic and shutdown signatures."
+            params:
+              tail_lines: 200
+    remediation:
+      - action: "recover_gateway"
+        description: "Crash or OOM: raise the gateway's resources or fix the bad config and restart the gateway Deployment. Scaled to 0 or deleted: restore the replicas. Pending pods: fix node capacity, taints or PDBs. If pods are healthy and only the scrape fails, fix the metrics path instead and do not restart the gateway."
+        tool_id: "forge.restart_deployment"
+        requires_approval: true
+      - action: "restore_scrape"
+        description: "When the gateway serves traffic but up==0: fix network policy to port 15090, the scrape config or the metrics agent. Monitoring is blind, but users are not affected."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Platform/networking on-call immediately for IstioGatewayDown (all ingress through this gateway at risk, P0). IstioGatewayReplicaDown is reduced capacity; escalate faster if it leaves a single healthy replica."
+    follow_up:
+      - "Confirm up returns to 1 for every gateway target and request_rate returns to baseline."
+      - "Run at least two gateway replicas with a PodDisruptionBudget so one replica failing is not an outage."
+
   # ============================================================ GATEWAY 5xx / 4xx
   - name: "IstioGatewayErrorRate"
     patterns:
       [
         "IstioGatewayHigh5xxErrorRate",
+        "IstioGatewayCritical5xxErrorRate",
         "IstioGatewayHigh4xxErrorRate",
         "istio gateway 5xx",
         "istio gateway 4xx",
@@ -61,8 +158,9 @@ common_alerts:
       - step: 1
         title: "Recompute the gateway error ratio and gauge absolute impact"
         description: >-
-          This entry serves IstioGatewayHigh5xxErrorRate (more than 5% 5xx over 5m with at least 20
-          errors and 300 completed requests, critical/P1) and IstioGatewayHigh4xxErrorRate (more than
+          This entry serves IstioGatewayHigh5xxErrorRate (more than 5% 5xx with at least 20 errors and
+          300 completed requests in 5m, held for 10m, warning/P2), IstioGatewayCritical5xxErrorRate
+          (more than 20% 5xx, same volume guards, held for 5m, critical/P1) and IstioGatewayHigh4xxErrorRate (more than
           20% 4xx over 10m with at least 100 errors and 600 requests, warning/P2). Note which one fired.
           error_pct_5xx / error_pct_4xx are the gateway-wide shares; total_rps is completed HTTP
           request volume; dc_rps is client disconnects (response_code=0), which are excluded from
@@ -160,7 +258,7 @@ common_alerts:
         description: "When the gateway pods are OOMKilled, crashlooping or throttled: raise their resources, scale the gateway deployment, or restart unhealthy replicas."
         tool_id: "forge.restart_deployment"
         requires_approval: true
-    escalation: "Platform/networking on-call immediately for IstioGatewayHigh5xxErrorRate (user-facing outage risk, P1). IstioGatewayHigh4xxErrorRate is usually a config, auth or client issue; work it during the day unless it follows a mesh config change that broke a production route."
+    escalation: "Platform/networking on-call immediately for IstioGatewayCritical5xxErrorRate (user-facing outage, P1). IstioGatewayHigh5xxErrorRate is degraded service; work it urgently but it does not page. IstioGatewayHigh4xxErrorRate is usually a config, auth or client issue; work it during the day unless it follows a mesh config change that broke a production route."
     follow_up:
       - "Confirm the gateway 5xx/4xx share returns below threshold and total request volume returns to baseline."
       - "If a mesh config change caused it, add validation (istioctl analyze in CI) for that resource type."
@@ -170,6 +268,7 @@ common_alerts:
     patterns:
       [
         "IstioGatewayDestinationHigh5xxErrorRate",
+        "IstioGatewayDestinationLowTrafficHigh5xxErrorRate",
         "IstioGatewayDestinationHigh4xxErrorRate",
         "istio destination 5xx",
         "istio destination 4xx",
@@ -181,7 +280,9 @@ common_alerts:
         title: "Recompute the destination's error ratio and classify it with response_flags"
         description: >-
           This entry serves IstioGatewayDestinationHigh5xxErrorRate (more than 5% 5xx over 5m with at
-          least 10 errors and 150 requests, warning/P2) and IstioGatewayDestinationHigh4xxErrorRate
+          least 10 errors and 150 requests, warning/P2), IstioGatewayDestinationLowTrafficHigh5xxErrorRate
+          (more than 50% 5xx with at least 5 errors but fewer than 150 requests in 5m, warning/P2;
+          a low-traffic service that is effectively down) and IstioGatewayDestinationHigh4xxErrorRate
           (more than 20% 4xx over 10m with at least 50 errors and 300 requests, warning/P3).
           Name the destination as $destination_service_namespace/$destination_service_name.
           codes_and_flags splits its errors by response_code and response_flags. Interpret: flag '-'
