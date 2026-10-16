@@ -352,3 +352,88 @@ common_alerts:
     follow_up:
       - "Confirm the destination's 5xx/4xx share returns below threshold."
       - "If the service regularly scales from zero (Knative), review min-scale and readiness so cold starts do not surface as 503/504 at the gateway."
+
+  # ============================================================ LATENCY
+  - name: "IstioGatewayLatency"
+    patterns:
+      [
+        "IstioGatewayHighLatency",
+        "IstioGatewayDestinationHighLatency",
+        "istio gateway latency",
+        "istio p99 latency",
+        "slow requests through gateway",
+      ]
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Recompute p99/p50 for successful requests and find which destinations are slow"
+        description: >-
+          This entry serves IstioGatewayHighLatency (gateway-wide p99 of successful 2xx/3xx requests
+          above 2.5s with at least 300 requests in 5m, held for 10m, warning/P2) and
+          IstioGatewayDestinationHighLatency (one destination's p99 above 5s with at least 150
+          requests in 5m, held for 15m, warning/P3). Durations are measured by the gateway's Envoy
+          from request start to response completion, so they include backend time and response
+          transfer. p99_by_destination ranks destinations by p99. Interpret: one destination far
+          above the rest means a backend-specific slowdown (step 2). Many destinations slow at once
+          means a gateway-wide or shared cause: gateway pod CPU saturation, a shared dependency
+          (database, auth service), or node/network problems. p99 high but p50 normal means a slow
+          tail (some requests or some pods); p50 also high means the whole service is slow.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Gateway p99/p50 for successful requests and the slowest destinations by p99."
+            params:
+              queries:
+                - name: gateway_p99_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.99, sum by (le) (rate(istio_request_duration_milliseconds_bucket{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[23].."}[5m]))) / 1000'
+                  panel: true
+                  panel_title: "Gateway p99 (successful)"
+                  panel_id: "istio-gw-p99"
+                - name: gateway_p50_s
+                  unit: "s"
+                  query: 'histogram_quantile(0.50, sum by (le) (rate(istio_request_duration_milliseconds_bucket{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[23].."}[5m]))) / 1000'
+                - name: p99_by_destination
+                  unit: "s"
+                  query: 'topk(10, histogram_quantile(0.99, sum by (le, destination_service_namespace, destination_service_name) (rate(istio_request_duration_milliseconds_bucket{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code=~"[23].."}[5m]))) / 1000)'
+                  panel: true
+                  panel_title: "p99 by Destination"
+                  panel_id: "istio-gw-p99-by-destination"
+      - step: 2
+        title: "Rule out larger responses, timeouts and saturation"
+        description: >-
+          avg_response_bytes compares the destination's current average response size with a day
+          ago: a jump means the slowdown is transfer time (a release returning much bigger payloads,
+          or clients downloading large files), not slower processing. timeout_rps shows requests
+          already failing with 504 UT (those are excluded from the latency alert and belong to the
+          5xx alerts; rising timeouts with rising p99 means the backend is degrading toward an
+          outage). For the pods behind the destination, CPU throttling, restarts or recent rollouts
+          lining up with the onset point to the cause. For Knative revisions, check whether
+          instances are scaling up from zero or are capped by max-scale/concurrency.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Response size now vs a day ago, gateway timeouts, and CPU throttling of the destination's pods."
+            params:
+              queries:
+                - name: avg_response_bytes
+                  query: 'sum(rate(istio_response_bytes_sum{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name"}[5m])) / sum(rate(istio_response_bytes_count{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name"}[5m]))'
+                - name: avg_response_bytes_1d_ago
+                  query: 'sum(rate(istio_response_bytes_sum{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name"}[5m] offset 1d)) / sum(rate(istio_response_bytes_count{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",destination_service_namespace="$destination_service_namespace",destination_service_name="$destination_service_name"}[5m] offset 1d))'
+                - name: timeout_rps
+                  query: 'sum by (destination_service_name) (rate(istio_requests_total{cluster="$cluster",namespace="$namespace",job="$job",reporter="source",request_protocol=~"http|http2",response_code="504"}[5m])) or vector(0)'
+                - name: dest_cpu_throttling
+                  query: 'topk(5, sum by (pod) (rate(container_cpu_cfs_throttled_periods_total{namespace="$destination_service_namespace"}[5m])) / sum by (pod) (rate(container_cpu_cfs_periods_total{namespace="$destination_service_namespace"}[5m])))'
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod state, events and recent rollouts in the destination namespace."
+    remediation:
+      - action: "fix_slow_backend"
+        description: "When one destination is slow: roll back a deployment that lines up with the onset, relieve CPU throttling (raise limits or scale out), or fix the slow dependency. For Knative, raise min-scale or adjust concurrency so requests are not queued behind cold starts."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+      - action: "accept_or_tune_threshold"
+        description: "When the slowness comes from larger responses or an endpoint that is slow by design (exports, reports, downloads): no incident; raise the threshold for that destination instead of silencing the alert."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning team of the slow destination service. Platform/networking on-call when many destinations are slow at once or the gateway pods are saturated."
+    follow_up:
+      - "Confirm p99 for successful requests returns below threshold."
+      - "If a destination is legitimately slow, record its normal p99 and set a per-service threshold."
