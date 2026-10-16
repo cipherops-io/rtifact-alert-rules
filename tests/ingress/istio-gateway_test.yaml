@@ -5,6 +5,173 @@ evaluation_interval: 1m
 tests:
 - interval: 1m
   input_series:
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.1:15090",pod="10.0.0.1"}
+    values: '0x15'
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.2:15090",pod="10.0.0.2"}
+    values: '0x15'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: IstioGatewayDown
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: critical
+        priority: P0
+        notify_every: 10m
+        tech_stack: istio
+        signal: symptom
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          sum by (cluster, namespace, job) (
+            up{job=~"istio-ingress.*"}
+          ) == 0
+          or
+          (
+            sum by (cluster, namespace, job) (
+              max_over_time(up{job=~"istio-ingress.*"}[24h])
+            )
+            unless
+            sum by (cluster, namespace, job) (
+              up{job=~"istio-ingress.*"}
+            )
+          ) * 0
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+      exp_annotations:
+        summary: All Istio ingress gateway targets are unavailable
+        description: 'No healthy scrape target has been available for Istio ingress gateway istio-ingress/istio-ingress in cluster c1 for 5 minutes, either because every target is down or because the targets have disappeared. External HTTP and HTTPS traffic entering through this gateway may no longer reach any service, and because no requests are recorded, the gateway error-rate alerts cannot fire. Check the gateway Deployment replicas, pod status, restarts and node health, the gateway Service and its external load balancer, and whether the deployment was scaled to zero or deleted. This alert is based on scrape availability: if many unrelated targets disappeared at the same moment, the metrics agent is the more likely cause.'
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+  - eval_time: 10m
+    alertname: IstioGatewayReplicaDown
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: warning
+        priority: P2
+        notify_every: 2h
+        tech_stack: istio
+        signal: cause
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          up{job=~"istio-ingress.*"} == 0
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+        instance: 10.0.0.1:15090
+        pod: 10.0.0.1
+      exp_annotations:
+        summary: An Istio ingress gateway replica is unavailable
+        description: Istio ingress gateway target 10.0.0.1:15090 (pod 10.0.0.1) of istio-ingress/istio-ingress in cluster c1 has been unreachable for 5 minutes. Other replicas may still route traffic, but gateway capacity and redundancy are reduced, and the external load balancer may still be sending some connections to this replica. Check the pod's readiness, restarts and termination reason, its node, and whether the Envoy stats port (15090) is reachable from the metrics agent.
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+    - exp_labels:
+        sourceType: metric
+        severity: warning
+        priority: P2
+        notify_every: 2h
+        tech_stack: istio
+        signal: cause
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          up{job=~"istio-ingress.*"} == 0
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+        instance: 10.0.0.2:15090
+        pod: 10.0.0.2
+      exp_annotations:
+        summary: An Istio ingress gateway replica is unavailable
+        description: Istio ingress gateway target 10.0.0.2:15090 (pod 10.0.0.2) of istio-ingress/istio-ingress in cluster c1 has been unreachable for 5 minutes. Other replicas may still route traffic, but gateway capacity and redundancy are reduced, and the external load balancer may still be sending some connections to this replica. Check the pod's readiness, restarts and termination reason, its node, and whether the Envoy stats port (15090) is reachable from the metrics agent.
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+- interval: 1m
+  input_series:
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.1:15090",pod="10.0.0.1"}
+    values: 1x5 stale
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.2:15090",pod="10.0.0.2"}
+    values: 1x5 stale
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: IstioGatewayDown
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: critical
+        priority: P0
+        notify_every: 10m
+        tech_stack: istio
+        signal: symptom
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          sum by (cluster, namespace, job) (
+            up{job=~"istio-ingress.*"}
+          ) == 0
+          or
+          (
+            sum by (cluster, namespace, job) (
+              max_over_time(up{job=~"istio-ingress.*"}[24h])
+            )
+            unless
+            sum by (cluster, namespace, job) (
+              up{job=~"istio-ingress.*"}
+            )
+          ) * 0
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+      exp_annotations:
+        summary: All Istio ingress gateway targets are unavailable
+        description: 'No healthy scrape target has been available for Istio ingress gateway istio-ingress/istio-ingress in cluster c1 for 5 minutes, either because every target is down or because the targets have disappeared. External HTTP and HTTPS traffic entering through this gateway may no longer reach any service, and because no requests are recorded, the gateway error-rate alerts cannot fire. Check the gateway Deployment replicas, pod status, restarts and node health, the gateway Service and its external load balancer, and whether the deployment was scaled to zero or deleted. This alert is based on scrape availability: if many unrelated targets disappeared at the same moment, the metrics agent is the more likely cause.'
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+- interval: 1m
+  input_series:
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.1:15090",pod="10.0.0.1"}
+    values: 1x15
+  - series: up{cluster="c1",namespace="istio-ingress",job="istio-ingress",instance="10.0.0.2:15090",pod="10.0.0.2"}
+    values: '0x15'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: IstioGatewayDown
+    exp_alerts: []
+  - eval_time: 10m
+    alertname: IstioGatewayReplicaDown
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: warning
+        priority: P2
+        notify_every: 2h
+        tech_stack: istio
+        signal: cause
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          up{job=~"istio-ingress.*"} == 0
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+        instance: 10.0.0.2:15090
+        pod: 10.0.0.2
+      exp_annotations:
+        summary: An Istio ingress gateway replica is unavailable
+        description: Istio ingress gateway target 10.0.0.2:15090 (pod 10.0.0.2) of istio-ingress/istio-ingress in cluster c1 has been unreachable for 5 minutes. Other replicas may still route traffic, but gateway capacity and redundancy are reduced, and the external load balancer may still be sending some connections to this replica. Check the pod's readiness, restarts and termination reason, its node, and whether the Envoy stats port (15090) is reachable from the metrics agent.
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+- interval: 1m
+  input_series:
+  - series: up{cluster="c1",namespace="istio-ingress",job="knative-local-gateway",instance="10.0.0.1:15090",pod="10.0.0.1"}
+    values: '0x15'
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: IstioGatewayDown
+    exp_alerts: []
+  - eval_time: 10m
+    alertname: IstioGatewayReplicaDown
+    exp_alerts: []
+- interval: 1m
+  input_series:
   - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="200",request_protocol="http",response_flags="-"}
     values: 0+600x20
   - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UF"}
@@ -18,14 +185,14 @@ tests:
   - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="knative-local-gateway",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UF"}
     values: 0+60x20
   alert_rule_test:
-  - eval_time: 10m
+  - eval_time: 15m
     alertname: IstioGatewayHigh5xxErrorRate
     exp_alerts:
     - exp_labels:
         sourceType: metric
-        severity: critical
-        priority: P1
-        notify_every: 30m
+        severity: warning
+        priority: P2
+        notify_every: 2h
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -53,9 +220,12 @@ tests:
         job: istio-ingress
       exp_annotations:
         summary: Istio ingress gateway 5xx error rate is above 5%
-        description: 9.091% of completed HTTP requests through Istio ingress gateway istio-ingress/istio-ingress in cluster c1 returned 5xx responses over the last 5 minutes, with at least 20 errors and 300 completed requests in the window, and the condition has held for 5 minutes. External users and API clients routed through this gateway are seeing failed requests, gateway errors, or timeouts. The errors may come from the backend applications, or be generated by Envoy itself when upstreams are unhealthy, have no ready endpoints, refuse connections, or exceed route timeouts (503 UF/UH/NR, 504 UT). Break the errors down by destination_service_name, response_code and response_flags to tell a single failing backend apart from a gateway-wide problem.
+        description: 9.091% of completed HTTP requests through Istio ingress gateway istio-ingress/istio-ingress in cluster c1 returned 5xx responses over the last 5 minutes, with at least 20 errors and 300 completed requests in the window, and the condition has held for 10 minutes. External users and API clients routed through this gateway are seeing failed requests, gateway errors, or timeouts. The errors may come from the backend applications, or be generated by Envoy itself when upstreams are unhealthy, have no ready endpoints, refuse connections, or exceed route timeouts (503 UF/UH/NR, 504 UT). Break the errors down by destination_service_name, response_code and response_flags to tell a single failing backend apart from a gateway-wide problem.
         runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
-  - eval_time: 10m
+  - eval_time: 15m
+    alertname: IstioGatewayCritical5xxErrorRate
+    exp_alerts: []
+  - eval_time: 15m
     alertname: IstioGatewayDestinationHigh5xxErrorRate
     exp_alerts:
     - exp_labels:
@@ -94,8 +264,151 @@ tests:
         summary: Destination service behind the Istio ingress gateway has a 5xx error rate above 5%
         description: 9.091% of completed HTTP requests from Istio ingress gateway istio-ingress/istio-ingress to destination service serverless/orders-00003 in cluster c1 returned 5xx responses over the last 5 minutes, with at least 10 errors and 150 completed requests in the window, and the condition has held for 5 minutes. External requests to this service are failing while other routes through the gateway may be healthy. Check response_flags to separate application errors (flag '-') from Envoy-generated failures such as no healthy upstream (UH), connection failure (UF), upstream reset (UR) or route timeout (UT), then check the destination pods' readiness, restarts, logs and recent deployments. For Knative services, also check activator and revision scale-from-zero behaviour.
         runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
-  - eval_time: 10m
+  - eval_time: 15m
     alertname: IstioGatewayHigh4xxErrorRate
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="200",request_protocol="http",response_flags="-"}
+    values: 0+600x20
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UH"}
+    values: 0+1200x20
+  alert_rule_test:
+  - eval_time: 15m
+    alertname: IstioGatewayCritical5xxErrorRate
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: critical
+        priority: P1
+        notify_every: 30m
+        tech_stack: istio
+        signal: symptom
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          (
+            sum by (cluster, namespace, job) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"5.."}[5m])
+            )
+            /
+            sum by (cluster, namespace, job) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m])
+            )
+          ) > 0.20
+          and on (cluster, namespace, job)
+          sum by (cluster, namespace, job) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"5.."}[5m])
+          ) >= 20
+          and on (cluster, namespace, job)
+          sum by (cluster, namespace, job) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m])
+          ) >= 300
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+      exp_annotations:
+        summary: Istio ingress gateway 5xx error rate is critically high
+        description: '66.67% of completed HTTP requests through Istio ingress gateway istio-ingress/istio-ingress in cluster c1 returned 5xx responses over the last 5 minutes, with at least 20 errors and 300 completed requests in the window, and the condition has held for 5 minutes. A large share of external users and API clients routed through this gateway cannot complete requests, and client retries may add load to the gateway and backends. Break the errors down by destination_service_name, response_code and response_flags: errors concentrated on one destination point to a failing backend, while errors spread across destinations point to the gateway pods, a recent Gateway/VirtualService/AuthorizationPolicy change, or a shared dependency.'
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+  - eval_time: 15m
+    alertname: IstioGatewayHigh5xxErrorRate
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: warning
+        priority: P2
+        notify_every: 2h
+        tech_stack: istio
+        signal: symptom
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          (
+            sum by (cluster, namespace, job) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"5.."}[5m])
+            )
+            /
+            sum by (cluster, namespace, job) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m])
+            )
+          ) > 0.05
+          and on (cluster, namespace, job)
+          sum by (cluster, namespace, job) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"5.."}[5m])
+          ) >= 20
+          and on (cluster, namespace, job)
+          sum by (cluster, namespace, job) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",response_code=~"[2-5].."}[5m])
+          ) >= 300
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+      exp_annotations:
+        summary: Istio ingress gateway 5xx error rate is above 5%
+        description: 66.67% of completed HTTP requests through Istio ingress gateway istio-ingress/istio-ingress in cluster c1 returned 5xx responses over the last 5 minutes, with at least 20 errors and 300 completed requests in the window, and the condition has held for 10 minutes. External users and API clients routed through this gateway are seeing failed requests, gateway errors, or timeouts. The errors may come from the backend applications, or be generated by Envoy itself when upstreams are unhealthy, have no ready endpoints, refuse connections, or exceed route timeouts (503 UF/UH/NR, 504 UT). Break the errors down by destination_service_name, response_code and response_flags to tell a single failing backend apart from a gateway-wide problem.
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+  - eval_time: 15m
+    alertname: IstioGatewayDestinationLowTrafficHigh5xxErrorRate
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="200",request_protocol="http",response_flags="-"}
+    values: 0+5x20
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UH"}
+    values: 0+10x20
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: IstioGatewayDestinationLowTrafficHigh5xxErrorRate
+    exp_alerts:
+    - exp_labels:
+        sourceType: metric
+        severity: warning
+        priority: P2
+        notify_every: 2h
+        tech_stack: istio
+        signal: symptom
+        category: ingress
+        runbook: runbooks/ingress/istio-gateway.yaml
+        query: |
+          (
+            sum by (cluster, namespace, job, destination_service_namespace, destination_service_name) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",destination_service_name=~".+",destination_service_name!="unknown",destination_service_namespace=~".+",destination_service_namespace!="unknown",response_code=~"5.."}[5m])
+            )
+            /
+            sum by (cluster, namespace, job, destination_service_namespace, destination_service_name) (
+              increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",destination_service_name=~".+",destination_service_name!="unknown",destination_service_namespace=~".+",destination_service_namespace!="unknown",response_code=~"[2-5].."}[5m])
+            )
+          ) > 0.50
+          and on (cluster, namespace, job, destination_service_namespace, destination_service_name)
+          sum by (cluster, namespace, job, destination_service_namespace, destination_service_name) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",destination_service_name=~".+",destination_service_name!="unknown",destination_service_namespace=~".+",destination_service_namespace!="unknown",response_code=~"5.."}[5m])
+          ) >= 5
+          and on (cluster, namespace, job, destination_service_namespace, destination_service_name)
+          sum by (cluster, namespace, job, destination_service_namespace, destination_service_name) (
+            increase(istio_requests_total{job=~"istio-ingress.*",reporter="source",request_protocol=~"http|http2",destination_service_name=~".+",destination_service_name!="unknown",destination_service_namespace=~".+",destination_service_namespace!="unknown",response_code=~"[2-5].."}[5m])
+          ) < 150
+        cluster: c1
+        namespace: istio-ingress
+        job: istio-ingress
+        destination_service_namespace: serverless
+        destination_service_name: orders-00003
+      exp_annotations:
+        summary: Low-traffic destination service behind the Istio ingress gateway is failing most requests
+        description: 66.67% of completed HTTP requests from Istio ingress gateway istio-ingress/istio-ingress to destination service serverless/orders-00003 in cluster c1 returned 5xx responses over the last 5 minutes, with at least 5 errors but fewer than 150 completed requests in the window, and the condition has held for 5 minutes. The service gets too little traffic for the standard destination 5xx alert, but most of its requests are failing, which usually means it is effectively down. Check response_flags (UH = no ready endpoints, UF/UR = connection failures or resets, UT = timeout, '-' = application error), then the destination pods' readiness, restarts and logs. For Knative services, check whether the revision is failing to scale from zero.
+        runbook_url: https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/ingress/istio-gateway.yaml
+  - eval_time: 10m
+    alertname: IstioGatewayDestinationHigh5xxErrorRate
+    exp_alerts: []
+- interval: 1m
+  input_series:
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="200",request_protocol="http",response_flags="-"}
+    values: 0+3x20
+  - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UH"}
+    values: 0+2x20
+  alert_rule_test:
+  - eval_time: 10m
+    alertname: IstioGatewayDestinationLowTrafficHigh5xxErrorRate
     exp_alerts: []
 - interval: 1m
   input_series:
@@ -117,7 +430,7 @@ tests:
   - series: istio_requests_total{cluster="c1",namespace="istio-ingress",job="istio-ingress",destination_service_namespace="serverless",destination_service_name="orders-00003",reporter="source",response_code="503",request_protocol="http",response_flags="UF"}
     values: 0x10 0+60x10
   alert_rule_test:
-  - eval_time: 13m
+  - eval_time: 18m
     alertname: IstioGatewayHigh5xxErrorRate
     exp_alerts: []
 - interval: 1m
