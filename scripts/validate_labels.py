@@ -58,7 +58,7 @@ ALLOWED_TECH_STACKS = {
     # gitops
     "argocd",
     # databases
-    "postgresql", "cnpg", "mysql", "mongodb", "redis", "elasticsearch", "clickhouse",
+    "postgresql", "cnpg", "mysql", "mongodb", "redis", "elasticsearch", "clickhouse","neo4j",
     # messaging / caching
     "kafka", "rabbitmq", "memcached",
     # observability
