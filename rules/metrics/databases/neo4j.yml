@@ -1,0 +1,226 @@
+# Neo4j Community / Community + DozerDB: focused baseline alerts.
+# Structure and platform labels follow the supplied Elasticsearch example.
+# Thresholds are starting defaults, not vendor-mandated limits; tune from real
+# workload history and incident impact. No client, namespace or target is fixed.
+# Evaluate in the correct tenant/environment, retaining its identity labels.
+# Default vector matching requires paired metrics to have identical labels
+# apart from __name__. Validate actual sample labels before enabling ratios.
+# The runbook label names the intended integration path; create that runbook
+#
+# Coverage requirements outside these seven rules:
+# - Keep platform scrape-target / ingestion monitoring enabled. A missing series
+#   does NOT equal zero; neo4j_exporter_up cannot report its own disappearance.
+# - Use Kubernetes/node/PVC rules for OOM kills, restarts, throttling and disk
+#   space. The supplied Neo4j metrics cannot establish these conditions.
+# - Silence deliberately stopped databases and planned maintenance.
+# - Preserve target: instance may identify the exporter rather than Neo4j.
+#   Duplicate exporters can produce duplicate alerts; deduplicate using a
+#   verified target identity in the notification layer, not across clients.
+#
+# Metric references (confirm the deployed exporter's HELP/TYPE and version):
+# https://github.com/PapaDanielVi/neo4j-exporter#metrics
+# https://prometheus.io/docs/practices/alerting/
+groups:
+  - name: neo4j.rules
+    interval: 30s
+    rules:
+      # Reported Bolt connection failure; not proof of a Neo4j process outage.
+      - alert: Neo4jTargetConnectionFailed
+        expr: neo4j_exporter_up == 0
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          notify_every: "30m"
+          tech_stack: neo4j
+          signal: symptom
+          category: monitoring
+          runbook: runbooks/databases/neo4j.yaml
+          query: neo4j_exporter_up == 0
+        annotations:
+          summary: "Neo4j target connection is failing"
+          description: >-
+            The exporter at {{ $labels.instance }} has reported failure to connect
+            to Neo4j target {{ $labels.target }} for at least 2 minutes.
+            Collection may be unavailable even if applications can still connect.
+            Check exporter logs, Bolt reachability, credentials, DNS and Neo4j
+            process health. This flag does not prove that every individual
+            collector succeeded when its value is 1.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      # SHOW DATABASES may include intentionally stopped user databases.
+      - alert: Neo4jDatabaseOffline
+        expr: neo4j_database_online == 0
+        for: 2m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          notify_every: "30m"
+          tech_stack: neo4j
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: neo4j_database_online == 0
+        annotations:
+          summary: "Neo4j database is not online"
+          description: >-
+            Database {{ $labels.database }} on target {{ $labels.target }},
+            reported by {{ $labels.instance }}, has been reported as not online
+            for at least 2 minutes. Operations against this database may fail.
+            Check requested versus current database status, status messages,
+            startup/recovery logs and underlying storage. Confirm whether the
+            database was intentionally stopped before taking recovery action.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      # This is a gauge of indexes currently FAILED, despite the count naming.
+      - alert: Neo4jIndexesFailed
+        expr: neo4j_indexes_failed > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: neo4j
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: neo4j_indexes_failed > 0
+        annotations:
+          summary: "Neo4j has failed indexes"
+          description: >-
+            Target {{ $labels.target }}, reported by {{ $labels.instance }},
+            reports {{ $value }} failed indexes, with at least one failed index
+            present for 5 minutes. Queries that would use these indexes may slow
+            down, and affected index types may be unavailable. Use SHOW INDEXES
+            in the database inspected by the exporter to identify names and
+            failure messages. Check logs and storage before planning a rebuild.
+            The count alone does not identify the index or prove data loss.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      # Maximum heap is the capacity denominator; committed heap is not.
+      # Keep identity labels for each exporter/target. Reject invalid maxima.
+      - alert: Neo4jJVMHeapHigh
+        expr: |
+          neo4j_jvm_heap_used_bytes / neo4j_jvm_heap_max_bytes > 0.85
+          and
+          neo4j_jvm_heap_max_bytes > 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: neo4j
+          signal: cause
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: |
+            neo4j_jvm_heap_used_bytes / neo4j_jvm_heap_max_bytes > 0.85
+            and
+            neo4j_jvm_heap_max_bytes > 0
+        annotations:
+          summary: "Neo4j JVM heap usage remains high"
+          description: >-
+            Target {{ $labels.target }}, reported by {{ $labels.instance }},
+            is using {{ $value | humanizePercentage }} of its maximum JVM heap
+            and has stayed above 85% for at least 10 minutes. Sustained pressure
+            can increase GC, slow queries and contribute to heap exhaustion.
+            Compare heap after GC, transaction concurrency, expensive queries
+            and GDS workloads. Check container memory limits and native/page-cache
+            memory before changing heap size. Heap usage alone does not measure
+            total container memory or prove a memory leak.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      # The exporter labels collectors with gc. Rate first handles resets for
+      # each collector; sum without(gc) retains all other identity labels.
+      # GC collection time is not an exact application stop-the-world fraction.
+      - alert: Neo4jJVMGCOverheadHigh
+        expr: sum without (gc) (rate(neo4j_jvm_gc_collection_seconds_total[5m])) > 0.10
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: neo4j
+          signal: cause
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: sum without (gc) (rate(neo4j_jvm_gc_collection_seconds_total[5m])) > 0.10
+        annotations:
+          summary: "Neo4j JVM garbage collection time remains elevated"
+          description: >-
+            Target {{ $labels.target }}, reported by {{ $labels.instance }},
+            has a combined GC collection-time rate of {{ $value }} seconds per
+            second over 5 minutes, above 0.10 for at least 10 minutes. Elevated
+            collection time can accompany memory pressure and slow requests;
+            it is not an exact measurement of application pause time. Inspect
+            GC logs, heap recovery after collection, allocation-heavy queries
+            and transaction/GDS concurrency before changing JVM settings.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      # The corresponding JVM metric is a fraction in [0,1], not a percentage
+      # or a CPU-seconds counter. Do not rate() it or divide it by core count.
+      - alert: Neo4jJVMProcessCPUHigh
+        expr: |
+          neo4j_jvm_process_cpu_load > 0.90
+          and
+          neo4j_jvm_process_cpu_load <= 1
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: neo4j
+          signal: cause
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: |
+            neo4j_jvm_process_cpu_load > 0.90
+            and
+            neo4j_jvm_process_cpu_load <= 1
+        annotations:
+          summary: "Neo4j JVM CPU load remains high"
+          description: >-
+            Target {{ $labels.target }}, reported by {{ $labels.instance }},
+            reports JVM process CPU load of {{ $value | humanizePercentage }},
+            above 90% for at least 15 minutes. This reduces processing headroom
+            but does not by itself prove application impact. Compare query latency,
+            expensive queries, GC and GDS activity. Inspect Kubernetes CPU limits
+            and throttling separately: the JVM's CPU view may differ from the
+            container quota, so this metric cannot rule out throttling.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
+
+      - alert: Neo4jJVMFileDescriptorsHigh
+        expr: |
+          neo4j_jvm_open_file_descriptors / neo4j_jvm_max_file_descriptors > 0.85
+          and
+          neo4j_jvm_max_file_descriptors > 0
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P2
+          notify_every: "2h"
+          tech_stack: neo4j
+          signal: cause
+          category: data
+          runbook: runbooks/databases/neo4j.yaml
+          query: |
+            neo4j_jvm_open_file_descriptors / neo4j_jvm_max_file_descriptors > 0.85
+            and
+            neo4j_jvm_max_file_descriptors > 0
+        annotations:
+          summary: "Neo4j JVM is approaching its file descriptor limit"
+          description: >-
+            Target {{ $labels.target }}, reported by {{ $labels.instance }},
+            is using {{ $value | humanizePercentage }} of its file descriptor
+            limit and has stayed above 85% for at least 10 minutes. Exhaustion
+            can prevent opening database files or accepting connections. Check
+            descriptor trends, active connections, open files and the process
+            limit; investigate unexpected growth before raising the limit.
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/neo4j.yaml"
