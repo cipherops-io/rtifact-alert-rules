@@ -1,25 +1,5 @@
 # Neo4j Community / Community + DozerDB: focused baseline alerts.
-# Structure and platform labels follow the supplied Elasticsearch example.
-# Thresholds are starting defaults, not vendor-mandated limits; tune from real
-# workload history and incident impact. No client, namespace or target is fixed.
-# Evaluate in the correct tenant/environment, retaining its identity labels.
-# Default vector matching requires paired metrics to have identical labels
-# apart from __name__. Validate actual sample labels before enabling ratios.
-# The runbook label names the intended integration path; create that runbook
-#
-# Coverage requirements outside these seven rules:
-# - Keep platform scrape-target / ingestion monitoring enabled. A missing series
-#   does NOT equal zero; neo4j_exporter_up cannot report its own disappearance.
-# - Use Kubernetes/node/PVC rules for OOM kills, restarts, throttling and disk
-#   space. The supplied Neo4j metrics cannot establish these conditions.
-# - Silence deliberately stopped databases and planned maintenance.
-# - Preserve target: instance may identify the exporter rather than Neo4j.
-#   Duplicate exporters can produce duplicate alerts; deduplicate using a
-#   verified target identity in the notification layer, not across clients.
-#
-# Metric references (confirm the deployed exporter's HELP/TYPE and version):
-# https://github.com/PapaDanielVi/neo4j-exporter#metrics
-# https://prometheus.io/docs/practices/alerting/
+
 groups:
   - name: neo4j.rules
     interval: 30s
