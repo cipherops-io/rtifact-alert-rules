@@ -73,6 +73,301 @@ storage_panels: &storage_panels
     panel_title: "pg_wal Directory Size"
     panel_id: "cnpg-pg-wal-dir-bytes"
 
+# ── MCP Postgres (fallback + the primary's view) ─────────────────────────────
+# The tool.query_db_activity steps read the ALERTING POD through the tenant
+# tunnel. Each also carries `fallback: mcp.postgres.execute_query` with the same
+# view, which runs ONLY when the tunnel read failed (no pods/exec, pod gone,
+# managed Postgres). Every MCP call here is `target: child`: it runs only when a
+# platform routing rule (mcp.mcp_config_registry) maps the alert to the MCP
+# operator for THIS CNPG cluster (e.g. payload.impacted_entities.pod regex
+# ^<cluster>-[0-9]+$); with no matching rule it is NOT RUN, so it never reads a
+# different database. An MCP connection reaches ONE server — normally the
+# cluster's primary through its -rw service — so the result's is_primary says
+# which side was read; never present it as the alerting pod's own state when it
+# is not. Needs the connection's user to hold pg_monitor (else other sessions'
+# query text reads "<insufficient privilege>") and pg_stat_statements for
+# top_statements. Query text is literal-masked in SQL ('?'); every statement is
+# tagged rtifact-diagnostic so top_statements leaves forge's own reads out.
+
+cnpg_mcp_long_transactions: &cnpg_mcp_long_transactions
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: open transactions older than 60s with pid, state, ages, wait event, blockers and literal-masked SQL — on the server the MCP connection reaches."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'server_version', current_setting('server_version'),
+            'is_primary', NOT pg_is_in_recovery(),
+            'backends', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT a.pid,
+                       a.usename,
+                       a.application_name,
+                       a.client_addr::text AS client_addr,
+                       a.datname,
+                       a.state,
+                       a.backend_type,
+                       a.wait_event_type,
+                       a.wait_event,
+                       a.backend_xmin::text AS backend_xmin,
+                       round(extract(epoch FROM now() - a.xact_start)::numeric, 2)    AS tx_age_seconds,
+                       round(extract(epoch FROM now() - a.query_start)::numeric, 2)   AS query_age_seconds,
+                       round(extract(epoch FROM now() - a.state_change)::numeric, 2)  AS state_age_seconds,
+                       pg_blocking_pids(a.pid) AS blocked_by,
+                       left(regexp_replace(regexp_replace(a.query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_activity a
+                WHERE a.xact_start IS NOT NULL
+                  AND a.state <> 'idle'
+                  AND a.pid <> pg_backend_pid()
+                  AND now() - a.xact_start > make_interval(secs => 60)
+                ORDER BY a.xact_start ASC
+                LIMIT 5
+              ) r), '[]'::json)
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_long_transactions_30s: &cnpg_mcp_long_transactions_30s
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: open transactions older than 30s (on a standby these can hold up WAL replay) — on the server the MCP connection reaches."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'server_version', current_setting('server_version'),
+            'is_primary', NOT pg_is_in_recovery(),
+            'backends', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT a.pid,
+                       a.usename,
+                       a.application_name,
+                       a.client_addr::text AS client_addr,
+                       a.datname,
+                       a.state,
+                       a.backend_type,
+                       a.wait_event_type,
+                       a.wait_event,
+                       a.backend_xmin::text AS backend_xmin,
+                       round(extract(epoch FROM now() - a.xact_start)::numeric, 2)    AS tx_age_seconds,
+                       round(extract(epoch FROM now() - a.query_start)::numeric, 2)   AS query_age_seconds,
+                       round(extract(epoch FROM now() - a.state_change)::numeric, 2)  AS state_age_seconds,
+                       pg_blocking_pids(a.pid) AS blocked_by,
+                       left(regexp_replace(regexp_replace(a.query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_activity a
+                WHERE a.xact_start IS NOT NULL
+                  AND a.state <> 'idle'
+                  AND a.pid <> pg_backend_pid()
+                  AND now() - a.xact_start > make_interval(secs => 30)
+                ORDER BY a.xact_start ASC
+                LIMIT 5
+              ) r), '[]'::json)
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_connections: &cnpg_mcp_connections
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: connection breakdown (totals vs max_connections, state mix, top clients, active waits) — on the server the MCP connection reaches."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'max_connections', current_setting('max_connections')::int,
+            'superuser_reserved_connections', current_setting('superuser_reserved_connections')::int,
+            'client_connections', (SELECT count(*) FROM pg_stat_activity
+                                   WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()),
+            'by_state', COALESCE((
+              SELECT json_object_agg(st, n) FROM (
+                SELECT coalesce(state, 'unknown') AS st, count(*) AS n FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() GROUP BY 1) x), '{}'::json),
+            'idle_in_transaction', (
+              SELECT json_build_object(
+                'count', count(*),
+                'oldest_seconds', round(extract(epoch FROM max(now() - state_change))::numeric, 1))
+              FROM pg_stat_activity WHERE state LIKE 'idle in transaction%'),
+            'top_clients', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT usename, application_name, datname, client_addr::text AS client_addr,
+                       count(*) AS connections,
+                       count(*) FILTER (WHERE state = 'active') AS active,
+                       count(*) FILTER (WHERE state LIKE 'idle in transaction%') AS idle_in_transaction
+                FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()
+                GROUP BY 1, 2, 3, 4 ORDER BY connections DESC LIMIT 8) r), '[]'::json),
+            'active_waits', COALESCE((
+              SELECT json_object_agg(w, n) FROM (
+                SELECT wait_event_type || ':' || wait_event AS w, count(*) AS n FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND state = 'active' AND wait_event IS NOT NULL
+                  AND pid <> pg_backend_pid()
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 8) x), '{}'::json)
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_top_statements: &cnpg_mcp_top_statements
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: heaviest statements by total execution time (pg_stat_statements), literal-masked."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'statements', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT s.queryid::text AS queryid, d.datname, u.rolname AS usename, s.calls,
+                       round(s.total_exec_time::numeric, 1) AS total_exec_ms,
+                       round(s.mean_exec_time::numeric, 2)  AS mean_exec_ms,
+                       round(s.max_exec_time::numeric, 1)   AS max_exec_ms,
+                       s.rows, s.shared_blks_hit, s.shared_blks_read, s.temp_blks_written,
+                       left(regexp_replace(regexp_replace(s.query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_statements s
+                LEFT JOIN pg_database d ON d.oid = s.dbid
+                LEFT JOIN pg_roles u ON u.oid = s.userid
+                WHERE s.query NOT LIKE '%rtifact-diagnostic%'
+                ORDER BY s.total_exec_time DESC LIMIT 5) r), '[]'::json)
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_replication: &cnpg_mcp_replication
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: replication view — per-standby lag (seconds and bytes) and slots when read on the primary, replay delay when read on a standby."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'standbys', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT application_name, client_addr::text AS client_addr, state, sync_state,
+                       round(extract(epoch FROM write_lag)::numeric, 3)  AS write_lag_seconds,
+                       round(extract(epoch FROM flush_lag)::numeric, 3)  AS flush_lag_seconds,
+                       round(extract(epoch FROM replay_lag)::numeric, 3) AS replay_lag_seconds,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, replay_lsn)::bigint AS replay_lag_bytes,
+                       round(extract(epoch FROM now() - reply_time)::numeric, 1) AS last_reply_age_seconds
+                FROM pg_stat_replication
+                ORDER BY replay_lag_bytes DESC NULLS FIRST LIMIT 10) r), '[]'::json),
+            'slots', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT slot_name, slot_type, active, wal_status,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, restart_lsn)::bigint AS retained_wal_bytes
+                FROM pg_replication_slots
+                ORDER BY retained_wal_bytes DESC NULLS LAST LIMIT 10) r), '[]'::json),
+            'standby', CASE WHEN pg_is_in_recovery() THEN json_build_object(
+                'replay_delay_seconds',
+                  round(extract(epoch FROM now() - pg_last_xact_replay_timestamp())::numeric, 1),
+                'receive_replay_gap_bytes',
+                  pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::bigint,
+                'wal_receiver_status', (SELECT status FROM pg_stat_wal_receiver LIMIT 1),
+                'sender_host', (SELECT sender_host FROM pg_stat_wal_receiver LIMIT 1)) END
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_vacuum: &cnpg_mcp_vacuum
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP fallback: dead rows, oldest-frozen tables, running vacuums and xmin-horizon holders — in the database the MCP connection is configured for (it cannot switch to the alert's datname)."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'database', current_database(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'autovacuum', current_setting('autovacuum'),
+            'autovacuum_max_workers', current_setting('autovacuum_max_workers')::int,
+            'autovacuum_freeze_max_age', current_setting('autovacuum_freeze_max_age')::bigint,
+            'tables', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT s.schemaname || '.' || s.relname AS relation,
+                       s.n_live_tup, s.n_dead_tup,
+                       round(100.0 * s.n_dead_tup / nullif(s.n_live_tup + s.n_dead_tup, 0), 1) AS dead_pct,
+                       pg_total_relation_size(s.relid) AS total_bytes,
+                       s.n_mod_since_analyze,
+                       s.last_autovacuum, s.last_vacuum, s.last_autoanalyze,
+                       s.autovacuum_count,
+                       age(c.relfrozenxid) AS xid_age
+                FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
+                ORDER BY s.n_dead_tup DESC LIMIT 8) r), '[]'::json),
+            'running_vacuums', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT p.pid, p.datname, p.relid::regclass::text AS relation, p.phase,
+                       round(100.0 * p.heap_blks_scanned / nullif(p.heap_blks_total, 0), 1) AS scanned_pct,
+                       round(extract(epoch FROM now() - a.xact_start)::numeric, 1) AS running_seconds,
+                       a.query LIKE 'autovacuum:%' AS is_autovacuum,
+                       a.query LIKE '%(to prevent wraparound)%' AS to_prevent_wraparound
+                FROM pg_stat_progress_vacuum p JOIN pg_stat_activity a USING (pid)) r), '[]'::json),
+            'oldest_xid_tables', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT c.oid::regclass::text AS relation, c.relkind,
+                       age(c.relfrozenxid) AS xid_age, mxid_age(c.relminmxid) AS mxid_age,
+                       pg_total_relation_size(c.oid) AS total_bytes
+                FROM pg_class c WHERE c.relkind IN ('r', 'm', 't')
+                ORDER BY age(c.relfrozenxid) DESC LIMIT 8) r), '[]'::json),
+            'xid_age_by_database', COALESCE((
+              SELECT json_object_agg(datname, age(datfrozenxid)) FROM pg_database WHERE datallowconn), '{}'::json),
+            'mxid_age_by_database', COALESCE((
+              SELECT json_object_agg(datname, mxid_age(datminmxid)) FROM pg_database WHERE datallowconn), '{}'::json),
+            'xmin_horizon', json_build_object(
+              'oldest_backend', (
+                SELECT to_jsonb(r) FROM (
+                  SELECT pid, usename, application_name, datname, state, age(backend_xmin) AS xmin_age,
+                         round(extract(epoch FROM now() - xact_start)::numeric, 1) AS tx_age_seconds
+                  FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()
+                  ORDER BY age(backend_xmin) DESC LIMIT 1) r),
+              'prepared_xacts', (SELECT count(*) FROM pg_prepared_xacts),
+              'oldest_prepared_xact_age', (SELECT max(age(transaction)) FROM pg_prepared_xacts),
+              'oldest_slot_xmin_age', (SELECT max(greatest(age(xmin), age(catalog_xmin))) FROM pg_replication_slots),
+              'oldest_standby_feedback_xmin_age', (SELECT max(age(backend_xmin)) FROM pg_stat_replication))
+          ) AS live
+    summary_chars: 4000
+
+cnpg_mcp_primary_replication: &cnpg_mcp_primary_replication
+  tool_id: "mcp.postgres.execute_query"
+  target: "child"
+  description: "MCP: the PRIMARY's view of every replica (read through the cluster's -rw connection) — each standby's write/flush/replay lag in seconds and bytes by pod name (application_name), and every slot's retained WAL."
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'standbys', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT application_name, client_addr::text AS client_addr, state, sync_state,
+                       round(extract(epoch FROM write_lag)::numeric, 3)  AS write_lag_seconds,
+                       round(extract(epoch FROM flush_lag)::numeric, 3)  AS flush_lag_seconds,
+                       round(extract(epoch FROM replay_lag)::numeric, 3) AS replay_lag_seconds,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, replay_lsn)::bigint AS replay_lag_bytes,
+                       round(extract(epoch FROM now() - reply_time)::numeric, 1) AS last_reply_age_seconds
+                FROM pg_stat_replication
+                ORDER BY replay_lag_bytes DESC NULLS FIRST LIMIT 10) r), '[]'::json),
+            'slots', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT slot_name, slot_type, active, wal_status,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, restart_lsn)::bigint AS retained_wal_bytes
+                FROM pg_replication_slots
+                ORDER BY retained_wal_bytes DESC NULLS LAST LIMIT 10) r), '[]'::json),
+            'standby', CASE WHEN pg_is_in_recovery() THEN json_build_object(
+                'replay_delay_seconds',
+                  round(extract(epoch FROM now() - pg_last_xact_replay_timestamp())::numeric, 1),
+                'receive_replay_gap_bytes',
+                  pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::bigint,
+                'wal_receiver_status', (SELECT status FROM pg_stat_wal_receiver LIMIT 1),
+                'sender_host', (SELECT sender_host FROM pg_stat_wal_receiver LIMIT 1)) END
+          ) AS live
+    summary_chars: 4000
+
 common_alerts:
   - name: "CNPGClusterLongRunningTransactionWarning"
     patterns:
@@ -305,6 +600,8 @@ common_alerts:
               container: "postgres"
               min_duration_seconds: 60
               limit: 5
+            fallback:
+              - *cnpg_mcp_long_transactions
       - step: 7
         title: "Measure the damage — dead rows piling up and vacuum held back (live read)"
         description: >-
@@ -328,6 +625,8 @@ common_alerts:
               query_id: "vacuum"
               container: "postgres"
               limit: 5
+            fallback:
+              - *cnpg_mcp_vacuum
     remediation: # suggestion-only — forge.* are never auto-executed; CNPG backends must be cleared via psql, not k8s
       - action: "cancel_long_running_query"
         description: "ONLY when step 2 shows state=active AND step 3/4 prove impact (waiting backends, commit-rate drop, or deadlocks). Cancel the offending query (non-destructive, keeps the connection): connect to $pod and run SELECT pg_cancel_backend(<pid>) using the pid step 6 reported — quote that pid in the action, do not tell the operator to go find it."
@@ -596,8 +895,18 @@ common_alerts:
           (network / primary side). slots[].retained_wal_bytes large => the lagging replica's
           slot is pinning WAL on the primary (disk risk). The second call lists long transactions
           on this pod: on a standby, a long-running read query is the classic cause of replay
-          pausing (recovery conflict / hot_standby_feedback) — name it if present. If a call
-          failed, say the live view was not available and keep the metric-based reading.
+          pausing (recovery conflict / hot_standby_feedback) — name it if present. The third call is the PRIMARY's
+          view through the MCP connection (only when a routing rule maps this cluster;
+          otherwise NOT RUN): read_on is_primary=true, standbys[] lists EVERY replica by
+          application_name (= pod name) with lag in seconds and bytes. Use it to name the
+          replica that is actually behind and to separate the two cases: ONLY the alerting
+          replica behind (others current) => that replica's problem — its CPU/IO, network or a
+          replay conflict from the first two calls; ALL replicas behind by similar bytes =>
+          the primary is producing WAL faster than they replay (write burst, cross-check
+          wal_generation_bytes_per_s in step 3). A standby missing from standbys[] is
+          disconnected. If is_primary=false the connection reached a replica, so this is not
+          the primary's view — say so. If a call failed, say the live view was not available
+          and keep the metric-based reading.
         tool_calls:
           - tool_id: "tool.query_db_activity"
             description: "Live replication view: per-standby lag (seconds and bytes), slots with retained WAL, and the standby's own replay delay."
@@ -614,6 +923,9 @@ common_alerts:
               container: "postgres"
               min_duration_seconds: 30
               limit: 5
+            fallback:
+              - *cnpg_mcp_long_transactions_30s
+          - *cnpg_mcp_primary_replication
     remediation: # suggestion-only — investigate the replica; never restart the primary (forces failover)
       - action: "recover_disconnected_replica"
         description: "If step 2 shows wal_receiver_up=0 or streaming_replicas below expected, focus on the laggiest replica from step 1: check its pod health / node IO / network to the primary. An operator-driven restart of THAT replica pod (approval-gated) can re-establish streaming — never restart the primary."
@@ -867,6 +1179,8 @@ common_alerts:
               query_id: "replication"
               container: "postgres"
               limit: 10
+            fallback:
+              - *cnpg_mcp_replication
     remediation: # suggestion-only — dropping a slot is a manual psql action; never drop a slot still in use
       - action: "drop_orphaned_replication_slot"
         description: "ONLY when step 1 names an inactive slot with large/growing retained WAL AND step 2 confirms its consumer replica is permanently gone: drop the orphan on the primary via psql — SELECT pg_drop_replication_slot('<slot_name>') — to release the retained WAL. Never drop a slot whose replica is merely temporarily disconnected and expected back."
@@ -1014,6 +1328,8 @@ common_alerts:
               query_id: "connections"
               container: "postgres"
               limit: 8
+            fallback:
+              - *cnpg_mcp_connections
           - tool_id: "tool.query_db_activity"
             description: "Heaviest statements by total execution time (pg_stat_statements), normalised."
             params:
@@ -1021,6 +1337,8 @@ common_alerts:
               query_id: "top_statements"
               container: "postgres"
               limit: 5
+            fallback:
+              - *cnpg_mcp_top_statements
     remediation: # suggestion-only — config / app-side fixes, gated
       - action: "add_or_rightsize_connection_pooler"
         description: "Primary fix when step 2 shows mostly-idle connections: front PostgreSQL with a PgBouncer Pooler CR (or right-size the app's existing pool) so a few server connections are multiplexed. Far cheaper and safer than raising max_connections."
@@ -1107,6 +1425,8 @@ common_alerts:
               container: "postgres"
               database: "$datname"
               limit: 8
+            fallback:
+              - *cnpg_mcp_vacuum
     remediation: # suggestion-only — every action here changes the database and needs a DBA
       - action: "remove_the_horizon_blocker"
         description: "Primary fix: clear whatever step 2 named as holding the xmin horizon — end the old session (pg_terminate_backend(<pid>) for the pid step 2 reported, after confirming with its owner), COMMIT/ROLLBACK PREPARED the abandoned prepared transaction, or drop the dead replication slot that is pinning xmin. Vacuum can only make progress once this is gone."
