@@ -362,21 +362,21 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `RabbitMQDown` | critical | P1 | 1m | symptom | `up{job=~"rabbitmq.*"} == 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQQueueDepthHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_ready > 10000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQQueueDepthCritical` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 100000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNoConsumers` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQUnackedMessagesHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_unacknowledged > 1000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQMemoryHigh` | warning | P2 | 5m | cause | `rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes >…` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQMemoryAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_memory_used_watermark == 1` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDiskFreeAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_free_disk_space_watermark == 1` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDiskFreeWarning` | warning | P2 | 5m | cause | `rabbitmq_disk_space_available_bytes < 1073741824` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNodeDown` | critical | P1 | 2m | symptom | `rabbitmq_cluster_nodes_running < rabbitmq_cluster_nodes_total` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQNetworkPartition` | critical | P0 | 1m | symptom | `rabbitmq_cluster_partitions > 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQChannelCountHigh` | warning | P2 | 5m | cause | `rabbitmq_channels > 10000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQDeadLetterQueueGrowing` | warning | P2 | 10m | symptom | `deriv(rabbitmq_queue_messages_ready{queue=~".*dead.*\|.*dlq.*\|.*dlx.*"}[10m]) > 0` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQConnectionCountHigh` | warning | P2 | 5m | cause | `rabbitmq_connections > 5000` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
-| `RabbitMQRedeliveryRateHigh` | warning | P2 | 5m | symptom | `rate(rabbitmq_queue_messages_redelivered_total[5m]) / rate(rabbitmq_queue_messa…` | [rabbitmq.md](runbooks/messaging/rabbitmq.md) |
+| `RabbitMQDown` | critical | P1 | 1m | symptom | `up{job=~"rabbitmq.*"} == 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQQueueDepthHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_ready > 10000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQQueueDepthCritical` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 100000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNoConsumers` | critical | P1 | 5m | symptom | `rabbitmq_queue_messages_ready > 0 and rabbitmq_queue_consumers == 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQUnackedMessagesHigh` | warning | P2 | 5m | cause | `rabbitmq_queue_messages_unacknowledged > 1000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQMemoryHigh` | warning | P2 | 5m | cause | `rabbitmq_process_resident_memory_bytes / rabbitmq_resident_memory_limit_bytes >…` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQMemoryAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_memory_used_watermark == 1` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDiskFreeAlarm` | critical | P0 | 1m | symptom | `rabbitmq_alarms_free_disk_space_watermark == 1` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDiskFreeWarning` | warning | P2 | 5m | cause | `rabbitmq_disk_space_available_bytes < 1073741824` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNodeDown` | critical | P1 | 2m | symptom | `rabbitmq_cluster_nodes_running < rabbitmq_cluster_nodes_total` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQNetworkPartition` | critical | P0 | 1m | symptom | `rabbitmq_cluster_partitions > 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQChannelCountHigh` | warning | P2 | 5m | cause | `rabbitmq_channels > 10000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQDeadLetterQueueGrowing` | warning | P2 | 10m | symptom | `deriv(rabbitmq_queue_messages_ready{queue=~".*dead.*\|.*dlq.*\|.*dlx.*"}[10m]) > 0` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQConnectionCountHigh` | warning | P2 | 5m | cause | `rabbitmq_connections > 5000` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
+| `RabbitMQRedeliveryRateHigh` | warning | P2 | 5m | symptom | `rate(rabbitmq_queue_messages_redelivered_total[5m]) / rate(rabbitmq_queue_messa…` | [rabbitmq.yaml](runbooks/messaging/rabbitmq.yaml) |
 
 ## observability
 
@@ -516,6 +516,7 @@
 - [mongodb-atlas.yaml](runbooks/databases/mongodb-atlas.yaml)
 - [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
 - [service-error-logs.yaml](runbooks/logs/service-error-logs.yaml)
+- [rabbitmq.md](runbooks/messaging/rabbitmq.md)
 - [service-latency.yaml](runbooks/observability/service-latency.yaml)
 
 ---
