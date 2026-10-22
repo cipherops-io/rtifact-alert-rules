@@ -1,84 +1,1691 @@
-# Runbook: Elasticsearch
+# Elasticsearch self-hosted runbook: VictoriaMetrics evidence only.
+# Source: the 10 enabled Elasticsearch rules supplied on 2026-10-13.
+# Query inputs: raw alert label $instance + the platform's scoped VM datasource.
+# Installation target: runbooks/databases/elasticsearch.yaml
+# Shared query anchors use the same pattern as the reference runbook.
+# Core rule queries add only an instance matcher; thresholds/windows remain unchanged.
+# Ratios and latency estimates retain source labels and exclude zero denominators.
+# Supporting topk lists are target-scoped candidates; they are not full inventories.
 
-## ElasticsearchDown
+tech_stack: elasticsearch
+version: '1.0'
+description: >-
+  VictoriaMetrics-only investigation runbook for the ten enabled rules in rules/metrics/databases/elasticsearch.yml.
+  Intended for self-hosted Elasticsearch exported through prometheus-community/elasticsearch_exporter.
+  Every diagnostic call is tool.query_metrics; all queried metric names are in the supplied 229-metric
+  inventory. The exporter already collects Elasticsearch statistics; this runbook reads those stored samples
+  and does not open an Elasticsearch connection. It needs no Elasticsearch API key, password, Kibana URL
+  or CA certificate at execution time. VM access and tenant routing remain the platform's responsibility.
+  VictoriaMetrics is the evidence store, not an Elasticsearch parent deployment. EXECUTION AND IDENTITY:
+  use the same common_alerts, diagnostic_steps, tool_calls, params.queries and panel fields as the reference
+  ClickHouse runbook. The sole query placeholder is $instance. The runner MUST resolve it from the original
+  firing series' instance label and escape it as a PromQL string value; do not use a mapped service name,
+  Kubernetes node, Elasticsearch URL, platform cluster ID or a guessed value. The VM datasource MUST already
+  enforce the incident's tenant/project/environment scope. An instance selector is not tenant isolation.
+  Confirm it resolves to one Elasticsearch target in that scope. If it is missing, ambiguous or reused
+  for multiple targets, mark scope unresolved and do not widen the query. This requirement must be checked
+  in the real executor before rollout. No other placeholders or bindings are required. ATTRIBUTION: node
+  stats normally use name for the Elasticsearch node; instance is the exporter scrape target and is not
+  itself a database node. Preserve the full series labels, including job, cluster/exported_cluster, namespace/exported_namespace,
+  name/host, index, breaker, type, mount and path when returned. Scrape relabeling may change which cluster/namespace
+  label describes Elasticsearch versus Kubernetes; do not equate the two. Core queries retain all labels
+  and read peer nodes through the same target for comparison. Select the firing series using all available
+  alert labels before forming a conclusion. Do not sum duplicate exporter jobs or replicas, filesystem
+  paths on the same mount, overlapping breaker estimates, or primary and total index metrics. Settings
+  metrics may lack cluster and node labels. Node metrics depend on exporter collection coverage; a partial
+  node scrape is not a cluster census. Topk queries are supporting candidate lists within this target
+  only, never complete inventories or proof that the alerting object is healthy if it is not listed. TIME
+  AND DATA QUALITY: use a range covering at least 30 minutes before the alert start and 15 minutes after
+  it, or through the latest available sample for an active incident. Use a step no coarser than necessary
+  for the rule (normally 30 seconds, or the actual scrape interval if slower). Evaluate the latest state
+  separately. Do this through the query tool's existing incident time context; no unverified time-parameter
+  names are added here. If the executor supplies only present-time instant results, report historical
+  onset/order as unavailable rather than claiming the incident was reproduced. offset 30m is relative
+  to each evaluation timestamp, not automatically a healthy baseline. Compare pre-onset values explicitly.
+  Validate collector success, signal timestamps and observed sample counts against the configured scrape
+  interval and ingestion delay. The alert rule's 30s evaluation interval is not proof of a 30s scrape
+  interval. Timestamp freshness proves arrival at VM, not that an exporter successfully refreshed its
+  cached source data. A reported collection failure can coexist with application availability; disappearance
+  of the exporter is a different failure and is not detected by scrape_success == 0. Missing series, division
+  exclusions, failed requests and truncated results mean unavailable evidence. Never fill missing evidence
+  with zero. Continue independent VM queries when one collector or optional metric is unavailable. Collector
+  success percentage is the fraction of observed samples that succeeded, not an uptime SLA; gaps are not
+  counted as successful samples. Treat unsupported negative sentinel values, such as a CPU value of -1,
+  as unavailable rather than low utilization. QUERY SEMANTICS: the rule-condition queries reproduce the
+  supplied comparisons, rolling windows and volume gates, adding only the instance selector. The rule's
+  for period is described in each entry; it is not a function encoded by an instant query. Use native
+  VictoriaMetrics increase/rate semantics consistently with VM alert evaluation; do not silently replace
+  them with increase_prometheus. If rules actually evaluate in a different engine, record its counter-window
+  differences. Counters use rate/increase before any aggregation; resets and scrape gaps reduce confidence
+  in event timing. Gauges such as disk bytes, shard counts, queue depth, heap and index store size are
+  not event counters even when their name ends in _total. Gauge delta is net change and can reflect relocation,
+  deletion or restart; it is not ingestion volume. Ratios exclude nonpositive denominators rather than
+  manufacturing a value. The rule-condition values retain their original units: disk/heap/thread-pool
+  ratios are fractions, while companion queries ending in _pct return 0-100 percentages. Search/index
+  time divided by operation count is a mean internal operation time, not end-user latency or a percentile.
+  GC time rate is reported collection time per second, not a proven stop-the-world percentage. RCA OUTPUT:
+  state (1) the firing rule, exact object labels, incident time and threshold; (2) observed impact and
+  peak/current values with units; (3) an evidence timeline using the query names, timestamps and matching
+  series; (4) the best supported cause or contributing condition and a high/medium/low confidence level;
+  (5) alternatives ruled out only by fresh, adequately scoped evidence; (6) missing evidence and what
+  it prevents us from deciding; and (7) a proportionate owner action and measurable recovery criteria.
+  High confidence in a measured symptom does not mean high confidence in its underlying cause. Correlation
+  and temporal precedence support a hypothesis but do not prove an exact failed request, allocation decider,
+  master election failure or disk error. Where metrics cannot decide, say root cause unconfirmed and list
+  the specific missing evidence for the owner. This version does not call logs, Kubernetes diagnostics
+  or live APIs to fill those gaps. Remediation entries are conditional human recommendations, not executable
+  actions. Never claim a change was applied, approve data loss, or close an incident only because the
+  alert resolved, its rolling window expired or traffic stopped.
+match_keywords:
+  - elasticsearch
+  - elastic search
+  - elasticsearch exporter
+  - self-hosted elasticsearch
+  - elasticsearch_scrape_success
+  - elasticsearch_cluster_health
+  - elasticsearch_jvm
+  - elasticsearch_breakers
+  - elasticsearch_thread_pool
+categories:
+  - DATA
+  - DATABASE
+collection_quality_queries: &collection_quality_queries
+  - name: collector_success
+    query: 'elasticsearch_scrape_success{instance="$instance"}'
+    panel: true
+    panel_title: 'Collector Success: 1 = Successful'
+    panel_id: es-collector-success
+  - name: collector_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(elasticsearch_scrape_success{instance="$instance"})'
+  - name: collector_samples_5m
+    query: 'count_over_time(elasticsearch_scrape_success{instance="$instance"}[5m])'
+  - name: collector_success_pct_15m
+    unit: '%'
+    query: '100 * avg_over_time(elasticsearch_scrape_success{instance="$instance"}[15m])'
+  - name: collector_series_missing_5m
+    query: 'absent_over_time(elasticsearch_scrape_success{instance="$instance"}[5m])'
+cluster_health_queries: &cluster_health_queries
+  - name: cluster_health_by_color
+    query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+    panel: true
+    panel_title: Cluster Health by Color
+    panel_id: es-cluster-health-by-color
+  - name: unassigned_shards
+    query: 'elasticsearch_cluster_health_unassigned_shards{instance="$instance"}'
+    panel: true
+    panel_title: Unassigned Shards
+    panel_id: es-unassigned-shards
+  - name: active_primary_shards
+    query: 'elasticsearch_cluster_health_active_primary_shards{instance="$instance"}'
+  - name: active_shards_all_copies
+    query: 'elasticsearch_cluster_health_active_shards{instance="$instance"}'
+  - name: initializing_shards
+    query: 'elasticsearch_cluster_health_initializing_shards{instance="$instance"}'
+  - name: relocating_shards
+    query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
+  - name: delayed_unassigned_shards
+    query: 'elasticsearch_cluster_health_delayed_unassigned_shards{instance="$instance"}'
+cluster_membership_queries: &cluster_membership_queries
+  - name: cluster_nodes
+    query: 'elasticsearch_cluster_health_number_of_nodes{instance="$instance"}'
+    panel: true
+    panel_title: Cluster Nodes
+    panel_id: es-cluster-nodes
+  - name: cluster_data_nodes
+    query: 'elasticsearch_cluster_health_number_of_data_nodes{instance="$instance"}'
+    panel: true
+    panel_title: Cluster Data Nodes
+    panel_id: es-cluster-data-nodes
+  - name: cluster_data_nodes_30m_earlier
+    query: 'elasticsearch_cluster_health_number_of_data_nodes{instance="$instance"} offset 30m'
+  - name: cluster_nodes_high_water_1h
+    query: 'max_over_time(elasticsearch_cluster_health_number_of_nodes{instance="$instance"}[1h])'
+  - name: node_uptime_seconds
+    unit: s
+    query: 'elasticsearch_jvm_uptime_seconds{instance="$instance"}'
+    panel: true
+    panel_title: JVM Uptime by Node
+    panel_id: es-node-uptime-seconds
+  - name: node_cpu_counter_resets_1h
+    query: 'resets(elasticsearch_process_cpu_seconds_total{instance="$instance"}[1h])'
+  - name: previously_observed_nodes_now_missing
+    unit: s
+    query: '(elasticsearch_jvm_uptime_seconds{instance="$instance"} offset 30m) unless elasticsearch_jvm_uptime_seconds{instance="$instance"}'
+disk_capacity_queries: &disk_capacity_queries
+  - name: data_disk_used_pct
+    unit: '%'
+    query: >-
+      (100 * (1 - elasticsearch_filesystem_data_available_bytes{instance="$instance"} / elasticsearch_filesystem_data_size_bytes{instance="$instance"}))
+      and (elasticsearch_filesystem_data_size_bytes{instance="$instance"} > 0)
+    panel: true
+    panel_title: Data Disk Used % by Node and Path
+    panel_id: es-data-disk-used-pct
+  - name: data_disk_available_bytes
+    unit: B
+    query: 'elasticsearch_filesystem_data_available_bytes{instance="$instance"}'
+    panel: true
+    panel_title: Data Disk Available Bytes
+    panel_id: es-data-disk-available-bytes
+  - name: data_disk_capacity_bytes
+    unit: B
+    query: 'elasticsearch_filesystem_data_size_bytes{instance="$instance"}'
+  - name: data_disk_available_change_1h
+    unit: B
+    query: 'delta(elasticsearch_filesystem_data_available_bytes{instance="$instance"}[1h])'
+  - name: data_disk_capacity_changes_1h
+    query: 'changes(elasticsearch_filesystem_data_size_bytes{instance="$instance"}[1h])'
+  - name: data_disk_samples_1h
+    query: 'count_over_time(elasticsearch_filesystem_data_available_bytes{instance="$instance"}[1h])'
+node_memory_queries: &node_memory_queries
+  - name: heap_used_pct
+    unit: '%'
+    query: >-
+      (100 * (elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"} / elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"}))
+      and (elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"} > 0)
+    panel: true
+    panel_title: JVM Heap Used % by Node
+    panel_id: es-heap-used-pct
+  - name: heap_used_bytes
+    unit: B
+    query: 'elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"}'
+  - name: heap_max_bytes
+    unit: B
+    query: 'elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"}'
+  - name: gc_collection_seconds_per_second
+    unit: s/s
+    query: 'rate(elasticsearch_jvm_gc_collection_seconds_sum{instance="$instance"}[5m])'
+    panel: true
+    panel_title: GC Collection Time Rate by Collector
+    panel_id: es-gc-collection-seconds-per-second
+  - name: gc_collections_per_second
+    unit: collections/s
+    query: 'rate(elasticsearch_jvm_gc_collection_seconds_count{instance="$instance"}[5m])'
+  - name: gc_mean_collection_seconds
+    unit: s/collection
+    query: >-
+      (rate(elasticsearch_jvm_gc_collection_seconds_sum{instance="$instance"}[5m]) / rate(elasticsearch_jvm_gc_collection_seconds_count{instance="$instance"}[5m]))
+      and (rate(elasticsearch_jvm_gc_collection_seconds_count{instance="$instance"}[5m]) > 0)
+  - name: process_cpu_percent
+    unit: '%'
+    query: 'elasticsearch_process_cpu_percent{instance="$instance"}'
+    panel: true
+    panel_title: Elasticsearch Process CPU
+    panel_id: es-process-cpu-percent
+  - name: os_cpu_percent
+    unit: '%'
+    query: 'elasticsearch_os_cpu_percent{instance="$instance"}'
+breaker_queries: &breaker_queries
+  - name: breaker_trips_10m
+    query: 'increase(elasticsearch_breakers_tripped{instance="$instance"}[10m])'
+    panel: true
+    panel_title: Circuit Breaker Trips in 10m
+    panel_id: es-breaker-trips-10m
+  - name: breaker_estimated_bytes
+    unit: B
+    query: 'elasticsearch_breakers_estimated_size_bytes{instance="$instance"}'
+  - name: breaker_limit_bytes
+    unit: B
+    query: 'elasticsearch_breakers_limit_size_bytes{instance="$instance"}'
+  - name: breaker_estimate_to_limit_pct
+    unit: '%'
+    query: >-
+      (100 * (elasticsearch_breakers_estimated_size_bytes{instance="$instance"} / elasticsearch_breakers_limit_size_bytes{instance="$instance"}))
+      and (elasticsearch_breakers_limit_size_bytes{instance="$instance"} > 0)
+  - name: breaker_overhead_multiplier
+    query: 'elasticsearch_breakers_overhead{instance="$instance"}'
+thread_pool_queries: &thread_pool_queries
+  - name: pool_rejected_tasks_per_second
+    unit: tasks/s
+    query: >-
+      rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+  - name: pool_completed_tasks_per_second
+    unit: tasks/s
+    query: >-
+      rate(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+  - name: pool_rejection_ratio_pct
+    unit: '%'
+    query: >-
+      (100 * (rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+      / (rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+      + rate(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m]))))
+      and ((rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+      + rate(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m]))
+      > 0)
+    panel: true
+    panel_title: Rejected / (Completed + Rejected) Tasks
+    panel_id: es-pool-rejection-ratio-pct
+  - name: pool_task_volume_5m
+    query: >-
+      increase(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+      + increase(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+  - name: pool_queue_tasks
+    unit: tasks
+    query: 'elasticsearch_thread_pool_queue_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}'
+    panel: true
+    panel_title: Thread Pool Queue by Node and Pool
+    panel_id: es-pool-queue-tasks
+  - name: pool_active_threads
+    query: 'elasticsearch_thread_pool_active_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}'
+  - name: pool_current_threads
+    query: 'elasticsearch_thread_pool_threads_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}'
+node_workload_queries: &node_workload_queries
+  - name: node_search_operations_per_second
+    unit: operations/s
+    query: 'rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m])'
+    panel: true
+    panel_title: Search Shard Operation Rate by Node
+    panel_id: es-node-search-operations-per-second
+  - name: node_search_rate_30m_earlier
+    unit: operations/s
+    query: 'rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m] offset 30m)'
+  - name: node_index_operations_per_second
+    unit: operations/s
+    query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+    panel: true
+    panel_title: Index Operation Rate by Node
+    panel_id: es-node-index-operations-per-second
+  - name: node_index_rate_30m_earlier
+    unit: operations/s
+    query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m] offset 30m)'
+  - name: node_search_mean_operation_seconds
+    unit: s/operation
+    query: >-
+      (rate(elasticsearch_indices_search_query_time_seconds{instance="$instance"}[5m]) / rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m]))
+      and (rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m]) > 0)
+  - name: node_index_mean_operation_seconds
+    unit: s/operation
+    query: >-
+      (rate(elasticsearch_indices_indexing_index_time_seconds_total{instance="$instance"}[5m]) / rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m]))
+      and (rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m]) > 0)
+storage_activity_queries: &storage_activity_queries
+  - name: filesystem_device_read_bytes_per_second
+    unit: B/s
+    query: '1024 * rate(elasticsearch_filesystem_io_stats_device_read_size_kilobytes_sum{instance="$instance"}[5m])'
+  - name: filesystem_device_write_bytes_per_second
+    unit: B/s
+    query: '1024 * rate(elasticsearch_filesystem_io_stats_device_write_size_kilobytes_sum{instance="$instance"}[5m])'
+  - name: merges_in_progress
+    query: 'elasticsearch_indices_merges_current{instance="$instance"}'
+  - name: merge_working_bytes
+    unit: B
+    query: 'elasticsearch_indices_merges_current_size_in_bytes{instance="$instance"}'
+  - name: merge_throttled_seconds_per_second
+    unit: s/s
+    query: 'rate(elasticsearch_indices_merges_total_throttled_time_seconds_total{instance="$instance"}[5m])'
+  - name: indexing_throttled_seconds_per_second
+    unit: s/s
+    query: 'rate(elasticsearch_indices_indexing_throttle_time_seconds_total{instance="$instance"}[5m])'
+  - name: node_translog_bytes
+    unit: B
+    query: 'elasticsearch_indices_translog_size_in_bytes{instance="$instance"}'
+cluster_task_queries: &cluster_task_queries
+  - name: cluster_task_max_wait_seconds
+    unit: s
+    query: 'elasticsearch_cluster_health_task_max_waiting_in_queue_millis{instance="$instance"} / 1000'
+    panel: true
+    panel_title: Longest Pending Cluster Task Wait
+    panel_id: es-cluster-task-max-wait-seconds
+  - name: cluster_pending_tasks
+    unit: tasks
+    query: 'elasticsearch_cluster_health_number_of_pending_tasks{instance="$instance"}'
+    panel: true
+    panel_title: Pending Cluster Management Tasks
+    panel_id: es-cluster-pending-tasks
+  - name: cluster_in_flight_shard_fetches
+    query: 'elasticsearch_cluster_health_number_of_in_flight_fetch{instance="$instance"}'
+  - name: cluster_task_wait_peak_30m_seconds
+    unit: s
+    query: 'max_over_time(elasticsearch_cluster_health_task_max_waiting_in_queue_millis{instance="$instance"}[30m])
+      / 1000'
+index_storage_queries: &index_storage_queries
+  - name: largest_indices_all_copies_bytes
+    unit: B
+    query: 'topk(10, elasticsearch_indices_store_size_bytes_total{instance="$instance"})'
+  - name: largest_primary_index_growth_1h_bytes
+    unit: B
+    query: 'topk(10, delta(elasticsearch_indices_store_size_bytes_primary{instance="$instance"}[1h]))'
+  - name: largest_stored_shard_copies_bytes
+    unit: B
+    query: 'topk(10, elasticsearch_indices_shards_store_size_in_bytes{instance="$instance"})'
+  - name: reported_read_only_indices
+    query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}'
+common_alerts:
+  - name: ElasticsearchMetricsCollectionFailed
+    patterns:
+      - ElasticsearchMetricsCollectionFailed
+      - Elasticsearch metric collection is failing
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the failing collector and the extent of lost visibility
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P1 rule requires
+          scrape_success == 0 for 2 minutes. Read the collector label to identify the failed collection
+          family. Success from other collectors demonstrates only that those families are still reporting.
+          If no success series exists for 5 minutes, report a missing collection stream; that is additional
+          evidence, not a reproduction of the zero-valued alert. A visibility incident does not establish
+          that Elasticsearch is down.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Collector status, freshness and coverage for the alerting exporter.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the failure and measure its recent frequency.
+            params:
+              queries:
+                - name: metrics_collection_failed_rule_condition
+                  query: 'elasticsearch_scrape_success{instance="$instance"} == 0'
+                - name: metrics_collection_failed_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_scrape_success{instance="$instance"})'
+                - name: metrics_collection_failed_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_scrape_success{instance="$instance"}[5m])'
+                - name: collector_success_changes_30m
+                  query: 'changes(elasticsearch_scrape_success{instance="$instance"}[30m])'
+                - name: collector_duration_seconds
+                  unit: s
+                  query: 'elasticsearch_scrape_duration_seconds{instance="$instance"}'
+                - name: collector_duration_peak_15m_seconds
+                  unit: s
+                  query: 'max_over_time(elasticsearch_scrape_duration_seconds{instance="$instance"}[15m])'
+      - step: 2
+        title: Compare cluster-information retrieval with the remaining evidence streams
+        description: >-
+          clusterinfo_up and its retrieval timestamps describe cluster-information collection only; they
+          are not application health probes and may update on a separate schedule. Ignore timestamp values
+          of zero (no recorded event). An increasing retrieval-failure timestamp and overdue success support
+          a broader exporter-to-ES collection problem. A single failed collector while health and node
+          samples remain fresh supports a partial collection failure. Rising scrape duration before failures
+          is consistent with slow collection or timeout, but cannot prove a timeout. All series stale
+          means visibility is lost; it cannot distinguish VM ingestion, exporter, network or database
+          failure.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Cluster-information retrieval history and exporter identity.
+            params:
+              queries:
+                - name: clusterinfo_up
+                  query: 'elasticsearch_clusterinfo_up{instance="$instance"}'
+                - name: clusterinfo_last_success_age_seconds
+                  unit: s
+                  query: >-
+                    (time() - elasticsearch_clusterinfo_last_retrieval_success_ts{instance="$instance"})
+                    and (elasticsearch_clusterinfo_last_retrieval_success_ts{instance="$instance"} > 0)
+                - name: clusterinfo_last_failure_timestamp
+                  unit: unix_seconds
+                  query: 'elasticsearch_clusterinfo_last_retrieval_failure_ts{instance="$instance"}'
+                - name: cluster_health_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_cluster_health_status{instance="$instance"})'
+                - name: node_uptime_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_jvm_uptime_seconds{instance="$instance"})'
+                - name: exporter_build_identity
+                  query: 'elasticsearch_exporter_build_info{instance="$instance"}'
+      - step: 3
+        title: Describe the last observed database state without filling the collection gap
+        description: >-
+          Use only fresh successful collector outputs for current impact. Historical status and uptime
+          establish the last observed state and must carry their timestamps. Even fresh green cluster
+          health means shards are assigned; it is not proof that all client traffic succeeds. Separate
+          the verified monitoring failure from any separately observed shard or node problem. VM cannot
+          identify the exact TLS/authentication/HTTP/parse error. State which collector failed and request
+          that error text from the monitoring owner as the missing evidence; no additional tool is executed
+          by this runbook.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Last observed cluster state and node activity in the incident window.
+            params:
+              queries:
+                - name: collection_incident_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+                - name: collection_incident_cluster_nodes
+                  query: 'elasticsearch_cluster_health_number_of_nodes{instance="$instance"}'
+                - name: collection_incident_node_uptime
+                  unit: s
+                  query: 'elasticsearch_jvm_uptime_seconds{instance="$instance"}'
+                - name: collection_incident_index_rate
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+    remediation:
+      - action: repair_the_confirmed_collection_fault
+        description: >-
+          Ask the monitoring owner to inspect the failed collector's exporter error and fix the named
+          endpoint, CA trust, credential permission, API compatibility or timeout issue. Use the collected
+          timestamps to narrow that investigation. Do not select an auth/network diagnosis or restart
+          Elasticsearch solely from scrape_success == 0.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P1 to the exporter/monitoring owner. Involve the Elasticsearch owner if independent fresh metrics
+      show a database impact. If all collection is unavailable, report impact unknown and identify the
+      alert families that are temporarily blind.
+    follow_up:
+      - >-
+        Require the affected collector to report success continuously for at least 5 minutes with normal
+        sample counts and fresh dependent metrics.
+      - >-
+        Re-evaluate the database alerts after telemetry returns. Add or verify the platform's independent
+        missing-target monitoring; this rule does not detect an exporter that disappears without emitting
+        zero.
+  - name: ElasticsearchClusterRed
+    patterns:
+      - ElasticsearchClusterRed
+      - Elasticsearch primary shards are unavailable
+    priority: P0
+    diagnostic_steps:
+      - step: 1
+        title: Confirm primary-shard unavailability at the incident time
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P0 rule requires
+          red == 1 for 1 minute. Red establishes at least one unavailable primary shard, not permanent
+          data loss or failure of every index. Read the status alongside primary and total active shards.
+          The unassigned count includes both primary and replica shards; never report it as the number
+          of missing primaries.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Check collection integrity before trusting cluster status.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the red condition with its sample coverage.
+            params:
+              queries:
+                - name: cluster_red_rule_condition
+                  query: 'elasticsearch_cluster_health_status{instance="$instance",color="red"} == 1'
+                - name: cluster_red_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_cluster_health_status{instance="$instance",color="red"})'
+                - name: cluster_red_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_cluster_health_status{instance="$instance",color="red"}[5m])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Quantify shard impact and whether initialization or relocation is changing.
+            params:
+              queries: *cluster_health_queries
+      - step: 2
+        title: Check whether loss of cluster membership preceded the red state
+        description: >-
+          Compare authoritative cluster node/data-node counts before and during the incident. Falling
+          membership before red supports node departure as a contributor. Low uptime and counter resets
+          when the node returns are consistent with a restart; they do not identify OOM, a deployment
+          or its cause. A previously seen node missing only from node-stat results may be an exporter
+          coverage change. Corroborate it with cluster membership and collector success. The 1h maximum
+          is an observed high-water mark, not a configured desired count. Stable counts do not exclude
+          replacement of one node by another.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Membership history and per-node uptime evidence.
+            params:
+              queries: *cluster_membership_queries
+      - step: 3
+        title: Look for disk or JVM pressure that coincides with the loss of allocation
+        description: >-
+          Compare each node against its own pre-onset baseline and reporting peers. A fall in available
+          disk followed by red supports capacity-related allocation pressure, but the fixed 85/95 percent
+          alert thresholds are not measured cluster watermarks. Heap and GC pressure before a membership
+          drop support a resource-pressure hypothesis; they do not prove an OOM or GC-driven eviction.
+          If these remain normal with adequate coverage, mark those hypotheses less supported and leave
+          the allocation reason unresolved.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Disk capacity by node and data path.
+            params:
+              queries: *disk_capacity_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Heap, GC and CPU evidence by node.
+            params:
+              queries: *node_memory_queries
+      - step: 4
+        title: Separate ongoing recovery from stalled recovery and state the evidence gap
+        description: >-
+          Look for unassigned shards falling, active primaries rising and membership recovering across
+          successive samples. Initializing/relocating > 0 alone is activity, not proof of progress. Growing
+          management wait may be delaying allocation. Node-level workload indicates observed internal
+          operations and cannot establish success for unavailable shards. Metrics do not identify the
+          exact unassigned primary, allocation decider, corruption or validity of a shard copy. Report
+          those as unknown and escalate with the evidence timeline; never infer no_valid_shard_copy or
+          recommend accepting data loss.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Cluster-management backlog associated with recovery.
+            params:
+              queries: *cluster_task_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Observed search and indexing activity during the incident.
+            params:
+              queries:
+                - name: red_search_operations_per_second
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m])'
+                - name: red_index_operations_per_second
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+    remediation:
+      - action: restore_confirmed_missing_capacity
+        description: >-
+          If membership fell, ask the Elasticsearch/platform owner to recover the missing node or its
+          capacity after checking the underlying host/storage fault. If disk pressure is evidenced, restore
+          usable capacity. Exact allocation repair requires the owner's allocation evidence; the runbook
+          does not choose forced allocation or destructive recovery.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      Immediate P0 escalation to the Elasticsearch and platform owners. Include cluster/instance labels,
+      the red onset, active-primary/unassigned counts, membership changes and the best-supported contributing
+      condition. Unassigned primary data is currently unavailable; whether it is recoverable is not determined
+      by these metrics.
+    follow_up:
+      - >-
+        Require fresh red == 0 with recovered primary availability for at least 10 minutes; if yellow
+        remains, continue the replica investigation rather than declaring full recovery.
+      - >-
+        For complete cluster recovery require green and zero unassigned shards with stable membership.
+        The application owner must separately verify writes/searches against affected data; these metrics
+        cannot prove end-to-end recovery.
+  - name: ElasticsearchClusterYellow
+    patterns:
+      - ElasticsearchClusterYellow
+      - Elasticsearch replica shards remain unavailable
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm replica unavailability and reduced redundancy
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule requires
+          yellow == 1 for 10 minutes. Primaries are assigned but some replicas are unavailable. Quantify
+          the unassigned count and how it changes; do not describe yellow as total database downtime.
+          This enabled rule deliberately includes a single data node with replicas configured. A change
+          to red is an escalation, not recovery from yellow.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Check freshness and successful collection.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the yellow condition.
+            params:
+              queries:
+                - name: cluster_yellow_rule_condition
+                  query: 'elasticsearch_cluster_health_status{instance="$instance",color="yellow"} ==
+                    1'
+                - name: cluster_yellow_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_cluster_health_status{instance="$instance",color="yellow"})'
+                - name: cluster_yellow_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_cluster_health_status{instance="$instance",color="yellow"}[5m])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Shard availability and recovery movement.
+            params:
+              queries: *cluster_health_queries
+      - step: 2
+        title: Distinguish a longstanding topology limit from recent lost capacity
+        description: >-
+          Compare the current data-node count with its pre-onset value and inspect observed per-index
+          replica settings. One data node plus positive replicas makes complete replica placement impossible;
+          this explains a topology constraint, but not necessarily every unassigned replica. Even with
+          several data nodes, tiers, filters and awareness can limit eligible nodes. Settings gauges may
+          lack cluster labels; correlate through the scoped exporter and their index labels, not a many-to-many
+          join. Missing settings mean topology cannot be confirmed. Node-count loss or recent uptime changes
+          support a recent capacity event. A configured number_of_replicas is per primary shard, not a
+          count of cluster-wide replica shards.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Membership change and observed node restarts.
+            params:
+              queries: *cluster_membership_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Configured per-index shard and replica counts, preserving index labels.
+            params:
+              queries:
+                - name: index_configured_replicas
+                  query: 'elasticsearch_indices_settings_replicas{instance="$instance"}'
+                - name: index_configured_primary_shards
+                  query: 'elasticsearch_indices_settings_shards{instance="$instance"}'
+      - step: 3
+        title: Evaluate disk pressure and whether allocation is making progress
+        description: >-
+          If disk usage rose before yellow and free space is scarce across peers, record capacity pressure
+          as a likely contributor. The actual allocation decision, tier eligibility and watermarks are
+          unavailable. Falling unassigned counts across fresh samples support recovery; initializing or
+          relocating counts alone do not. Delayed-unassigned shards and recent node loss support delayed
+          reallocation. Increasing management wait supports a separate control-plane backlog. A persistent
+          yellow state with no supporting cause requires the owner to supply allocation reasoning; leave
+          the cause unconfirmed.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Disk capacity and recent net changes.
+            params:
+              queries: *disk_capacity_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Cluster-management delays that may impede allocation.
+            params:
+              queries: *cluster_task_queries
+    remediation:
+      - action: restore_replica_capacity
+        description: >-
+          If a node was lost or disk capacity is insufficient, restore eligible capacity. If this is an
+          intentional single-node environment, discuss the accepted redundancy design with its owner.
+          Reducing replicas trades away protection and requires that decision; do not recommend it merely
+          to clear the alert. Allocation-setting changes need the owner's evidence.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch owner while only replicas are unavailable. Escalate urgently if red appears,
+      more data nodes leave, or an additional observed incident threatens the remaining copies.
+    follow_up:
+      - >-
+        Require green, zero unassigned shards and stable membership on fresh samples for at least 10 minutes,
+        or document the owner's explicitly accepted single-node redundancy design with a separately reviewed
+        alert policy.
+      - >-
+        Record whether the issue was a new loss of capacity or a pre-existing placement constraint; do
+        not label a longstanding yellow baseline a new outage.
+  - name: ElasticsearchDiskSpaceLow
+    patterns:
+      - ElasticsearchDiskSpaceLow
+      - Elasticsearch data disk space is running low
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm available capacity on the exact firing node and filesystem
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This rule requires used
+          capacity above 85% and below 95% for 10 minutes. The percentage is 100 * (1 - available / size),
+          not physical bytes used calculated from free space. Retain name, mount and path; two data paths
+          may refer to one filesystem and must not be added. Nonpositive capacity is excluded. Inspect
+          available bytes as well as percentage. At 95% the warning condition clears and critical waits
+          for its own 2-minute hold; warning resolution at that transition is not recovery.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Verify successful collection and fresh evidence.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the exact capacity rule and check denominator freshness.
+            params:
+              queries:
+                - name: disk_space_low_rule_condition
+                  query: >-
+                    (1 - elasticsearch_filesystem_data_available_bytes{instance="$instance"} / elasticsearch_filesystem_data_size_bytes{instance="$instance"})
+                    > 0.85
 
-```bash
-curl -s "http://$HOST:9200/_cluster/health?pretty"
-```
+                    and
 
-## ElasticsearchClusterRed
+                    (1 - elasticsearch_filesystem_data_available_bytes{instance="$instance"} / elasticsearch_filesystem_data_size_bytes{instance="$instance"})
+                    < 0.95
 
-Primary shards are missing — DATA UNAVAILABLE. P0. Find the unallocated shards:
+                    and
 
-```bash
-curl -s "http://$HOST:9200/_cluster/allocation/explain?pretty"
-curl -s "http://$HOST:9200/_cat/shards?v" | grep UNASSIGNED
-```
+                    elasticsearch_filesystem_data_size_bytes{instance="$instance"} > 0
+                - name: disk_space_low_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_filesystem_data_available_bytes{instance="$instance"})'
+                - name: disk_space_low_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_filesystem_data_available_bytes{instance="$instance"}[5m])'
+                - name: low_disk_capacity_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_filesystem_data_size_bytes{instance="$instance"})'
+          - tool_id: tool.query_metrics
+            description: >-
+              Capacity, available bytes and net change by node/path.
+            params:
+              queries: *disk_capacity_queries
+      - step: 2
+        title: Find whether index growth, shard movement or merge work coincided with the fill
+        description: >-
+          Compare the disk trend with candidate index and shard sizes, merge activity and translog bytes.
+          Negative available_change_1h means less space available; a capacity change invalidates simple
+          growth comparisons. Index store bytes include only the represented index storage, not all files
+          on the mount, and the all-copies series already includes replicas. Net primary-store growth
+          can reflect indexing, merges, deletion or changed collection coverage. Top-ten indices are candidates
+          across this ES target, not necessarily located on the firing disk. Shard rows may carry a node
+          identifier; do not equate that to name without a verified mapping. High device throughput alone
+          cannot prove I/O saturation or latency, and large store size alone cannot prove unexpected growth.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Largest represented indices/shards and observed read-only index count.
+            params:
+              queries: *index_storage_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Disk activity, merge pressure and translog size.
+            params:
+              queries: *storage_activity_queries
+      - step: 3
+        title: Measure correlated impact and qualify the storage diagnosis
+        description: >-
+          Check shard health and recently failed indexing operations. Red/yellow beginning after free
+          space falls is consistent with allocation pressure; indexing failures are compatible with write
+          problems but do not identify a disk-related error. The supplied read_only_indices metric counts
+          index.blocks.read_only in the exporter implementation; it does not reliably measure read_only_allow_delete
+          flood-stage blocks. Zero does not exclude those blocks. The metric inventory does not establish
+          the effective watermarks, headroom, disk I/O latency, inode exhaustion or storage error. Never
+          state that 95% alone proves a flood-stage block. State whether capacity exhaustion is observed,
+          growth is ongoing and other impact is supported, then list any exact cause still unknown.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Shard health plus recent indexing failure evidence.
+            params:
+              queries:
+                - name: low_disk_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+                - name: low_disk_unassigned_shards
+                  query: 'elasticsearch_cluster_health_unassigned_shards{instance="$instance"}'
+                - name: low_disk_relocating_shards
+                  query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
+                - name: low_disk_index_failures_10m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+    remediation:
+      - action: restore_usable_disk_capacity
+        description: >-
+          Have the storage and Elasticsearch owners expand capacity or remove data only through the approved
+          retention process after verifying which data occupies the affected filesystem. If growth is
+          ongoing, agree on temporary producer backpressure and durable capacity/retention changes. Never
+          delete Elasticsearch data files manually, run a force merge as an emergency space fix, or clear
+          write blocks without resolving the capacity issue and checking the effective settings.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch and storage owners for capacity correction. Escalate if usage reaches the
+      critical threshold, available bytes keep falling rapidly, or shard/write symptoms appear.
+    follow_up:
+      - >-
+        A critical-to-warning transition is improvement, not full capacity recovery. Verify a sustained
+        positive space margin below the configured operational target with the owner; these metrics do
+        not supply that target.
+      - >-
+        For this fixed warning/critical pair, require fresh usage at or below 85% for at least 10 minutes
+        to clear both conditions, or document an explicitly approved alternative capacity target. Confirm
+        available bytes remain stable or improving and associated shard/write symptoms have recovered.
+  - name: ElasticsearchDiskSpaceCritical
+    patterns:
+      - ElasticsearchDiskSpaceCritical
+      - Elasticsearch data disk is critically short of space
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Confirm available capacity on the exact firing node and filesystem
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This rule requires used
+          capacity at least 95% for 2 minutes. The percentage is 100 * (1 - available / size), not physical
+          bytes used calculated from free space. Retain name, mount and path; two data paths may refer
+          to one filesystem and must not be added. Nonpositive capacity is excluded. Inspect available
+          bytes as well as percentage. At 95% the warning condition clears and critical waits for its
+          own 2-minute hold; warning resolution at that transition is not recovery.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Verify successful collection and fresh evidence.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the exact capacity rule and check denominator freshness.
+            params:
+              queries:
+                - name: disk_space_critical_rule_condition
+                  query: >-
+                    (1 - elasticsearch_filesystem_data_available_bytes{instance="$instance"} / elasticsearch_filesystem_data_size_bytes{instance="$instance"})
+                    >= 0.95
 
-Common causes: node permanently lost AND `index.number_of_replicas: 0`. Last-resort recovery: restore from snapshot.
+                    and
 
-## ElasticsearchClusterYellow
+                    elasticsearch_filesystem_data_size_bytes{instance="$instance"} > 0
+                - name: disk_space_critical_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_filesystem_data_available_bytes{instance="$instance"})'
+                - name: disk_space_critical_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_filesystem_data_available_bytes{instance="$instance"}[5m])'
+                - name: critical_disk_capacity_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_filesystem_data_size_bytes{instance="$instance"})'
+          - tool_id: tool.query_metrics
+            description: >-
+              Capacity, available bytes and net change by node/path.
+            params:
+              queries: *disk_capacity_queries
+      - step: 2
+        title: Find whether index growth, shard movement or merge work coincided with the fill
+        description: >-
+          Compare the disk trend with candidate index and shard sizes, merge activity and translog bytes.
+          Negative available_change_1h means less space available; a capacity change invalidates simple
+          growth comparisons. Index store bytes include only the represented index storage, not all files
+          on the mount, and the all-copies series already includes replicas. Net primary-store growth
+          can reflect indexing, merges, deletion or changed collection coverage. Top-ten indices are candidates
+          across this ES target, not necessarily located on the firing disk. Shard rows may carry a node
+          identifier; do not equate that to name without a verified mapping. High device throughput alone
+          cannot prove I/O saturation or latency, and large store size alone cannot prove unexpected growth.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Largest represented indices/shards and observed read-only index count.
+            params:
+              queries: *index_storage_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Disk activity, merge pressure and translog size.
+            params:
+              queries: *storage_activity_queries
+      - step: 3
+        title: Measure correlated impact and qualify the storage diagnosis
+        description: >-
+          Check shard health and recently failed indexing operations. Red/yellow beginning after free
+          space falls is consistent with allocation pressure; indexing failures are compatible with write
+          problems but do not identify a disk-related error. The supplied read_only_indices metric counts
+          index.blocks.read_only in the exporter implementation; it does not reliably measure read_only_allow_delete
+          flood-stage blocks. Zero does not exclude those blocks. The metric inventory does not establish
+          the effective watermarks, headroom, disk I/O latency, inode exhaustion or storage error. Never
+          state that 95% alone proves a flood-stage block. State whether capacity exhaustion is observed,
+          growth is ongoing and other impact is supported, then list any exact cause still unknown.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Shard health plus recent indexing failure evidence.
+            params:
+              queries:
+                - name: critical_disk_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+                - name: critical_disk_unassigned_shards
+                  query: 'elasticsearch_cluster_health_unassigned_shards{instance="$instance"}'
+                - name: critical_disk_relocating_shards
+                  query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
+                - name: critical_disk_index_failures_10m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+    remediation:
+      - action: restore_usable_disk_capacity
+        description: >-
+          Have the storage and Elasticsearch owners expand capacity or remove data only through the approved
+          retention process after verifying which data occupies the affected filesystem. If growth is
+          ongoing, agree on temporary producer backpressure and durable capacity/retention changes. Never
+          delete Elasticsearch data files manually, run a force merge as an emergency space fix, or clear
+          write blocks without resolving the capacity issue and checking the effective settings.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P1 to the Elasticsearch and storage owners immediately. Include the exact mount/path, available
+      bytes, percent used, 1h net change and any shard/write symptoms. Escalate to the cluster-red P0
+      path if primary unavailability is observed.
+    follow_up:
+      - >-
+        A critical-to-warning transition is improvement, not full capacity recovery. Verify a sustained
+        positive space margin below the configured operational target with the owner; these metrics do
+        not supply that target.
+      - >-
+        For this fixed warning/critical pair, require fresh usage at or below 85% for at least 10 minutes
+        to clear both conditions, or document an explicitly approved alternative capacity target. Confirm
+        available bytes remain stable or improving and associated shard/write symptoms have recovered.
+  - name: ElasticsearchJVMHeapHigh
+    patterns:
+      - ElasticsearchJVMHeapHigh
+      - Elasticsearch JVM heap usage remains high
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm sustained heap pressure on the firing node
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule requires
+          heap used / max > 85% for 10 minutes with a positive maximum. It is total heap usage, not only
+          old-generation usage. Select the alert's name series and compare peers. Do not average all nodes
+          together: that can hide one saturated node. A short post-GC dip or a node restart can clear
+          the signal without fixing the workload.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Check freshness and collection coverage.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the heap rule and verify the configured maximum is fresh.
+            params:
+              queries:
+                - name: j_v_m_heap_high_rule_condition
+                  query: >-
+                    elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"} / elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"}
+                    > 0.85
 
-Replica shards are unassigned. Cluster is functional but has no redundancy.
+                    and
 
-```bash
-curl -s "http://$HOST:9200/_cluster/allocation/explain?pretty"
-```
+                    elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"} > 0
+                - name: j_v_m_heap_high_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"})'
+                - name: j_v_m_heap_high_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"}[5m])'
+                - name: heap_max_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"})'
+                - name: heap_max_changes_1h
+                  query: 'changes(elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"}[1h])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Heap bytes/percent, GC behavior and CPU by node.
+            params:
+              queries: *node_memory_queries
+      - step: 2
+        title: Separate retained memory pressure from transient activity
+        description: >-
+          Inspect the heap sawtooth over time and the old pool where it is exported with a positive maximum.
+          A persistently high trough after GC supports retained memory pressure. GC collections without
+          meaningful heap relief strengthen that hypothesis but cannot prove a leak. GC time/count gives
+          mean reported collection duration, not a maximum pause. Fielddata, caches and segment memory
+          can explain observed contributors, but are not mutually exclusive or a complete heap accounting.
+          Never sum them and claim an exact heap breakdown. Use reported shard counts as layout context,
+          preserving their returned node identifiers; correlate to name only with a verified mapping.
+          Counts alone do not prove too many shards or an exact heap cost per shard. Missing/unsupported
+          pool maxima mean that ratio is unavailable.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Memory contributors and old-generation pressure.
+            params:
+              queries:
+                - name: old_pool_used_pct
+                  unit: '%'
+                  query: >-
+                    (100 * (elasticsearch_jvm_memory_pool_used_bytes{instance="$instance",pool="old"}
+                    / elasticsearch_jvm_memory_pool_max_bytes{instance="$instance",pool="old"})) and (elasticsearch_jvm_memory_pool_max_bytes{instance="$instance",pool="old"}
+                    > 0)
+                - name: node_fielddata_bytes
+                  unit: B
+                  query: 'elasticsearch_indices_fielddata_memory_size_bytes{instance="$instance"}'
+                - name: node_query_cache_bytes
+                  unit: B
+                  query: 'elasticsearch_indices_query_cache_memory_size_bytes{instance="$instance"}'
+                - name: node_request_cache_bytes
+                  unit: B
+                  query: 'elasticsearch_indices_request_cache_memory_size_bytes{instance="$instance"}'
+                - name: node_segment_memory_bytes
+                  unit: B
+                  query: 'elasticsearch_indices_segments_memory_bytes{instance="$instance"}'
+                - name: node_segment_count
+                  query: 'elasticsearch_indices_segments_count{instance="$instance"}'
+                - name: reported_node_shard_count
+                  query: 'elasticsearch_node_shards_total{instance="$instance"}'
+                - name: heap_incident_node_uptime_seconds
+                  unit: s
+                  query: 'elasticsearch_jvm_uptime_seconds{instance="$instance"}'
+      - step: 3
+        title: Check workload changes and memory-protection consequences
+        description: >-
+          Compare search and indexing rates against the incident's pre-onset range. Increased traffic,
+          longer internal operation time and pressure concentrated on one node support workload pressure
+          or imbalance; operation rates alone cannot identify query cost or bulk size. Rising fielddata
+          with fielddata breaker trips is stronger evidence for that specific memory category. A parent
+          breaker is not an additional memory bucket to add to child breakers. Low current breaker estimates
+          after a trip do not invalidate the earlier event. Report whether pressure persists under comparable
+          workload and identify request text, allocation profiles or heap dump details as unavailable.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Workload trend and mean internal operation times.
+            params:
+              queries: *node_workload_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Named circuit breaker activity and current estimates.
+            params:
+              queries: *breaker_queries
+    remediation:
+      - action: reduce_confirmed_memory_demand
+        description: >-
+          With the owning application team, reduce concurrency or batch size when the evidence supports
+          load-driven pressure; review expensive aggregations or fielddata use when those contributors
+          are observed. Plan shard/workload balancing or capacity changes only after checking the actual
+          topology. Heap sizing requires the node/container memory budget, which this runbook does not
+          establish; do not prescribe a heap increase or blind restart from the percentage alone.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch owner and the team generating the correlated workload. Escalate when breaker/rejection
+      activity persists, membership becomes unstable, or primary-shard availability degrades. Identify
+      OOM or a memory leak as unconfirmed unless separate owner evidence establishes it.
+    follow_up:
+      - >-
+        Require heap at or below 85% on fresh samples for at least 15 minutes under representative traffic,
+        with repeatable post-GC relief and no rising breaker or rejection counters. A traffic pause or
+        restart alone is not a durable fix.
+      - >-
+        Record the heap byte budget and observed contributor/workload changes so the owner can distinguish
+        a capacity issue from a request or shard-layout issue.
+  - name: ElasticsearchCircuitBreakerTripped
+    patterns:
+      - ElasticsearchCircuitBreakerTripped
+      - Elasticsearch is repeatedly rejecting operations to protect memory
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm recent trips for the named breaker
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule requires
+          increase(tripped[10m]) >= 3 to hold for 5 minutes. That is a rolling-window condition; it does
+          not mean three new trips every five minutes. Retain breaker and node name. Read the recent increase,
+          raw counter and resets together: a cumulative nonzero total is historical, while a positive
+          fresh increase supports recent rejection. A counter first appearing after a scrape gap does
+          not reveal when its previously accumulated events happened.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Collection integrity and sample coverage.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Exact trip condition plus recent/reset evidence.
+            params:
+              queries:
+                - name: circuit_breaker_tripped_rule_condition
+                  query: 'increase(elasticsearch_breakers_tripped{instance="$instance"}[10m]) >= 3'
+                - name: circuit_breaker_tripped_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_breakers_tripped{instance="$instance"})'
+                - name: circuit_breaker_tripped_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_breakers_tripped{instance="$instance"}[5m])'
+                - name: breaker_trips_5m
+                  query: 'increase(elasticsearch_breakers_tripped{instance="$instance"}[5m])'
+                - name: breaker_trips_cumulative
+                  query: 'elasticsearch_breakers_tripped{instance="$instance"}'
+                - name: breaker_counter_resets_30m
+                  query: 'resets(elasticsearch_breakers_tripped{instance="$instance"}[30m])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Current estimates, configured limits and overhead by breaker.
+            params:
+              queries: *breaker_queries
+      - step: 2
+        title: Determine whether broad heap pressure or a specific memory category is implicated
+        description: >-
+          A parent trip with sustained heap/GC pressure supports broad memory pressure. A request, fielddata
+          or in-flight-request breaker can trip from the size/concurrency of individual work even when
+          a later heap snapshot is normal. Use the returned breaker name, not a guessed mapping. The estimate/limit
+          percentage is a comparison of exported gauges; overhead and version-specific accounting matter,
+          and it is not a guaranteed prediction of the next trip. Parent and child estimates overlap.
+          A breaker protecting memory is observed; its precise rejected request is not.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Heap/GC/CPU pressure on the same node and reporting peers.
+            params:
+              queries: *node_memory_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Fielddata and indexing-memory context.
+            params:
+              queries:
+                - name: breaker_node_fielddata_bytes
+                  unit: B
+                  query: 'elasticsearch_indices_fielddata_memory_size_bytes{instance="$instance"}'
+                - name: breaker_fielddata_evictions_10m
+                  query: 'increase(elasticsearch_indices_fielddata_evictions{instance="$instance"}[10m])'
+                - name: indexing_pressure_current_bytes
+                  unit: B
+                  query: 'elasticsearch_indexing_pressure_current_all_in_bytes{instance="$instance"}'
+                - name: indexing_pressure_limit_bytes
+                  unit: B
+                  query: 'elasticsearch_indexing_pressure_limit_in_bytes{instance="$instance"}'
+      - step: 3
+        title: Compare workload before and after the trips and qualify client impact
+        description: >-
+          Look for an increase in search/index work before trips and whether trips stopped when demand
+          reduced. Aggregate operation rates do not reveal bulk request size, query clauses or client
+          identity; low rate does not exclude a few expensive operations. Trips establish rejected protected
+          operations, not a count of unique failed HTTP requests or unrecovered documents. If gauges and
+          workload provide no clear explanation, report the named breaker and quantified rejection as
+          confirmed with request-level cause unknown.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Operation rates, comparison windows and mean operation time.
+            params:
+              queries: *node_workload_queries
+    remediation:
+      - action: reduce_the_implicated_request_memory
+        description: >-
+          Ask the application owner to reduce concurrency, bulk size or aggregation demand according to
+          the observed breaker category and obtain the rejected request details. For sustained general
+          heap pressure, follow the JVM investigation. Do not raise breaker limits or clear caches indiscriminately
+          as the default fix; those changes can worsen memory risk or merely hide the symptom.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch and application owners. Escalate if trips continue under normal load, coincide
+      with unstable nodes or prevent essential writes/searches. The exact exception/request must come
+      from owner-provided evidence, not this metric set.
+    follow_up:
+      - >-
+        Require zero new trips over at least a full 10-minute window with continuous successful collection
+        and representative traffic. Verify stable heap and a usable margin in the implicated category.
+      - >-
+        A resolved rolling-window alert can mean events aged out. Confirm counters stopped increasing
+        and ask the producer whether rejected operations recovered.
+  - name: ElasticsearchThreadPoolRejections
+    patterns:
+      - ElasticsearchThreadPoolRejections
+      - Elasticsearch search or write tasks are being rejected
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Reproduce both the rejection ratio and minimum-volume gate
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule uses a 5-minute
+          rejected/(rejected+completed) task-rate ratio > 5%, with at least 100 completed+rejected tasks
+          in that rolling window, and holds for 5 minutes. Preserve type and node name. It measures thread-pool
+          tasks, not distinct HTTP requests. Some requests create work on several shards. A ratio returning
+          no series can reflect zero traffic or missing inputs; use the raw rate and collection evidence
+          to distinguish them. Falling below the volume gate does not prove overload has been fixed.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Collection and freshness checks.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Exact rule including supported pool names and the volume gate.
+            params:
+              queries:
+                - name: thread_pool_rejections_rule_condition
+                  query: >-
+                    (
+                      rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                      /
+                      (
+                        rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                        + rate(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                      )
+                    ) > 0.05
 
-## ElasticsearchNodeLeft
+                    and
 
-A node has dropped from the cluster. Bring it back, or remove it:
-
-```bash
-curl -s "http://$HOST:9200/_nodes?pretty"
-```
-
-## ElasticsearchJVMHeapHigh / ElasticsearchJVMGCDurationHigh
-
-Heap pressure. Common: too many indices/shards, large fielddata, expensive aggregations. Don't increase heap above 32GB (compressed oops boundary).
-
-## ElasticsearchCircuitBreakerTripped
-
-Elasticsearch protected itself from OOM. Look at which breaker tripped (`fielddata`, `request`, `parent`).
-
-## ElasticsearchDiskWatermarkHigh / Flood
-
-Disk usage above 85% / 95%. At flood-stage, indices go read-only.
-
-```bash
-curl -s "http://$HOST:9200/_cat/allocation?v"
-# Reset flood-stage flag after cleanup:
-curl -X PUT "http://$HOST:9200/_all/_settings" \
-  -H 'Content-Type: application/json' \
-  -d '{"index.blocks.read_only_allow_delete": null}'
-```
-
-## ElasticsearchUnassignedShards
-
-```bash
-curl -s "http://$HOST:9200/_cat/shards?v" | grep UNASSIGNED
-curl -s "http://$HOST:9200/_cluster/allocation/explain?pretty"
-# Force allocation (use carefully, can lose data):
-curl -X POST "http://$HOST:9200/_cluster/reroute" -H 'Content-Type: application/json' -d '{
-  "commands": [
-    { "allocate_replica": { "index": "name", "shard": 0, "node": "node-name" } }
-  ]
-}'
-```
-
-## ElasticsearchPendingTasks
-
-Master is overloaded. Reduce churn (fewer index creates/deletes), increase master node resources.
-
-## ElasticsearchSnapshotFailed
-
-```bash
-curl -s "http://$HOST:9200/_snapshot/_status?pretty"
-```
-
-Common causes: object storage unreachable, missing IAM permissions.
-
-## References
-
-- [Elasticsearch cluster health](https://www.elastic.co/guide/en/elasticsearch/reference/current/cluster-health.html)
-- [Sizing and capacity planning](https://www.elastic.co/blog/how-many-shards-should-i-have-in-my-elasticsearch-cluster)
+                    (
+                      increase(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                      + increase(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                    ) >= 100
+                - name: thread_pool_rejections_signal_sample_age_seconds
+                  unit: s
+                  query: >-
+                    time() - timestamp(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"})
+                - name: thread_pool_rejections_signal_samples_5m
+                  query: >-
+                    count_over_time(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[5m])
+                - name: pool_rejection_counter_resets_30m
+                  query: >-
+                    resets(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"}[30m])
+                - name: pool_completed_sample_age_seconds
+                  unit: s
+                  query: >-
+                    time() - timestamp(elasticsearch_thread_pool_completed_count{instance="$instance",type=~"search|search_coordination|search_throttled|write|write_coordination|bulk|index"})
+          - tool_id: tool.query_metrics
+            description: >-
+              Task rates, activity, queue depth and current thread count.
+            params:
+              queries: *thread_pool_queries
+      - step: 2
+        title: Distinguish increased demand from reduced processing capacity
+        description: >-
+          Compare the firing pool with its own pre-onset rate and peer nodes. Rising queue/rejections
+          with higher operation rates supports increased demand. Similar demand but rising internal operation
+          time with heap/GC or CPU pressure supports reduced service capacity. The current threads count
+          is not the configured maximum and queue_count is not queue capacity, so do not invent an occupancy
+          percentage. A zero sampled queue can miss bursts between scrapes. Search/write pool activity
+          can be imbalanced across nodes, but proving a particular hot shard requires a valid node-to-shard
+          mapping.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              CPU, heap and GC conditions that may reduce processing capacity.
+            params:
+              queries: *node_memory_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Workload change and mean internal operation duration.
+            params:
+              queries: *node_workload_queries
+      - step: 3
+        title: Check storage and merge activity before attributing the bottleneck
+        description: >-
+          For write-related pools, correlate merge work, throttled time and disk activity with the onset
+          of queue growth. For search pools, use the same data only when timing and workload make it relevant.
+          Throughput is not disk utilization or latency; VM cannot prove a slow volume from these counters
+          alone. Conclude either evidenced demand growth, a supported resource bottleneck hypothesis,
+          or unconfirmed capacity loss. Exact slow requests, clients and hot-thread stacks are not in
+          the supplied metrics.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Storage and merge activity supporting the bottleneck assessment.
+            params:
+              queries: *storage_activity_queries
+    remediation:
+      - action: reduce_overload_at_its_source
+        description: >-
+          Coordinate bounded concurrency, smaller write batches when appropriate, and backoff with the
+          affected workload owner. Correct the evidenced CPU/memory/storage constraint or traffic imbalance
+          after owner verification. Do not treat a larger thread-pool queue as a capacity fix; it can
+          increase waiting and memory use without improving throughput.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch owner and the application owner for the implicated search or write pool.
+      Raise urgency for sustained essential-work rejection or associated cluster/node availability problems;
+      do not infer an exact client error rate from the pool-task ratio.
+    follow_up:
+      - >-
+        Verify rejection ratio at or below 5% for at least 10 minutes under comparable workload, queue
+        drainage and stable completed throughput. Prefer zero new rejections. A quiet workload or volume
+        below 100 tasks is insufficient alone.
+      - >-
+        Ask the workload owner to confirm retry recovery and end-user latency, which these node-level
+        operation metrics do not measure.
+  - name: ElasticsearchIndexingFailures
+    patterns:
+      - ElasticsearchIndexingFailures
+      - Elasticsearch is recording indexing failures
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Identify affected index series and establish whether failures are still occurring
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule requires
+          increase(index_failed_total[10m]) >= 5 to hold for 5 minutes. Select the firing index among
+          the returned series. The index-level total covers the exporter's represented shard copies; it
+          is not a deduplicated count of client requests or permanently lost documents. Raw totals are
+          lifetime evidence only. Index deletion/recreation, shard movement, resets and collection gaps
+          can change counter continuity. Record resets and creation time; do not interpret a new or missing
+          series as success.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Verify collection quality before judging failure counts.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Exact failure rule and event continuity.
+            params:
+              queries:
+                - name: indexing_failures_rule_condition
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])
+                    >= 5'
+                - name: indexing_failures_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"})'
+                - name: indexing_failures_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[5m])'
+                - name: index_failed_operations_10m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+                  panel: true
+                  panel_title: Failed Index Operations in 10m
+                  panel_id: es-index-failed-operations-10m
+                - name: index_failed_operations_5m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[5m])'
+                - name: index_failed_operations_cumulative
+                  query: 'elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}'
+                - name: index_failure_counter_resets_30m
+                  query: 'resets(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[30m])'
+                - name: index_creation_timestamp_seconds
+                  unit: unix_seconds
+                  query: 'elasticsearch_indices_settings_creation_timestamp_seconds{instance="$instance"}'
+      - step: 2
+        title: Compare the failing indices with their workload and successful collection
+        description: >-
+          Report which indices show fresh increases and whether the issue is isolated or widespread within
+          this target. Compare per-index indexing operation rates and mean duration with the preceding
+          window. No new failures while traffic is zero means idle, not verified recovery. Avoid constructing
+          a failure percentage from index_total: the supplied inventory does not establish a consistent
+          attempted-request denominator or coverage of all failure paths. Document counts include internal
+          Lucene semantics and do not validate every expected application document. A rate increase is
+          supporting evidence for load, not proof of a specific document error.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Index-specific workload and operation-time evidence, retaining all index labels.
+            params:
+              queries:
+                - name: index_operation_rate
+                  unit: operations/s
+                  query: 'rate(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[5m])'
+                - name: index_operation_rate_30m_earlier
+                  unit: operations/s
+                  query: 'rate(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[5m]
+                    offset 30m)'
+                - name: index_mean_operation_seconds
+                  unit: s/operation
+                  query: >-
+                    (rate(elasticsearch_index_stats_indexing_index_time_seconds_total{instance="$instance"}[5m])
+                    / rate(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[5m]))
+                    and (rate(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[5m])
+                    > 0)
+                - name: index_operations_in_progress
+                  query: 'elasticsearch_index_stats_index_current{instance="$instance"}'
+                - name: index_current_stats_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_index_stats_indexing_index_total{instance="$instance"})'
+      - step: 3
+        title: Look for corroborating availability or resource symptoms
+        description: >-
+          Correlate failure onset with red/yellow status, low disk capacity, breaker trips and write-pool
+          rejection. These indicate concurrent conditions and do not establish which path incremented
+          this counter. Some requests can fail before reaching the indexed operation accounting. Node-level
+          signals cannot be assigned to the failing index without a valid mapping. A healthy cluster with
+          normal pressure leaves mapping/validation/conflict or other request errors as possibilities,
+          not diagnoses. The read-only count does not prove or exclude flood-stage read_only_allow_delete
+          blocks.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Availability and capacity evidence for the same exporter target.
+            params:
+              queries:
+                - name: index_failure_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+                - name: index_failure_data_disk_used_pct
+                  unit: '%'
+                  query: >-
+                    (100 * (1 - elasticsearch_filesystem_data_available_bytes{instance="$instance"} /
+                    elasticsearch_filesystem_data_size_bytes{instance="$instance"})) and (elasticsearch_filesystem_data_size_bytes{instance="$instance"}
+                    > 0)
+                - name: index_failure_heap_used_pct
+                  unit: '%'
+                  query: >-
+                    (100 * (elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap"} / elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"}))
+                    and (elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap"} > 0)
+                - name: index_failure_breaker_trips_10m
+                  query: 'increase(elasticsearch_breakers_tripped{instance="$instance"}[10m])'
+                - name: index_failure_write_rejections_10m
+                  query: 'increase(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"write|write_coordination|bulk|index"}[10m])'
+                - name: index_failure_reported_read_only_indices
+                  query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}'
+      - step: 4
+        title: State what is confirmed and whether data recovery can be established
+        description: >-
+          Conclude with failure count/window, affected index labels, workload level, correlated pressure
+          and confidence. The metric does not contain per-item bulk errors, failed payloads or retry/dead-letter
+          outcomes. A zero subsequent increase cannot prove failed documents were recovered. If no error
+          reason is available, explicitly state indexing failures confirmed; exact cause and permanent
+          data loss unconfirmed. Ask the producer/Elasticsearch owner for the corresponding item error
+          and recovery status; no log or live API call is made by this runbook.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Check recent failure activity and concurrent represented indexing work.
+            params:
+              queries:
+                - name: index_recovery_failures_10m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+                - name: index_recovery_operations_10m
+                  query: 'increase(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[10m])'
+    remediation:
+      - action: repair_the_verified_error_and_recover_failed_items
+        description: >-
+          Use the producer's actual per-item error to choose document/mapping correction or the appropriate
+          availability/capacity fix. Retry transient failures with bounded backoff; replay or correct
+          items only under the application's idempotency and recovery policy. Do not change mappings,
+          delete indices or assert data loss based solely on this counter. Resource remediation is justified
+          only when its relationship is verified.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the indexing producer and Elasticsearch owners. Escalate if critical ingestion is blocked
+      or primary availability fails. Include exact index labels, time windows, sample/reset caveats and
+      the missing item-error/retry evidence.
+    follow_up:
+      - >-
+        Require no new failures for at least 10 minutes with continuous collection and representative
+        indexing traffic. Keep idle and recovered as distinct states.
+      - >-
+        Obtain producer confirmation of retry/dead-letter recovery and document reconciliation before
+        claiming that no data gaps remain.
+  - name: ElasticsearchClusterTasksDelayed
+    patterns:
+      - ElasticsearchClusterTasksDelayed
+      - Elasticsearch cluster management tasks are waiting too long
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm cluster-management queue delay and its duration
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster and object labels wherever those labels exist. Check collector status, signal
+          sample age and sample counts before interpreting any value. Missing, stale, failed or truncated
+          evidence is unknown, never zero. Evaluate the condition at the incident time as well as at the
+          latest time; an instant true result alone does not prove the rule's for duration. Use the range
+          of the signal to separate the original incident from present recovery. This P2 rule requires
+          the longest pending cluster-task wait to exceed 60 seconds for 5 minutes. The exported value
+          is milliseconds and is divided by 1000. It measures waiting in the cluster management queue,
+          not execution time, search latency or the search/write thread-pool queue. Compare both pending-task
+          count and oldest wait: even one blocked task can matter. A falling maximum can mean the oldest
+          task left while others remain.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Collection freshness and sample coverage.
+            params:
+              queries: *collection_quality_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the exact queue-delay condition.
+            params:
+              queries:
+                - name: cluster_tasks_delayed_rule_condition
+                  query: 'elasticsearch_cluster_health_task_max_waiting_in_queue_millis{instance="$instance"}
+                    / 1000 > 60'
+                - name: cluster_tasks_delayed_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_cluster_health_task_max_waiting_in_queue_millis{instance="$instance"})'
+                - name: cluster_tasks_delayed_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_cluster_health_task_max_waiting_in_queue_millis{instance="$instance"}[5m])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Queue length, age and shard-information activity.
+            params:
+              queries: *cluster_task_queries
+      - step: 2
+        title: Check master-eligible node pressure without claiming election identity
+        description: >-
+          Use es_master_node=true only as a master-eligible role indicator in this exporter schema. It
+          does not identify the elected master. Compare CPU, heap, GC and uptime among the returned eligible
+          nodes. If role labels are absent or collection excludes those nodes, report this evidence unavailable;
+          do not substitute a random data node. Pressure beginning before the backlog on an eligible node
+          supports a hypothesis, but cannot prove it was the elected master or that CPU/GC caused delayed
+          cluster-state processing.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Resource evidence on observed master-eligible nodes only.
+            params:
+              queries:
+                - name: master_eligible_heap_used_pct
+                  unit: '%'
+                  query: >-
+                    (100 * (elasticsearch_jvm_memory_used_bytes{instance="$instance",area="heap",es_master_node="true"}
+                    / elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap",es_master_node="true"}))
+                    and (elasticsearch_jvm_memory_max_bytes{instance="$instance",area="heap",es_master_node="true"}
+                    > 0)
+                - name: master_eligible_process_cpu_percent
+                  unit: '%'
+                  query: 'elasticsearch_process_cpu_percent{instance="$instance",es_master_node="true"}'
+                - name: master_eligible_gc_seconds_per_second
+                  unit: s/s
+                  query: 'rate(elasticsearch_jvm_gc_collection_seconds_sum{instance="$instance",es_master_node="true"}[5m])'
+                - name: master_eligible_node_uptime_seconds
+                  unit: s
+                  query: 'elasticsearch_jvm_uptime_seconds{instance="$instance",es_master_node="true"}'
+      - step: 3
+        title: Check membership instability and cluster-management work
+        description: >-
+          Membership changes, shard recovery and newly represented indices around onset support increased
+          cluster-management work. A newly created index timestamp indicates an observed creation, not
+          the exact time its request entered this queue. Index deletion, rollover and changed collection
+          scope can also change inventories. Top-ten creation times are candidate examples, not a complete
+          count. Network byte rates cannot prove healthy connectivity, and these metrics cannot identify
+          task sources, task priority, publication acknowledgement delays or the elected master's identity.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Membership and node continuity.
+            params:
+              queries: *cluster_membership_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Shard recovery and recent index-creation candidates.
+            params:
+              queries:
+                - name: task_delay_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+                - name: task_delay_initializing_shards
+                  query: 'elasticsearch_cluster_health_initializing_shards{instance="$instance"}'
+                - name: task_delay_relocating_shards
+                  query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
+                - name: task_delay_unassigned_shards
+                  query: 'elasticsearch_cluster_health_unassigned_shards{instance="$instance"}'
+                - name: task_delay_newest_index_creation_timestamps
+                  unit: unix_seconds
+                  query: 'topk(10, elasticsearch_indices_settings_creation_timestamp_seconds{instance="$instance"})'
+      - step: 4
+        title: Assess ongoing data activity and report the unresolved task source
+        description: >-
+          Existing shard operations may continue while index creation, mapping changes or allocation wait.
+          Report observed search/index activity alongside queue delay rather than asserting a full database
+          outage. Aggregate activity is not proof every request succeeds. If queue age/count do not improve,
+          report a persistent management backlog with the supported workload/resource context. The exact
+          queued operation and cause remain unknown without task details from the owner; this runbook
+          does not fetch them live.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Observed data-plane activity while management work is delayed.
+            params:
+              queries:
+                - name: task_delay_search_operations_per_second
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_search_query_total{instance="$instance"}[5m])'
+                - name: task_delay_index_operations_per_second
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+    remediation:
+      - action: reduce_verified_cluster_state_pressure
+        description: >-
+          Ask the Elasticsearch owner to identify the delayed task source and elected master. If the incident
+          is correlated with a planned burst of index/mapping or topology changes, coordinate pausing
+          or pacing that work. Correct verified master resource or connectivity problems. Do not increase
+          timeouts, restart all master-eligible nodes or guess a task cancellation from a queue-length
+          metric.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P2 to the Elasticsearch control-plane owner. Escalate when queue delay is growing, critical index-management
+      operations are blocked, membership is unstable, or red health appears. State whether ongoing shard
+      operations are still observed and whether master-node evidence was complete.
+    follow_up:
+      - >-
+        Require oldest wait at or below 60 seconds for at least 10 minutes with fresh samples and normal
+        sample coverage, plus a draining or baseline queue under representative management activity.
+      - >-
+        Have the owner verify that the delayed creation/mapping/allocation work completed. A lower sampled
+        wait alone does not prove each queued change succeeded.
+escalation: >-
+  Route monitoring/collection failures to the exporter owner, capacity and cluster-availability incidents
+  to the Elasticsearch/platform owner, and request-driven failures to the relevant application or producer
+  owner. Preserve the rule's priority: cluster red P0; collection failure and critical disk P1; the other
+  seven rules P2. Escalate on separately observed impact rather than inventing it from an empty query.
+  Include object labels, time window, evidence query names/values/timestamps, coverage limitations, confidence
+  and the exact unanswered question. There is no live-tool fallback in this version.
+follow_up:
+  - >-
+    Before deployment, verify the real runner resolves raw alert labels.instance, the VictoriaMetrics
+    tenant/project/environment context, alert-centered time ranges, full series labels and panel fields.
+    The supplied reference establishes YAML shape, not the runner's actual placeholder or time-context
+    behavior.
+  - >-
+    Run one representative alert from each scope (collector, cluster, node, disk path, breaker, thread
+    pool and index) against VM. Check collector status, freshness, ratio label matching and that the alerting
+    series survives result limits. Parser validation and a metric-name inventory cannot verify live samples,
+    label values, permissions, ingestion delay or exporter coverage.
+  - >-
+    Keep missing evidence distinct from zero. Continue independent queries after optional-metric failures,
+    retain gaps in the RCA and never broaden tenant or endpoint scope to make an empty query return data.
+  - >-
+    Only close with the per-alert recovery criteria and representative workload. Counter-window expiry,
+    a quiet workload, collector failure or warning-to-critical transition can resolve an alert without
+    resolving its underlying problem.
