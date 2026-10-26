@@ -1,0 +1,943 @@
+# Baseline for the seven enabled rules in rules/metrics/databases/neo4j.yml.
+# VM is VictoriaMetrics. Live diagnostics use the two Neo4j query tools only.
+# No CALL, USE, writes, database restarts, or automatic index rebuilds.
+
+tech_stack: neo4j
+version: "1.0"
+description: >-
+  Investigation runbook for Neo4j Community and Community with DozerDB. Each
+  live diagnostic is attempted through Bolt Execute Query and HTTP Query Neo4j
+  as independent calls. Execute Query takes query; Query Neo4j takes statement.
+  A transport mismatch, missing integration, unsupported command, permission
+  error or unavailable database is recorded and does not stop the other calls
+  or the independent VictoriaMetrics evidence. Neither transport is guaranteed
+  to succeed. These diagnostics use SHOW and RETURN, not CALL procedures.
+  DEPLOYMENT: Forge must support the instance, target and database query
+  placeholders, and the alert processor must preserve those labels. Bolt must
+  expose and honor the optional per-call database argument, as HTTP already
+  does; refresh the registered tool schema after that Conductor change. Without
+  it, a successful Bolt response cannot establish which database was inspected.
+  The connection modal's database may remain empty: every live call below
+  explicitly selects system, the alert's database, or a database discovered by
+  an earlier call. No query depends on USE or the connection's default database.
+  IDENTITY: instance is the exporter scrape endpoint; target is the Neo4j Bolt
+  URI reported by that exporter. Every Neo4j metric selector requires both.
+  The VM datasource must already enforce tenant/project/environment scope.
+  Do not replace missing labels with guessed values or remove selectors.
+  The MCP connection must reach the same logical Neo4j target; a successful
+  query on another connection is not evidence about the alerting target.
+  Exporter pod, container, service, namespace and node labels describe the
+  monitoring workload, not necessarily the Neo4j server. Forge automatically
+  adds container CPU and memory queries to metric packs; treat those as exporter
+  context unless the actual database workload has independently been identified.
+  Do not attribute exporter OOMs or resource limits to the Neo4j JVM. This
+  runbook does not automatically read logs or Kubernetes diagnostics against
+  those exporter coordinates; request the appropriate logs from the owner.
+  DATABASE SCOPE: database status metrics identify databases, but the current
+  failed-index gauge has no confirmed database label. SHOW DATABASES lists only
+  databases visible to the connection's principal. For index diagnostics, bind
+  a candidate only when discovery returns one unique non-system database, or
+  an explicit alert database matches a discovered name. Multiple visible
+  databases leave the binding unresolved and the index calls NOT RUN. Forge
+  cannot loop over discovered databases. A unique visible candidate is still
+  not proof of the exporter's configured index-collector database; verify that
+  configuration before connecting live index details to the gauge. Never infer
+  an empty database inventory means deletion, or an empty index result means
+  every database is healthy. Live rows are bounded; reaching a limit may hide
+  additional databases, indexes or transactions. SHOW TRANSACTIONS describes
+  the connected server and may expose only the current user's transactions;
+  it is not a cluster-wide or historical workload inventory.
+  TIME AND EVIDENCE: VM packs evaluate at the runner's evaluation time. Graphs
+  and explicit rolling windows give context but do not by themselves reproduce
+  the alert's for duration or prove event order. The rule interval is not the
+  scrape interval. Sample freshness proves arrival in VM, not that every
+  underlying collector refreshed its cached values. Inspect timestamps,
+  missing samples and the result's fallback
+  metadata; Forge may substitute historical values from its six-hour fallback.
+  Label historical evidence as historical rather than current health. Missing
+  series, invalid denominators, negative JVM sentinel values, skipped calls,
+  permission errors and unsupported commands mean unavailable evidence, not
+  zero or recovery. Exporter_up = 1 reports target connectivity, not success
+  of every collector or application query. Use the source rule thresholds and
+  durations below; a currently lower sample alone does not prove remediation.
+  OUTPUT: identify the exact target, exporter and database where known; separate
+  observed symptoms from inferred causes, report current versus historical
+  evidence and gaps, and name an owner action with measurable recovery checks.
+  All remediation entries are human recommendations, not executable actions.
+
+match_keywords:
+  - neo4j
+  - dozerdb
+  - neo4j-exporter
+  - neo4j_exporter_up
+  - neo4j_database_online
+  - neo4j_indexes_failed
+  - neo4j_jvm
+
+categories:
+  - DATA
+  - DATABASE
+
+# Only metric names present in the supplied VM inventory are used. Other than
+# GC's deliberate sum without(gc), leave the source labels intact for attribution.
+collection_queries: &collection_queries
+  - name: target_connection_reported_up
+    query: 'neo4j_exporter_up{instance="$instance",target="$target"}'
+    panel: true
+    panel_title: "Exporter Reports Neo4j Connection: 1 = Connected"
+    panel_id: neo4j-exporter-target-up
+  - name: connection_status_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_exporter_up{instance="$instance",target="$target"})'
+  - name: connection_status_samples_5m
+    query: 'count_over_time(neo4j_exporter_up{instance="$instance",target="$target"}[5m])'
+  - name: jvm_uptime_seconds
+    unit: s
+    query: 'neo4j_jvm_uptime_seconds{instance="$instance",target="$target"}'
+    panel: true
+    panel_title: "Neo4j JVM Uptime"
+    panel_id: neo4j-jvm-uptime
+  - name: jvm_uptime_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_uptime_seconds{instance="$instance",target="$target"})'
+
+database_queries: &database_queries
+  - name: database_online_by_database
+    query: 'neo4j_database_online{instance="$instance",target="$target"}'
+    panel: true
+    panel_title: "Database Status: 1 = Online"
+    panel_id: neo4j-database-online
+
+index_queries: &index_queries
+  - name: indexes_currently_failed
+    query: 'neo4j_indexes_failed{instance="$instance",target="$target"}'
+    panel: true
+    panel_title: "Currently Failed Indexes"
+    panel_id: neo4j-indexes-failed
+  - name: indexes_currently_online
+    query: 'neo4j_indexes_online{instance="$instance",target="$target"}'
+  - name: indexes_total
+    query: 'neo4j_indexes_total{instance="$instance",target="$target"}'
+  - name: failed_index_count_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_indexes_failed{instance="$instance",target="$target"})'
+
+heap_queries: &heap_queries
+  - name: heap_used_pct
+    unit: "%"
+    query: >-
+      (100 * neo4j_jvm_heap_used_bytes{instance="$instance",target="$target"}
+      / neo4j_jvm_heap_max_bytes{instance="$instance",target="$target"})
+      and (neo4j_jvm_heap_max_bytes{instance="$instance",target="$target"} > 0)
+    panel: true
+    panel_title: "JVM Heap Used / Maximum (%)"
+    panel_id: neo4j-heap-used-pct
+  - name: heap_used_bytes
+    unit: B
+    query: 'neo4j_jvm_heap_used_bytes{instance="$instance",target="$target"}'
+  - name: heap_max_bytes
+    unit: B
+    query: 'neo4j_jvm_heap_max_bytes{instance="$instance",target="$target"}'
+  - name: heap_committed_bytes
+    unit: B
+    query: 'neo4j_jvm_heap_committed_bytes{instance="$instance",target="$target"}'
+  - name: heap_used_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_heap_used_bytes{instance="$instance",target="$target"})'
+  - name: heap_max_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_heap_max_bytes{instance="$instance",target="$target"})'
+
+gc_queries: &gc_queries
+  - name: gc_collection_seconds_per_second
+    unit: s/s
+    query: 'sum without (gc) (rate(neo4j_jvm_gc_collection_seconds_total{instance="$instance",target="$target"}[5m]))'
+    panel: true
+    panel_title: "Combined GC Collection Time Rate"
+    panel_id: neo4j-gc-collection-rate
+  - name: gc_collection_seconds_per_second_by_collector
+    unit: s/s
+    query: 'rate(neo4j_jvm_gc_collection_seconds_total{instance="$instance",target="$target"}[5m])'
+  - name: gc_collections_per_second_by_collector
+    unit: collections/s
+    query: 'rate(neo4j_jvm_gc_collection_count_total{instance="$instance",target="$target"}[5m])'
+  - name: gc_collection_time_sample_age_seconds_by_collector
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_gc_collection_seconds_total{instance="$instance",target="$target"})'
+
+cpu_queries: &cpu_queries
+  - name: process_cpu_load_pct
+    unit: "%"
+    query: >-
+      100 * (neo4j_jvm_process_cpu_load{instance="$instance",target="$target"} >= 0
+      and neo4j_jvm_process_cpu_load{instance="$instance",target="$target"} <= 1)
+    panel: true
+    panel_title: "JVM Process CPU Load (%)"
+    panel_id: neo4j-process-cpu-load
+  - name: system_cpu_load_pct
+    unit: "%"
+    query: >-
+      100 * (neo4j_jvm_system_cpu_load{instance="$instance",target="$target"} >= 0
+      and neo4j_jvm_system_cpu_load{instance="$instance",target="$target"} <= 1)
+  - name: jvm_visible_processors
+    query: 'neo4j_jvm_available_processors{instance="$instance",target="$target"}'
+  - name: process_cpu_load_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_process_cpu_load{instance="$instance",target="$target"})'
+
+file_descriptor_queries: &file_descriptor_queries
+  - name: file_descriptors_used_pct
+    unit: "%"
+    query: >-
+      (100 * neo4j_jvm_open_file_descriptors{instance="$instance",target="$target"}
+      / neo4j_jvm_max_file_descriptors{instance="$instance",target="$target"})
+      and (neo4j_jvm_max_file_descriptors{instance="$instance",target="$target"} > 0)
+    panel: true
+    panel_title: "JVM File Descriptors Used / Maximum (%)"
+    panel_id: neo4j-file-descriptors-used-pct
+  - name: open_file_descriptors
+    query: 'neo4j_jvm_open_file_descriptors{instance="$instance",target="$target"}'
+  - name: max_file_descriptors
+    query: 'neo4j_jvm_max_file_descriptors{instance="$instance",target="$target"}'
+  - name: open_file_descriptors_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_open_file_descriptors{instance="$instance",target="$target"})'
+  - name: max_file_descriptors_sample_age_seconds
+    unit: s
+    query: 'time() - timestamp(neo4j_jvm_max_file_descriptors{instance="$instance",target="$target"})'
+
+workload_queries: &workload_queries
+  - name: active_database_transactions
+    query: 'neo4j_database_transactions_active{instance="$instance",target="$target"}'
+    panel: true
+    panel_title: "Reported Active Database Transactions"
+    panel_id: neo4j-active-transactions
+  - name: active_heavy_queries
+    query: 'neo4j_dbms_heavy_queries_active{instance="$instance",target="$target"}'
+  - name: ongoing_gds_procedures
+    query: 'neo4j_gds_ongoing_procedures{instance="$instance",target="$target"}'
+  - name: gds_graph_memory_bytes
+    unit: B
+    query: 'neo4j_gds_graph_memory_bytes{instance="$instance",target="$target"}'
+  - name: gds_task_memory_bytes
+    unit: B
+    query: 'neo4j_gds_task_memory_bytes{instance="$instance",target="$target"}'
+
+# Explicit column order makes the positional HTTP digest match Bolt's row fields.
+# SHOW DATABASES runs through system so an offline default database need not answer.
+# Compatible column subset: https://neo4j.com/docs/cypher-manual/4.4/administration/databases/
+# https://neo4j.com/docs/operations-manual/current/database-administration/standard-databases/listing-databases/
+live_databases_bolt: &live_databases_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: requested/current status of visible databases, non-online first."
+  params:
+    arguments:
+      database: system
+      query: &database_status_cypher >-
+        SHOW DATABASES YIELD name, requestedStatus, currentStatus
+        RETURN name, requestedStatus, currentStatus
+        ORDER BY CASE WHEN currentStatus = 'online' THEN 1 ELSE 0 END, name
+        LIMIT 25
+    rows: "[*]"
+    fields: [name, requestedStatus, currentStatus]
+    max_rows: 25
+    summary_chars: 4000
+
+live_databases_http: &live_databases_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same visible database status inventory through system."
+  params:
+    arguments:
+      database: system
+      statement: *database_status_cypher
+    rows: "data.values[*]"
+    fields: ["name=[0]", "requestedStatus=[1]", "currentStatus=[2]"]
+    max_rows: 25
+    summary_chars: 4000
+
+live_database_probe_bolt: &live_database_probe_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: execute a bounded read in the alert's exact database."
+  params:
+    arguments:
+      database: "$database"
+      query: "RETURN 1 AS reachable"
+    rows: "[*]"
+    fields: [reachable]
+    max_rows: 1
+    summary_chars: 500
+
+live_database_probe_http: &live_database_probe_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: execute the same bounded read in the alert's exact database."
+  params:
+    arguments:
+      database: "$database"
+      statement: "RETURN 1 AS reachable"
+    rows: "data.values[*]"
+    fields: ["reachable=[0]"]
+    max_rows: 1
+    summary_chars: 500
+
+# Do not choose the first database in a multi-database inventory. bind_value binds
+# only one unique candidate. Missing $database in match is allowed by the bind
+# implementation; it is deliberately NOT an optional tool argument here.
+# Discovery is bounded at 25: two or more rows already establish ambiguity.
+find_index_database_bolt: &find_index_database_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: list visible user databases; bind only an explicit match or unique candidate."
+  params:
+    arguments:
+      database: system
+      query: &index_database_cypher >-
+        SHOW DATABASES YIELD name
+        WHERE name <> 'system'
+        RETURN DISTINCT name ORDER BY name LIMIT 25
+    bind:
+      neo4j_index_database:
+        match: {name: "$database"}
+        pick: name
+    rows: "[*]"
+    fields: [name]
+    max_rows: 25
+    summary_chars: 2000
+
+find_index_database_http: &find_index_database_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same database discovery; no automatic iteration over the list."
+  params:
+    arguments:
+      database: system
+      statement: *index_database_cypher
+    bind:
+      neo4j_index_database:
+        from: data.values
+        match: {"[0]": "$database"}
+        pick: "[0]"
+    rows: "data.values[*]"
+    fields: ["name=[0]"]
+    max_rows: 25
+    summary_chars: 2000
+
+# SHOW INDEXES is database-local. Include non-ONLINE states to distinguish FAILED
+# from an index still POPULATING; the metric alert itself counts FAILED indexes.
+# https://neo4j.com/docs/cypher-manual/current/indexes/performance-indexes/list-indexes/
+live_indexes_bolt: &live_indexes_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: non-online indexes in the explicitly bound candidate database."
+  params:
+    arguments:
+      database: "$neo4j_index_database"
+      query: &index_status_cypher >-
+        SHOW INDEXES
+        YIELD name, state, populationPercent, type, entityType,
+        labelsOrTypes, properties, failureMessage
+        WHERE state <> 'ONLINE'
+        RETURN name, state, populationPercent, type, entityType,
+        labelsOrTypes, properties, left(failureMessage, 500) AS failureMessage
+        ORDER BY CASE WHEN state = 'FAILED' THEN 0 ELSE 1 END, name
+        LIMIT 10
+    rows: "[*]"
+    fields: [name, state, populationPercent, type, entityType, labelsOrTypes, properties, failureMessage]
+    max_rows: 10
+    summary_chars: 4000
+
+live_indexes_http: &live_indexes_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same non-online indexes in the explicitly bound candidate database."
+  params:
+    arguments:
+      database: "$neo4j_index_database"
+      statement: *index_status_cypher
+    rows: "data.values[*]"
+    fields:
+      - "name=[0]"
+      - "state=[1]"
+      - "populationPercent=[2]"
+      - "type=[3]"
+      - "entityType=[4]"
+      - "labelsOrTypes=[5]"
+      - "properties=[6]"
+      - "failureMessage=[7]"
+    max_rows: 10
+    summary_chars: 4000
+
+# Do not return currentQuery or parameters: they may contain application data.
+# https://neo4j.com/docs/operations-manual/current/database-internals/show-and-terminate-transactions/
+live_transactions_bolt: &live_transactions_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: longest visible transactions on the connected server, without query text."
+  params:
+    arguments:
+      database: system
+      query: &transaction_cypher >-
+        SHOW TRANSACTIONS
+        YIELD database, transactionId, status, elapsedTime, activeLockCount
+        RETURN database, transactionId, status,
+        toString(elapsedTime) AS elapsed, activeLockCount
+        ORDER BY elapsedTime DESC LIMIT 15
+    rows: "[*]"
+    fields: [database, transactionId, status, elapsed, activeLockCount]
+    max_rows: 15
+    summary_chars: 4000
+
+live_transactions_http: &live_transactions_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same bounded transaction inventory on the connected server."
+  params:
+    arguments:
+      database: system
+      statement: *transaction_cypher
+    rows: "data.values[*]"
+    fields: ["database=[0]", "transactionId=[1]", "status=[2]", "elapsed=[3]", "activeLockCount=[4]"]
+    max_rows: 15
+    summary_chars: 4000
+
+common_alerts:
+  - name: Neo4jTargetConnectionFailed
+    patterns:
+      - Neo4jTargetConnectionFailed
+      - Neo4j target connection is failing
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the exporter's reported target connection failure"
+        description: >-
+          The rule is neo4j_exporter_up == 0 for 2 minutes. Match the exact
+          instance and target, then check the status sample age and observed
+          sample count. Zero means this exporter reports a failed Bolt connection;
+          it does not prove the Neo4j process is stopped. Missing or historical
+          values cannot establish current connectivity. Uptime samples may stop
+          refreshing while the exporter continues publishing its failure flag.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Target connection report, sample freshness and JVM visibility."
+            params:
+              queries: *collection_queries
+          - tool_id: tool.query_metrics
+            description: "Any independently available per-database status samples."
+            params:
+              queries: *database_queries
+      - step: 2
+        title: "Test live access through both supported connection methods"
+        description: >-
+          Attempt both tools independently. A working HTTP connection alongside
+          exporter Bolt failure points toward the exporter/Bolt path rather than
+          a complete service outage; compare endpoint, DNS, TLS and credentials.
+          A failed tool for the other authentication method is expected and is
+          not a second outage signal. If both fail, preserve their actual errors
+          and keep availability unconfirmed. A successful system inventory
+          establishes access to that MCP connection only; check its target and
+          individual database states before asserting application availability.
+        tool_calls:
+          - *live_databases_bolt
+          - *live_databases_http
+    remediation:
+      - action: repair_exporter_to_neo4j_connection
+        description: >-
+          If the database is reachable through the verified MCP connection,
+          inspect exporter logs and its target URI, credential secret, DNS, TLS,
+          network policy and Bolt listener. Correct the specific failing path;
+          do not restart Neo4j merely because the exporter cannot connect.
+        tool_id: ""
+        requires_approval: true
+      - action: recover_confirmed_database_outage
+        description: >-
+          If independent evidence confirms a database/server outage, have the
+          database owner inspect the actual Neo4j workload, startup/recovery logs
+          and storage before selecting a recovery action. The exporter pod is
+          not the database workload.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j platform owner and monitoring owner; P1 for the reported connection failure. Establish application impact independently."
+    follow_up:
+      - "Verify fresh exporter_up = 1 samples for the same instance/target and a working application-database query."
+      - "Confirm database/JVM collectors resume refreshing; exporter_up = 1 alone is insufficient."
+
+  - name: Neo4jDatabaseOffline
+    patterns:
+      - Neo4jDatabaseOffline
+      - Neo4j database is not online
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the exact database and compare sibling database states"
+        description: >-
+          The rule is neo4j_database_online == 0 for 2 minutes. Use the alert's
+          database label as well as instance/target. A missing database label
+          makes the exact queries unavailable; do not substitute neo4j or system.
+          Compare fresh per-database series and collection status to distinguish
+          an isolated database state from a monitoring failure. An intentionally
+          stopped database can satisfy this rule.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Exact alerting database state and freshness."
+            params:
+              queries:
+                - name: alerting_database_online
+                  query: 'neo4j_database_online{instance="$instance",target="$target",database="$database"}'
+                  panel: true
+                  panel_title: "Alerting Database: 1 = Online"
+                  panel_id: neo4j-alerting-database-online
+                - name: alerting_database_status_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(neo4j_database_online{instance="$instance",target="$target",database="$database"})'
+          - tool_id: tool.query_metrics
+            description: "Sibling database states on the same target."
+            params:
+              queries: *database_queries
+          - tool_id: tool.query_metrics
+            description: "Whether the exporter can still connect and report JVM data."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Read requested versus current state through the system database"
+        description: >-
+          Find the alert's database by name in the bounded live inventory.
+          requestedStatus offline with currentStatus offline can be an intended
+          stop; confirm the owner's intent. Requested online but current non-online
+          suggests a startup, recovery or availability problem, not its exact
+          cause. The portable query does not select version-dependent error or
+          statusMessage columns; request database startup/recovery logs for the
+          detailed reason. An absent row may reflect permissions or truncation.
+        tool_calls:
+          - *live_databases_bolt
+          - *live_databases_http
+      - step: 3
+        title: "Check a read against the alert's database itself"
+        description: >-
+          Attempt RETURN 1 in the exact alert database through both transports.
+          A successful system query in step 2 does not establish this database's
+          availability. Preserve database-unavailable, authorization and transport
+          errors separately. A successful probe is point-in-time recovery evidence
+          only; compare it to the timestamp of the metric and actual application
+          behavior. This probe requires the deployed Bolt database override.
+        tool_calls:
+          - *live_database_probe_bolt
+          - *live_database_probe_http
+    remediation:
+      - action: confirm_intended_database_state
+        description: >-
+          If intentionally stopped, have the owner confirm the maintenance or
+          lifecycle decision and adjust alert expectations for that database.
+          Do not start it automatically.
+        tool_id: ""
+        requires_approval: true
+      - action: repair_database_startup_or_storage_failure
+        description: >-
+          If online was requested, use the actual database's logs and storage
+          evidence to address the reported startup/recovery error. Plan any
+          start, restore or restart with the owner and a recovery procedure;
+          never delete store files or transaction logs as a generic fix.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j database owner; include the exact database, requested/current states, last fresh metric and probe errors."
+    follow_up:
+      - "Verify requested and current states match the intended online state and fresh database_online samples equal 1."
+      - "Confirm application reads and writes through their normal connection, not only system-database access."
+
+  - name: Neo4jIndexesFailed
+    patterns:
+      - Neo4jIndexesFailed
+      - Neo4j has failed indexes
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the failed-index gauge and collection quality"
+        description: >-
+          The rule is neo4j_indexes_failed > 0 for 5 minutes. This is a count of
+          indexes currently FAILED, not an event counter: do not rate or increase
+          it. Compare failed, online and total gauges without inventing an index
+          name or database. A zero online count is not proof that every index
+          failed. A missing gauge or stale sample is not recovery.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Current failed, online and total index counts for the exact target."
+            params:
+              queries: *index_queries
+          - tool_id: tool.query_metrics
+            description: "Connectivity and independent freshness context."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Resolve a database for live index inspection without guessing"
+        description: >-
+          The current index alert does not identify its collector database.
+          Discover visible non-system databases through both transports. Bind
+          neo4j_index_database only if there is one unique candidate, or if an
+          explicit database label matches a returned name. If multiple databases
+          remain, the next live calls stay NOT RUN; report that exporter
+          configuration is needed to choose a database. This engine cannot
+          automatically iterate the inventory. A unique visible candidate must
+          still be checked against the exporter's configured collection database.
+        tool_calls:
+          - *find_index_database_bolt
+          - *find_index_database_http
+      - step: 3
+        title: "Identify failed indexes in the explicitly selected candidate"
+        description: >-
+          Report the database argument with each result. FAILED rows provide
+          names, schema/type and a bounded failure message; POPULATING rows are
+          not counted by this alert merely because they are non-online. Investigate
+          the reported failure and database logs/storage before recommending a
+          rebuild. If selection, permission or command support fails, retain the
+          VM symptom and report exact index identity as unconfirmed. Empty results
+          describe only this inspected database at query time and do not disprove
+          a failed-index gauge from another collector database. Ten returned rows
+          may be a truncated inventory.
+        tool_calls:
+          - *live_indexes_bolt
+          - *live_indexes_http
+    remediation:
+      - action: investigate_index_failure_message
+        description: >-
+          Have the database owner confirm the exporter's collection database and
+          inspect the named FAILED index's failure message, relevant logs, index
+          configuration and storage. Establish the cause and affected query paths.
+        tool_id: ""
+        requires_approval: true
+      - action: plan_supported_index_recovery
+        description: >-
+          After addressing the cause, plan the index type's supported recovery or
+          rebuild procedure with the owner. Assess capacity and constraint impact
+          first; do not automatically drop, recreate or rebuild indexes.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j database owner; include the collector database if verified, failed gauge, index names/messages or the unresolved database scope."
+    follow_up:
+      - "Verify the affected indexes reach ONLINE in the confirmed collector database and fresh indexes_failed samples return to zero."
+      - "Confirm affected application query performance; a zero gauge alone is not proof of the underlying repair."
+
+  - name: Neo4jJVMHeapHigh
+    patterns:
+      - Neo4jJVMHeapHigh
+      - Neo4j JVM heap usage remains high
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure heap pressure against maximum heap capacity"
+        description: >-
+          The rule requires used/max heap > 85% with max > 0 for 10 minutes.
+          heap_used_pct uses the same positive capacity guard and reports percent.
+          Committed heap is context, not the denominator. Check live versus
+          historical values, freshness and uptime before describing current
+          pressure. JVM heap is not total container or process memory, and one
+          elevated sample does not establish a leak.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Heap percentage and raw used, maximum and committed sizes."
+            params:
+              queries: *heap_queries
+          - tool_id: tool.query_metrics
+            description: "Connection, freshness and JVM uptime context."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Compare GC, transaction load and optional GDS activity"
+        description: >-
+          Look for heap failing to fall after observed GC cycles and for concurrent
+          transaction or GDS activity. GC collection-time rate is not exact
+          stop-the-world time. GDS/extra workload collectors are optional: missing
+          metrics do not establish that those workloads are absent. Correlation
+          identifies candidates, not a proven allocating query or memory leak.
+          Do not add GDS memory gauges together as a total JVM allocation.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "GC collection time and collection frequency."
+            params:
+              queries: *gc_queries
+          - tool_id: tool.query_metrics
+            description: "Transaction and optional heavy-query/GDS context."
+            params:
+              queries: *workload_queries
+      - step: 3
+        title: "Inspect bounded live transaction activity"
+        description: >-
+          Compare database, duration, status and lock counts of visible
+          transactions. These rows are present-time candidates and do not measure
+          each transaction's heap. Limited permissions may expose only the
+          integration user's activity. Obtain the actual database workload's
+          memory limit, native/page-cache budget and GC logs before tuning heap;
+          automatic exporter container panels cannot supply that evidence.
+        tool_calls:
+          - *live_transactions_bolt
+          - *live_transactions_http
+    remediation:
+      - action: reduce_verified_allocation_pressure
+        description: >-
+          If evidence identifies allocation-heavy queries, large transactions or
+          concurrent GDS work, have their owner reduce batch sizes/concurrency or
+          optimize the workload. Do not terminate transactions automatically.
+        tool_id: ""
+        requires_approval: true
+      - action: review_actual_database_memory_budget
+        description: >-
+          If normal workload exceeds capacity, review the Neo4j process/container
+          limit together with heap, page cache and native memory. Plan a tested
+          sizing change; raising heap without checking total headroom may cause OOM.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j and application owners; include heap used/max, GC behavior, visible workload and any missing real database resource limits."
+    follow_up:
+      - "Verify fresh heap samples remain below 85% through representative load and heap recovers after GC."
+      - "Confirm application latency/error recovery and no new OOM or restart evidence on the actual database workload."
+
+  - name: Neo4jJVMGCOverheadHigh
+    patterns:
+      - Neo4jJVMGCOverheadHigh
+      - Neo4j JVM garbage collection time remains elevated
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm reported GC collection-time rate and collector contributions"
+        description: >-
+          The rule is sum without(gc)(rate(collection_seconds_total[5m])) > 0.10
+          seconds per second for 10 minutes. Rate each collector before summing;
+          retain all other identity labels. This is reported collection time,
+          not an exact 10% application pause fraction. Compare collector-specific
+          time and collection-frequency rates, fresh samples and uptime; restarts
+          and scrape gaps reduce confidence in short-window interpretation.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "The rule's combined GC rate and individual collector context."
+            params:
+              queries: *gc_queries
+          - tool_id: tool.query_metrics
+            description: "Target collection quality and JVM uptime."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Compare heap recovery, CPU and workload activity"
+        description: >-
+          Sustained high used/max heap with poor recovery after collection suggests
+          memory pressure. A workload increase with repeated collections suggests
+          allocation pressure, but metric correlation alone cannot identify the
+          responsible query or prove a leak. Compare GC logs from the actual JVM
+          and application latency before claiming stop-the-world impact.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Heap used versus maximum and committed sizes."
+            params:
+              queries: *heap_queries
+          - tool_id: tool.query_metrics
+            description: "JVM CPU and optional transaction/GDS load."
+            params:
+              queries: *cpu_queries
+          - tool_id: tool.query_metrics
+            description: "Reported transaction and optional GDS activity."
+            params:
+              queries: *workload_queries
+      - step: 3
+        title: "Find current long-running or waiting transaction candidates"
+        description: >-
+          Inspect bounded transaction metadata on the connected server through
+          either available transport. Empty or limited results cannot rule out
+          completed incident-time queries, another server's load, or workloads
+          hidden by permissions. Use these rows to guide the owner to query/GC
+          logs rather than claim they directly measured allocations or pauses.
+        tool_calls:
+          - *live_transactions_bolt
+          - *live_transactions_http
+    remediation:
+      - action: reduce_confirmed_allocation_or_concurrency
+        description: >-
+          When workload evidence supports allocation pressure, have the owner
+          optimize query/batch sizes or reduce concurrent transactions/GDS jobs.
+          Check application impact and avoid automatically killing transactions.
+        tool_id: ""
+        requires_approval: true
+      - action: investigate_gc_and_memory_configuration
+        description: >-
+          If collection time remains high under normal load, review GC logs,
+          post-GC heap recovery and the actual database memory budget before
+          planning JVM or capacity changes. Do not tune GC from this rate alone.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j/JVM owner and workload owner; include combined/per-collector rates, heap recovery evidence and measured application impact."
+    follow_up:
+      - "Verify fresh combined 5-minute GC rate remains below 0.10 s/s through representative load."
+      - "Confirm healthy heap recovery and application latency; a short traffic lull is not a demonstrated fix."
+
+  - name: Neo4jJVMProcessCPUHigh
+    patterns:
+      - Neo4jJVMProcessCPUHigh
+      - Neo4j JVM CPU load remains high
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm JVM process CPU load in its original fraction scale"
+        description: >-
+          The rule requires process CPU load > 0.90 and <= 1 for 15 minutes.
+          The metric is already a fraction; the panel multiplies it by 100 only
+          for display. Do not rate it or divide by the processor count. Negative
+          or above-one values are unavailable for this panel. System CPU is
+          supporting host/JVM context and may differ from the database container's
+          CPU quota. High load alone does not establish application impact.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Valid process/system CPU percentages and JVM-visible processors."
+            params:
+              queries: *cpu_queries
+          - tool_id: tool.query_metrics
+            description: "Collection freshness and JVM uptime."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Separate query/GDS pressure from GC contributions"
+        description: >-
+          Compare GC rate, heap and reported transaction/heavy-query/GDS activity.
+          Coincident activity identifies possible contributors; these gauges do
+          not measure CPU ownership of individual queries. Missing optional
+          collectors cannot rule out that workload. Confirm application latency
+          and actual database CPU quota/throttling separately; exporter container
+          metrics do not establish either.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "GC collection-time rate."
+            params:
+              queries: *gc_queries
+          - tool_id: tool.query_metrics
+            description: "Heap pressure that may contribute GC work."
+            params:
+              queries: *heap_queries
+          - tool_id: tool.query_metrics
+            description: "Transaction and optional heavy-query/GDS activity."
+            params:
+              queries: *workload_queries
+      - step: 3
+        title: "Inspect present transaction candidates without claiming per-query CPU"
+        description: >-
+          Read the longest visible transactions on the connected server. A long
+          duration can mean waiting, not CPU consumption. Correlate these IDs
+          with authorized database query logs/profile evidence before naming a
+          CPU-heavy query. The inventory is bounded and visibility depends on
+          privileges; it does not establish that other servers are idle.
+        tool_calls:
+          - *live_transactions_bolt
+          - *live_transactions_http
+    remediation:
+      - action: optimize_or_limit_verified_cpu_workload
+        description: >-
+          Once query or GDS profiling identifies CPU consumers, have the owner
+          optimize execution plans/batching or reduce concurrency and admission
+          rate. Do not automatically cancel queries or drop indexes.
+        tool_id: ""
+        requires_approval: true
+      - action: review_database_cpu_capacity_and_quota
+        description: >-
+          If representative workload needs more CPU, verify the actual database
+          workload's quota, throttling and node capacity before planning a resource
+          change. Do not infer spare quota from JVM-visible processor count.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j/application owner; involve the infrastructure owner when actual database quota or throttling evidence supports it."
+    follow_up:
+      - "Verify fresh process CPU load stays below 0.90 through representative load and application latency/errors recover."
+      - "Check actual database throttling after a capacity change; JVM CPU load cannot rule it out."
+
+  - name: Neo4jJVMFileDescriptorsHigh
+    patterns:
+      - Neo4jJVMFileDescriptorsHigh
+      - Neo4j JVM is approaching its file descriptor limit
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: "Measure descriptor use against the JVM's reported process limit"
+        description: >-
+          The rule requires open/max file descriptors > 85% with max > 0 for
+          10 minutes. Compare the guarded percentage with raw open/max values,
+          collection freshness and JVM uptime. A missing/unsupported maximum
+          makes the ratio unavailable, not safe. These are JVM process metrics;
+          the exporter container's descriptor limit is unrelated.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Open descriptors, reported maximum and percentage used."
+            params:
+              queries: *file_descriptor_queries
+          - tool_id: tool.query_metrics
+            description: "Connection quality and JVM uptime context."
+            params:
+              queries: *collection_queries
+      - step: 2
+        title: "Check database and index context while preserving the evidence gap"
+        description: >-
+          Compare descriptor growth on the panel with database/index state and
+          reported transaction activity. These metrics do not inventory sockets,
+          store files or log handles and cannot distinguish a connection surge
+          from file growth or a descriptor leak. Request a bounded descriptor/
+          socket inventory and effective process limit from the owner of the
+          actual Neo4j process; no such tool is invoked by this runbook.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: "Database states and optional collector context."
+            params:
+              queries: *database_queries
+          - tool_id: tool.query_metrics
+            description: "Index states reported by the configured collector."
+            params:
+              queries: *index_queries
+          - tool_id: tool.query_metrics
+            description: "Reported transaction and optional GDS activity."
+            params:
+              queries: *workload_queries
+      - step: 3
+        title: "Check live database status independently of descriptor attribution"
+        description: >-
+          Query the system database through both transports and inspect visible
+          requested/current database states. Access failures may accompany
+          exhaustion but do not establish descriptor exhaustion without their
+          actual error and process-level evidence. Successful access is only
+          point-in-time evidence and does not explain the high descriptor count.
+        tool_calls:
+          - *live_databases_bolt
+          - *live_databases_http
+    remediation:
+      - action: address_verified_descriptor_growth
+        description: >-
+          If process evidence identifies excessive sockets or unclosed handles,
+          have the responsible application/database owner fix connection pooling,
+          resource cleanup or the identified file-handle issue. Do not label
+          normal database file use a leak based only on this ratio.
+        tool_id: ""
+        requires_approval: true
+      - action: review_effective_neo4j_process_limit
+        description: >-
+          If legitimate demand approaches the limit, have the infrastructure and
+          database owners review the effective Neo4j process limit and OS capacity.
+          Plan a supported limit change and any required rollout; do not change
+          the exporter limit or perform an automatic database restart.
+        tool_id: ""
+        requires_approval: true
+    escalation: "Neo4j and infrastructure owners; include open/max descriptors, trend, actual process-limit evidence and any new connection/file-open failures."
+    follow_up:
+      - "Verify fresh open/max usage stays below 85% through representative demand and new file/connection operations succeed."
+      - "Confirm the underlying growth source is controlled; a restart resetting the count alone does not demonstrate a fix."
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: "Establish exact target scope and collection quality"
+      description: >-
+        For an unmatched Neo4j alert, require instance and target before querying
+        metrics. Keep exporter and database workload identity separate and report
+        missing/historical evidence explicitly. No remediation runs automatically.
+      tool_calls:
+        - tool_id: tool.query_metrics
+          description: "Target connection, sample quality and JVM uptime."
+          params:
+            queries: *collection_queries
+        - tool_id: tool.query_metrics
+          description: "Visible per-database metric context on that exact target."
+          params:
+            queries: *database_queries
+    - step: 2
+      title: "Read visible database status through either available transport"
+      description: >-
+        Attempt both query tools against system. Match the configured MCP target
+        to the alert before using results. Permission-limited, failed or truncated
+        inventories do not establish that every database is healthy.
+      tool_calls:
+        - *live_databases_bolt
+        - *live_databases_http
+
+escalation: "Neo4j database owner; include exact exporter/target/database identity, fresh VM evidence, available live results and unresolved scope or permission gaps."
