@@ -1,6 +1,7 @@
 # Baseline for the seven enabled rules in rules/metrics/databases/neo4j.yml.
 # VM is VictoriaMetrics. Live diagnostics use the two Neo4j query tools only.
-# No CALL, USE, writes, database restarts, or automatic index rebuilds.
+# CALL only for read-only procedures on Forge's Cypher allowlist. No USE,
+# writes, database restarts, or automatic index rebuilds.
 
 tech_stack: neo4j
 version: "1.0"
@@ -11,7 +12,17 @@ description: >-
   A transport mismatch, missing integration, unsupported command, permission
   error or unavailable database is recorded and does not stop the other calls
   or the independent VictoriaMetrics evidence. Neither transport is guaranteed
-  to succeed. These diagnostics use SHOW and RETURN, not CALL procedures.
+  to succeed. Besides SHOW and RETURN, diagnostics CALL only read-only
+  procedures on Forge's Cypher allowlist: dbms.queryJmx, dbms.components,
+  dbms.listConnections and dbms.listConfig. A Forge build without that guard
+  refuses them before sending; record those calls as NOT RUN, not as failures
+  of Neo4j. On the system database a procedure call must be exactly CALL,
+  YIELD, RETURN (no WHERE, WITH or second CALL); Neo4j rejects anything else.
+  LIVE JVM: JMX readings describe the JVM that served the MCP connection at
+  query time. They corroborate VM series only when that connection reaches
+  the alerting target, and they are point-in-time, not the rule's window.
+  dbms.listConfig requires an admin user; dbms.listConnections and SHOW
+  TRANSACTIONS may expose only the integration user's own sessions.
   DEPLOYMENT: Forge must support the instance, target and database query
   placeholders, and the alert processor must preserve those labels. Bolt must
   expose and honor the optional per-call database argument, as HTTP already
@@ -364,34 +375,508 @@ live_indexes_http: &live_indexes_http
 
 # Do not return currentQuery or parameters: they may contain application data.
 # https://neo4j.com/docs/operations-manual/current/database-internals/show-and-terminate-transactions/
-live_transactions_bolt: &live_transactions_bolt
+# Columns below exist in 4.4 and 5.x. DESC sorts nulls first, so "X IS NULL"
+# sorts untracked rows last; cpuTime stays null unless CPU tracking is enabled.
+# estimatedUsedHeapMemory is Neo4j's estimate, not a measured heap share.
+live_transactions_by_heap_bolt: &live_transactions_by_heap_bolt
   tool_id: mcp.neo4j.execute_query
-  description: "Bolt: longest visible transactions on the connected server, without query text."
+  description: "Bolt: visible transactions with the largest estimated heap, without query text."
   params:
     arguments:
       database: system
-      query: &transaction_cypher >-
+      query: &transactions_by_heap_cypher >-
         SHOW TRANSACTIONS
-        YIELD database, transactionId, status, elapsedTime, activeLockCount
-        RETURN database, transactionId, status,
-        toString(elapsedTime) AS elapsed, activeLockCount
-        ORDER BY elapsedTime DESC LIMIT 15
+        YIELD database, transactionId, username, status, elapsedTime,
+        estimatedUsedHeapMemory, allocatedBytes, activeLockCount
+        RETURN database, transactionId, username, status,
+        toString(elapsedTime) AS elapsed, estimatedUsedHeapMemory AS estimatedHeapBytes,
+        allocatedBytes, activeLockCount
+        ORDER BY estimatedUsedHeapMemory IS NULL, estimatedUsedHeapMemory DESC, elapsedTime DESC
+        LIMIT 15
     rows: "[*]"
-    fields: [database, transactionId, status, elapsed, activeLockCount]
+    fields: [database, transactionId, username, status, elapsed, estimatedHeapBytes, allocatedBytes, activeLockCount]
     max_rows: 15
     summary_chars: 4000
 
-live_transactions_http: &live_transactions_http
+live_transactions_by_heap_http: &live_transactions_by_heap_http
   tool_id: mcp.neo4j.query_neo4j
-  description: "HTTP: the same bounded transaction inventory on the connected server."
+  description: "HTTP: the same heap-ranked transaction inventory on the connected server."
   params:
     arguments:
       database: system
-      statement: *transaction_cypher
+      statement: *transactions_by_heap_cypher
     rows: "data.values[*]"
-    fields: ["database=[0]", "transactionId=[1]", "status=[2]", "elapsed=[3]", "activeLockCount=[4]"]
+    fields:
+      - "database=[0]"
+      - "transactionId=[1]"
+      - "username=[2]"
+      - "status=[3]"
+      - "elapsed=[4]"
+      - "estimatedHeapBytes=[5]"
+      - "allocatedBytes=[6]"
+      - "activeLockCount=[7]"
     max_rows: 15
     summary_chars: 4000
+
+live_transactions_by_allocation_bolt: &live_transactions_by_allocation_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: visible transactions that allocated the most bytes, without query text."
+  params:
+    arguments:
+      database: system
+      query: &transactions_by_allocation_cypher >-
+        SHOW TRANSACTIONS
+        YIELD database, transactionId, username, status, elapsedTime,
+        allocatedBytes, estimatedUsedHeapMemory, activeLockCount
+        RETURN database, transactionId, username, status,
+        toString(elapsedTime) AS elapsed, allocatedBytes,
+        estimatedUsedHeapMemory AS estimatedHeapBytes, activeLockCount
+        ORDER BY allocatedBytes IS NULL, allocatedBytes DESC, elapsedTime DESC
+        LIMIT 15
+    rows: "[*]"
+    fields: [database, transactionId, username, status, elapsed, allocatedBytes, estimatedHeapBytes, activeLockCount]
+    max_rows: 15
+    summary_chars: 4000
+
+live_transactions_by_allocation_http: &live_transactions_by_allocation_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same allocation-ranked transaction inventory on the connected server."
+  params:
+    arguments:
+      database: system
+      statement: *transactions_by_allocation_cypher
+    rows: "data.values[*]"
+    fields:
+      - "database=[0]"
+      - "transactionId=[1]"
+      - "username=[2]"
+      - "status=[3]"
+      - "elapsed=[4]"
+      - "allocatedBytes=[5]"
+      - "estimatedHeapBytes=[6]"
+      - "activeLockCount=[7]"
+    max_rows: 15
+    summary_chars: 4000
+
+live_transactions_by_cpu_bolt: &live_transactions_by_cpu_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: visible transactions with the most CPU time (else longest), without query text."
+  params:
+    arguments:
+      database: system
+      query: &transactions_by_cpu_cypher >-
+        SHOW TRANSACTIONS
+        YIELD database, transactionId, username, status, elapsedTime,
+        cpuTime, waitTime, pageFaults, activeLockCount
+        RETURN database, transactionId, username, status,
+        toString(elapsedTime) AS elapsed, toString(cpuTime) AS cpu,
+        toString(waitTime) AS waiting, pageFaults, activeLockCount
+        ORDER BY cpuTime IS NULL, cpuTime DESC, elapsedTime DESC
+        LIMIT 15
+    rows: "[*]"
+    fields: [database, transactionId, username, status, elapsed, cpu, waiting, pageFaults, activeLockCount]
+    max_rows: 15
+    summary_chars: 4000
+
+live_transactions_by_cpu_http: &live_transactions_by_cpu_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same CPU-ranked transaction inventory on the connected server."
+  params:
+    arguments:
+      database: system
+      statement: *transactions_by_cpu_cypher
+    rows: "data.values[*]"
+    fields:
+      - "database=[0]"
+      - "transactionId=[1]"
+      - "username=[2]"
+      - "status=[3]"
+      - "elapsed=[4]"
+      - "cpu=[5]"
+      - "waiting=[6]"
+      - "pageFaults=[7]"
+      - "activeLockCount=[8]"
+    max_rows: 15
+    summary_chars: 4000
+
+# dbms.queryJmx returns attributes as {Name: {description, value}}; composite
+# values (MemoryUsage, GcInfo) nest as value.properties.<key>. Missing or
+# unsupported attributes return null, which the digest omits. Negative values
+# (-1) mean the JVM cannot report that reading. Every JMX call runs on system
+# so an offline user database does not block it.
+live_jvm_memory_bolt: &live_jvm_memory_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: live JVM heap and non-heap usage from the Memory MBean."
+  params:
+    arguments:
+      database: system
+      query: &jvm_memory_cypher >-
+        CALL dbms.queryJmx('java.lang:type=Memory') YIELD attributes
+        RETURN attributes.HeapMemoryUsage.value.properties.used AS heapUsedBytes,
+        attributes.HeapMemoryUsage.value.properties.committed AS heapCommittedBytes,
+        attributes.HeapMemoryUsage.value.properties.max AS heapMaxBytes,
+        CASE WHEN attributes.HeapMemoryUsage.value.properties.max > 0
+        THEN round(100.0 * attributes.HeapMemoryUsage.value.properties.used
+        / attributes.HeapMemoryUsage.value.properties.max, 1) END AS heapUsedPct,
+        attributes.NonHeapMemoryUsage.value.properties.used AS nonHeapUsedBytes,
+        attributes.NonHeapMemoryUsage.value.properties.committed AS nonHeapCommittedBytes
+    rows: "[*]"
+    fields: [heapUsedBytes, heapCommittedBytes, heapMaxBytes, heapUsedPct, nonHeapUsedBytes, nonHeapCommittedBytes]
+    max_rows: 1
+    summary_chars: 1000
+
+live_jvm_memory_http: &live_jvm_memory_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same live JVM heap and non-heap usage."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_memory_cypher
+    rows: "data.values[*]"
+    fields:
+      - "heapUsedBytes=[0]"
+      - "heapCommittedBytes=[1]"
+      - "heapMaxBytes=[2]"
+      - "heapUsedPct=[3]"
+      - "nonHeapUsedBytes=[4]"
+      - "nonHeapCommittedBytes=[5]"
+    max_rows: 1
+    summary_chars: 1000
+
+# CollectionUsage is the pool's occupancy right after its last collection:
+# for the old generation it is the best live view of heap that GC cannot free.
+live_jvm_memory_pools_bolt: &live_jvm_memory_pools_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: per-pool usage, peak and usage after the last GC, heap pools first."
+  params:
+    arguments:
+      database: system
+      query: &jvm_memory_pools_cypher >-
+        CALL dbms.queryJmx('java.lang:type=MemoryPool,name=*') YIELD name, attributes
+        RETURN name, attributes.Type.value AS poolType,
+        attributes.Usage.value.properties.used AS usedBytes,
+        attributes.Usage.value.properties.max AS maxBytes,
+        attributes.CollectionUsage.value.properties.used AS usedAfterLastGcBytes,
+        attributes.PeakUsage.value.properties.used AS peakUsedBytes
+        ORDER BY poolType, name LIMIT 15
+    rows: "[*]"
+    fields: [name, poolType, usedBytes, maxBytes, usedAfterLastGcBytes, peakUsedBytes]
+    max_rows: 15
+    summary_chars: 3000
+
+live_jvm_memory_pools_http: &live_jvm_memory_pools_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same per-pool usage and post-GC occupancy."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_memory_pools_cypher
+    rows: "data.values[*]"
+    fields:
+      - "name=[0]"
+      - "poolType=[1]"
+      - "usedBytes=[2]"
+      - "maxBytes=[3]"
+      - "usedAfterLastGcBytes=[4]"
+      - "peakUsedBytes=[5]"
+    max_rows: 15
+    summary_chars: 3000
+
+# Counts and times are cumulative since JVM start; use VM rates for the window.
+# lastGcEndUptimeMs is JVM uptime at the end of the last collection.
+live_jvm_gc_bolt: &live_jvm_gc_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: cumulative GC counts/time per collector and the last collection's duration."
+  params:
+    arguments:
+      database: system
+      query: &jvm_gc_cypher >-
+        CALL dbms.queryJmx('java.lang:type=GarbageCollector,name=*') YIELD name, attributes
+        RETURN name, attributes.CollectionCount.value AS collectionCount,
+        attributes.CollectionTime.value AS collectionTimeMs,
+        attributes.LastGcInfo.value.properties.duration AS lastGcDurationMs,
+        attributes.LastGcInfo.value.properties.endTime AS lastGcEndUptimeMs
+        ORDER BY collectionTimeMs DESC LIMIT 10
+    rows: "[*]"
+    fields: [name, collectionCount, collectionTimeMs, lastGcDurationMs, lastGcEndUptimeMs]
+    max_rows: 10
+    summary_chars: 2000
+
+live_jvm_gc_http: &live_jvm_gc_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same cumulative per-collector GC readings."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_gc_cypher
+    rows: "data.values[*]"
+    fields:
+      - "name=[0]"
+      - "collectionCount=[1]"
+      - "collectionTimeMs=[2]"
+      - "lastGcDurationMs=[3]"
+      - "lastGcEndUptimeMs=[4]"
+    max_rows: 10
+    summary_chars: 2000
+
+# CPU loads are fractions in [0,1]. CpuLoad/TotalMemorySize/FreeMemorySize
+# replace the older names on JDK 14+, hence coalesce. On container-aware JVMs
+# memory and processors reflect the container limits, not the node.
+live_jvm_os_bolt: &live_jvm_os_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: live process/system CPU load, processors, file descriptors and memory."
+  params:
+    arguments:
+      database: system
+      query: &jvm_os_cypher >-
+        CALL dbms.queryJmx('java.lang:type=OperatingSystem') YIELD attributes
+        RETURN attributes.ProcessCpuLoad.value AS processCpuLoad,
+        coalesce(attributes.CpuLoad.value, attributes.SystemCpuLoad.value) AS systemCpuLoad,
+        attributes.SystemLoadAverage.value AS systemLoadAverage,
+        attributes.AvailableProcessors.value AS availableProcessors,
+        attributes.OpenFileDescriptorCount.value AS openFileDescriptors,
+        attributes.MaxFileDescriptorCount.value AS maxFileDescriptors,
+        coalesce(attributes.TotalMemorySize.value, attributes.TotalPhysicalMemorySize.value) AS totalMemoryBytes,
+        coalesce(attributes.FreeMemorySize.value, attributes.FreePhysicalMemorySize.value) AS freeMemoryBytes
+    rows: "[*]"
+    fields:
+      - processCpuLoad
+      - systemCpuLoad
+      - systemLoadAverage
+      - availableProcessors
+      - openFileDescriptors
+      - maxFileDescriptors
+      - totalMemoryBytes
+      - freeMemoryBytes
+    max_rows: 1
+    summary_chars: 1000
+
+live_jvm_os_http: &live_jvm_os_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same live CPU, descriptor and memory readings."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_os_cypher
+    rows: "data.values[*]"
+    fields:
+      - "processCpuLoad=[0]"
+      - "systemCpuLoad=[1]"
+      - "systemLoadAverage=[2]"
+      - "availableProcessors=[3]"
+      - "openFileDescriptors=[4]"
+      - "maxFileDescriptors=[5]"
+      - "totalMemoryBytes=[6]"
+      - "freeMemoryBytes=[7]"
+    max_rows: 1
+    summary_chars: 1000
+
+live_jvm_threads_bolt: &live_jvm_threads_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: live, peak and daemon JVM thread counts."
+  params:
+    arguments:
+      database: system
+      query: &jvm_threads_cypher >-
+        CALL dbms.queryJmx('java.lang:type=Threading') YIELD attributes
+        RETURN attributes.ThreadCount.value AS threadCount,
+        attributes.PeakThreadCount.value AS peakThreadCount,
+        attributes.DaemonThreadCount.value AS daemonThreadCount,
+        attributes.TotalStartedThreadCount.value AS totalStartedThreads
+    rows: "[*]"
+    fields: [threadCount, peakThreadCount, daemonThreadCount, totalStartedThreads]
+    max_rows: 1
+    summary_chars: 500
+
+live_jvm_threads_http: &live_jvm_threads_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same live JVM thread counts."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_threads_cypher
+    rows: "data.values[*]"
+    fields: ["threadCount=[0]", "peakThreadCount=[1]", "daemonThreadCount=[2]", "totalStartedThreads=[3]"]
+    max_rows: 1
+    summary_chars: 500
+
+# Version/edition plus JVM uptime: a short uptime means a recent restart.
+# Runtime InputArguments/SystemProperties are deliberately not returned.
+live_server_identity_bolt: &live_server_identity_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: Neo4j version and edition of the server behind this connection."
+  params:
+    arguments:
+      database: system
+      query: &server_identity_cypher >-
+        CALL dbms.components() YIELD name, versions, edition
+        RETURN name, versions, edition
+    rows: "[*]"
+    fields: [name, versions, edition]
+    max_rows: 5
+    summary_chars: 500
+
+live_server_identity_http: &live_server_identity_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same Neo4j version and edition."
+  params:
+    arguments:
+      database: system
+      statement: *server_identity_cypher
+    rows: "data.values[*]"
+    fields: ["name=[0]", "versions=[1]", "edition=[2]"]
+    max_rows: 5
+    summary_chars: 500
+
+live_jvm_runtime_bolt: &live_jvm_runtime_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: live JVM uptime, start time and Java version."
+  params:
+    arguments:
+      database: system
+      query: &jvm_runtime_cypher >-
+        CALL dbms.queryJmx('java.lang:type=Runtime') YIELD attributes
+        RETURN attributes.Uptime.value AS jvmUptimeMs,
+        attributes.StartTime.value AS jvmStartEpochMs,
+        attributes.VmVendor.value AS vmVendor,
+        attributes.SpecVersion.value AS javaSpecVersion
+    rows: "[*]"
+    fields: [jvmUptimeMs, jvmStartEpochMs, vmVendor, javaSpecVersion]
+    max_rows: 1
+    summary_chars: 500
+
+live_jvm_runtime_http: &live_jvm_runtime_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same live JVM uptime and start time."
+  params:
+    arguments:
+      database: system
+      statement: *jvm_runtime_cypher
+    rows: "data.values[*]"
+    fields: ["jvmUptimeMs=[0]", "jvmStartEpochMs=[1]", "vmVendor=[2]", "javaSpecVersion=[3]"]
+    max_rows: 1
+    summary_chars: 500
+
+# Grouped so a connection surge shows which connector/user/driver owns it.
+# Client addresses are not grouped: they include ephemeral ports.
+live_connections_bolt: &live_connections_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: open connections grouped by connector, user and driver."
+  params:
+    arguments:
+      database: system
+      query: &connections_cypher >-
+        CALL dbms.listConnections() YIELD connector, username, userAgent, connectTime
+        RETURN connector, username, userAgent, count(*) AS connections,
+        min(connectTime) AS oldestConnectTime
+        ORDER BY connections DESC LIMIT 15
+    rows: "[*]"
+    fields: [connector, username, userAgent, connections, oldestConnectTime]
+    max_rows: 15
+    summary_chars: 3000
+
+live_connections_http: &live_connections_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same grouped connection inventory."
+  params:
+    arguments:
+      database: system
+      statement: *connections_cypher
+    rows: "data.values[*]"
+    fields:
+      - "connector=[0]"
+      - "username=[1]"
+      - "userAgent=[2]"
+      - "connections=[3]"
+      - "oldestConnectTime=[4]"
+    max_rows: 15
+    summary_chars: 3000
+
+# Admin-only. The argument is a substring filter on setting names; 'memory'
+# covers heap, page cache and transaction-memory settings in 4.4 and 5.x.
+live_memory_config_bolt: &live_memory_config_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: configured heap, page-cache and transaction memory settings."
+  params:
+    arguments:
+      database: system
+      query: &memory_config_cypher >-
+        CALL dbms.listConfig('memory') YIELD name, value
+        RETURN name, value ORDER BY name LIMIT 25
+    rows: "[*]"
+    fields: [name, value]
+    max_rows: 25
+    summary_chars: 3000
+
+live_memory_config_http: &live_memory_config_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same configured memory settings."
+  params:
+    arguments:
+      database: system
+      statement: *memory_config_cypher
+    rows: "data.values[*]"
+    fields: ["name=[0]", "value=[1]"]
+    max_rows: 25
+    summary_chars: 3000
+
+# 5.x only: statusMessage replaced 4.4's error column. On 4.4 this fails as an
+# unknown column; keep the portable live_databases result in that case.
+live_database_status_message_bolt: &live_database_status_message_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt (Neo4j 5.x): database status messages, non-online first."
+  params:
+    arguments:
+      database: system
+      query: &database_status_message_cypher >-
+        SHOW DATABASES YIELD name, requestedStatus, currentStatus, statusMessage
+        RETURN name, requestedStatus, currentStatus, left(statusMessage, 500) AS statusMessage
+        ORDER BY CASE WHEN currentStatus = 'online' THEN 1 ELSE 0 END, name
+        LIMIT 25
+    rows: "[*]"
+    fields: [name, requestedStatus, currentStatus, statusMessage]
+    max_rows: 25
+    summary_chars: 4000
+
+live_database_status_message_http: &live_database_status_message_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP (Neo4j 5.x): the same database status messages."
+  params:
+    arguments:
+      database: system
+      statement: *database_status_message_cypher
+    rows: "data.values[*]"
+    fields: ["name=[0]", "requestedStatus=[1]", "currentStatus=[2]", "statusMessage=[3]"]
+    max_rows: 25
+    summary_chars: 4000
+
+# Per-state totals for the bound database, to compare against the failed,
+# online and total index gauges without the 10-row cap of live_indexes.
+live_index_state_counts_bolt: &live_index_state_counts_bolt
+  tool_id: mcp.neo4j.execute_query
+  description: "Bolt: index counts by state in the explicitly bound candidate database."
+  params:
+    arguments:
+      database: "$neo4j_index_database"
+      query: &index_state_counts_cypher >-
+        SHOW INDEXES YIELD state
+        RETURN state, count(*) AS indexes ORDER BY state
+    rows: "[*]"
+    fields: [state, indexes]
+    max_rows: 10
+    summary_chars: 500
+
+live_index_state_counts_http: &live_index_state_counts_http
+  tool_id: mcp.neo4j.query_neo4j
+  description: "HTTP: the same index counts by state in the bound candidate database."
+  params:
+    arguments:
+      database: "$neo4j_index_database"
+      statement: *index_state_counts_cypher
+    rows: "data.values[*]"
+    fields: ["state=[0]", "indexes=[1]"]
+    max_rows: 10
+    summary_chars: 500
 
 common_alerts:
   - name: Neo4jTargetConnectionFailed
@@ -432,6 +917,24 @@ common_alerts:
         tool_calls:
           - *live_databases_bolt
           - *live_databases_http
+      - step: 3
+        title: "Identify the server behind the working connection and its recent restarts"
+        description: >-
+          Through whichever transport works, read the Neo4j version/edition, the
+          JVM uptime and the grouped connection list. An uptime shorter than the
+          alert's age points to a restart during the incident; a long uptime with
+          working MCP access points back to the exporter path. Look for the
+          exporter's username or driver in the connection groups: its absence is
+          consistent with the reported failure, but non-admin users may see only
+          their own connections. Compare the version with the exporter's
+          supported versions before blaming credentials or the network.
+        tool_calls:
+          - *live_server_identity_bolt
+          - *live_server_identity_http
+          - *live_jvm_runtime_bolt
+          - *live_jvm_runtime_http
+          - *live_connections_bolt
+          - *live_connections_http
     remediation:
       - action: repair_exporter_to_neo4j_connection
         description: >-
@@ -497,12 +1000,16 @@ common_alerts:
           requestedStatus offline with currentStatus offline can be an intended
           stop; confirm the owner's intent. Requested online but current non-online
           suggests a startup, recovery or availability problem, not its exact
-          cause. The portable query does not select version-dependent error or
-          statusMessage columns; request database startup/recovery logs for the
-          detailed reason. An absent row may reflect permissions or truncation.
+          cause. The portable query omits version-dependent columns; the extra
+          Neo4j 5.x query adds statusMessage, which often names the startup or
+          recovery error. On 4.4 that query fails as an unknown column, which is
+          expected; then request the startup/recovery logs for the detailed reason.
+          An absent row may reflect permissions or truncation.
         tool_calls:
           - *live_databases_bolt
           - *live_databases_http
+          - *live_database_status_message_bolt
+          - *live_database_status_message_http
       - step: 3
         title: "Check a read against the alert's database itself"
         description: >-
@@ -584,10 +1091,15 @@ common_alerts:
           VM symptom and report exact index identity as unconfirmed. Empty results
           describe only this inspected database at query time and do not disprove
           a failed-index gauge from another collector database. Ten returned rows
-          may be a truncated inventory.
+          may be a truncated inventory; the per-state counts are not truncated.
+          If this database's FAILED count equals the gauge, it is consistent with
+          being the collector database; a different count means the gauge comes
+          from elsewhere or changed between samples.
         tool_calls:
           - *live_indexes_bolt
           - *live_indexes_http
+          - *live_index_state_counts_bolt
+          - *live_index_state_counts_http
     remediation:
       - action: investigate_index_failure_message
         description: >-
@@ -651,17 +1163,47 @@ common_alerts:
             params:
               queries: *workload_queries
       - step: 3
-        title: "Inspect bounded live transaction activity"
+        title: "Read live heap, memory pools and GC directly from the JVM"
         description: >-
-          Compare database, duration, status and lock counts of visible
-          transactions. These rows are present-time candidates and do not measure
-          each transaction's heap. Limited permissions may expose only the
-          integration user's activity. Obtain the actual database workload's
-          memory limit, native/page-cache budget and GC logs before tuning heap;
-          automatic exporter container panels cannot supply that evidence.
+          Compare live heapUsedPct with the VM heap_used_pct to confirm the MCP
+          connection reaches the same JVM. The key signal is the old-generation
+          pool's usedAfterLastGcBytes against its maxBytes: if it stays high, GC
+          cannot free heap (retained data or a leak candidate); if it is low
+          while current usage is high, the pressure is short-lived allocation
+          that GC is clearing. GC counts and times are cumulative since JVM
+          start; use the VM rates for the alert window. One reading is a single
+          point in time, not a trend.
         tool_calls:
-          - *live_transactions_bolt
-          - *live_transactions_http
+          - *live_jvm_memory_bolt
+          - *live_jvm_memory_http
+          - *live_jvm_memory_pools_bolt
+          - *live_jvm_memory_pools_http
+          - *live_jvm_gc_bolt
+          - *live_jvm_gc_http
+      - step: 4
+        title: "Rank visible transactions by estimated heap usage"
+        description: >-
+          Compare database, user, duration, estimated heap, allocated bytes and
+          lock counts of visible transactions. estimatedHeapBytes is Neo4j's own
+          estimate and may be null when memory tracking is off; it is not a
+          measured share of the JVM heap. These rows are present-time candidates;
+          limited permissions may expose only the integration user's activity.
+          Query text is deliberately not returned.
+        tool_calls:
+          - *live_transactions_by_heap_bolt
+          - *live_transactions_by_heap_http
+      - step: 5
+        title: "Read the configured memory budget"
+        description: >-
+          Read heap, page-cache and transaction-memory settings to compare the
+          configured maximum heap with the live heapMaxBytes, and to see whether
+          transaction memory limits exist. This needs an admin user; a
+          permission error is expected otherwise and is not a database fault.
+          The settings do not show the container or host memory limit; obtain
+          that from the actual database workload before recommending a resize.
+        tool_calls:
+          - *live_memory_config_bolt
+          - *live_memory_config_http
     remediation:
       - action: reduce_verified_allocation_pressure
         description: >-
@@ -728,16 +1270,34 @@ common_alerts:
             params:
               queries: *workload_queries
       - step: 3
-        title: "Find current long-running or waiting transaction candidates"
+        title: "Read live per-collector GC and post-GC pool occupancy"
+        description: >-
+          Identify which collector accumulates the most time and the duration of
+          its last collection. Old-generation (or mixed/full) collector time with
+          high old-gen usedAfterLastGcBytes points to memory pressure; young
+          collector time with low post-GC occupancy points to allocation churn.
+          Counts and times are cumulative since JVM start, so compare them with
+          the VM 5-minute rates rather than reading them as the alert window.
+          lastGcEndUptimeMs compared with the JVM uptime shows how recent the
+          last collection was.
+        tool_calls:
+          - *live_jvm_gc_bolt
+          - *live_jvm_gc_http
+          - *live_jvm_memory_pools_bolt
+          - *live_jvm_memory_pools_http
+      - step: 4
+        title: "Rank visible transactions by bytes allocated"
         description: >-
           Inspect bounded transaction metadata on the connected server through
-          either available transport. Empty or limited results cannot rule out
-          completed incident-time queries, another server's load, or workloads
-          hidden by permissions. Use these rows to guide the owner to query/GC
-          logs rather than claim they directly measured allocations or pauses.
+          either available transport, ranked by allocatedBytes (cumulative bytes
+          the transaction allocated, the main driver of GC work). Empty or
+          limited results cannot rule out completed incident-time queries,
+          another server's load, or workloads hidden by permissions. Use these
+          rows to guide the owner to query/GC logs rather than claim they
+          directly measured pauses.
         tool_calls:
-          - *live_transactions_bolt
-          - *live_transactions_http
+          - *live_transactions_by_allocation_bolt
+          - *live_transactions_by_allocation_http
     remediation:
       - action: reduce_confirmed_allocation_or_concurrency
         description: >-
@@ -805,16 +1365,35 @@ common_alerts:
             params:
               queries: *workload_queries
       - step: 3
-        title: "Inspect present transaction candidates without claiming per-query CPU"
+        title: "Read live CPU, threads and GC from the JVM"
         description: >-
-          Read the longest visible transactions on the connected server. A long
-          duration can mean waiting, not CPU consumption. Correlate these IDs
-          with authorized database query logs/profile evidence before naming a
-          CPU-heavy query. The inventory is bounded and visibility depends on
-          privileges; it does not establish that other servers are idle.
+          Compare live processCpuLoad (a fraction) with the VM panel to confirm
+          the MCP connection reaches the same JVM. systemCpuLoad near
+          processCpuLoad means Neo4j is the main consumer of the CPUs visible to
+          it; a much higher systemCpuLoad points to other processes on the host.
+          A thread count far above its usual level or close to its peak suggests
+          a concurrency surge. High cumulative GC time on a collector supports a
+          GC contribution; confirm with the VM GC rate for the window.
         tool_calls:
-          - *live_transactions_bolt
-          - *live_transactions_http
+          - *live_jvm_os_bolt
+          - *live_jvm_os_http
+          - *live_jvm_threads_bolt
+          - *live_jvm_threads_http
+          - *live_jvm_gc_bolt
+          - *live_jvm_gc_http
+      - step: 4
+        title: "Rank visible transactions by CPU time"
+        description: >-
+          Read visible transactions ranked by cpuTime, falling back to elapsed
+          time when CPU tracking is disabled (cpu is then empty). A long elapsed
+          time with high waiting time means blocked, not CPU-heavy; pageFaults
+          indicate page-cache misses. Correlate these IDs with authorized query
+          logs/profile evidence before naming a CPU-heavy query. The inventory
+          is bounded and visibility depends on privileges; it does not establish
+          that other servers are idle.
+        tool_calls:
+          - *live_transactions_by_cpu_bolt
+          - *live_transactions_by_cpu_http
     remediation:
       - action: optimize_or_limit_verified_cpu_workload
         description: >-
@@ -881,6 +1460,22 @@ common_alerts:
             params:
               queries: *workload_queries
       - step: 3
+        title: "Read live descriptor counts and the open connection inventory"
+        description: >-
+          Compare live openFileDescriptors/maxFileDescriptors with the VM ratio to
+          confirm the MCP connection reaches the same JVM. Connections are
+          sockets and each one uses a descriptor: a connection count that is a
+          large share of the open descriptors, concentrated on one user or
+          driver, points to a client connection surge or pool leak. A small
+          connection count leaves store files, logs or a handle leak as
+          candidates that need a process-level inventory. Non-admin users may
+          see only their own connections, so a small count is not conclusive.
+        tool_calls:
+          - *live_jvm_os_bolt
+          - *live_jvm_os_http
+          - *live_connections_bolt
+          - *live_connections_http
+      - step: 4
         title: "Check live database status independently of descriptor attribution"
         description: >-
           Query the system database through both transports and inspect visible
@@ -939,5 +1534,18 @@ general_diagnostic:
       tool_calls:
         - *live_databases_bolt
         - *live_databases_http
+    - step: 3
+      title: "Read server identity and a live JVM snapshot"
+      description: >-
+        Record the version/edition and the live heap, CPU and descriptor
+        readings of the server behind the connection. They are point-in-time
+        context for an unmatched alert, not evidence for its window.
+      tool_calls:
+        - *live_server_identity_bolt
+        - *live_server_identity_http
+        - *live_jvm_memory_bolt
+        - *live_jvm_memory_http
+        - *live_jvm_os_bolt
+        - *live_jvm_os_http
 
 escalation: "Neo4j database owner; include exact exporter/target/database identity, fresh VM evidence, available live results and unresolved scope or permission gaps."
