@@ -68,13 +68,13 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: monitoring
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             up{job=~".*mongo.*", job!~".*atlas.*"} == 0
         annotations:
           summary: "MongoDB exporter target is not being scraped"
           description: "Every scrape of MongoDB exporter target {{ $labels.instance }} (job {{ $labels.job }}) in namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }} has failed for 5 minutes. While the exporter is down, none of the MongoDB alerts for the instance it monitors can fire, including MongoDBDown, replication lag and connection saturation. Check that the exporter container is running and ready, that its metrics port (9216 by default) is reachable from the metrics agent, and the exporter log for authentication or connection errors."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbexporterdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBDown
         expr: |
@@ -88,13 +88,13 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_up == 0
         annotations:
           summary: "MongoDB instance is unreachable"
           description: "The MongoDB exporter at {{ $labels.instance }} (job {{ $labels.job }}) in namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }} has been unable to ping its mongod for 2 minutes. If this node was the primary, writes fail until a new primary is elected; if it is a secondary, the replica set has lost redundancy and reads routed to it fail; if it is a standalone, the database is unavailable. Check whether mongod is running (process or container status, OOM kills, restarts), the mongod log for a fatal assertion, crash or disk-full shutdown, and whether the exporter's credentials and network path to mongod still work."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Every exporter of the service reports mongod as unreachable. Pair with
       # MongoDBDown in Alertmanager (this one inhibits it, equal on
@@ -113,7 +113,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             max by (cluster, namespace, job) (
               mongodb_up
@@ -121,7 +121,7 @@ groups:
         annotations:
           summary: "Every MongoDB instance of the service is unreachable"
           description: "Every MongoDB exporter of job {{ $labels.job }} in namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }} has been unable to reach its mongod for 2 minutes. No member can serve reads or writes, so every application that uses this database is failing. Check the mongod pods or hosts, their logs for the shutdown reason (OOM kill, disk full, fatal assertion, failed upgrade), the data volumes and the nodes they run on. If the mongod processes look healthy, look for a credential or network change that affects all exporters at once."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodballinstancesdown"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Replica set health
@@ -147,7 +147,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             count by (cluster, namespace, job, rs_nm) (
               mongodb_rs_myState
@@ -159,7 +159,7 @@ groups:
         annotations:
           summary: "MongoDB replica set has no primary"
           description: "No member of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has seen a PRIMARY for 1 minute, while {{ $value }} member(s) are still reporting. All writes and primary reads fail until a primary is elected. A normal election completes in about 10 to 12 seconds, so this usually means a majority of voting members cannot reach each other: members are down, the network is partitioned, or a reconfiguration left too few voting members. Run rs.status() on a reachable member and check members[].health, stateStr and lastHeartbeatMessage."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicasetnoprimary"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBReplicationMemberUnhealthy
         expr: |
@@ -175,7 +175,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             min by (cluster, namespace, job, rs_nm, member_idx) (
               mongodb_rs_members_health
@@ -183,7 +183,7 @@ groups:
         annotations:
           summary: "MongoDB replica set member is unreachable"
           description: "Replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has reported member {{ $labels.member_idx }} as unreachable for 2 minutes. The set keeps working while a majority of voting members is up, but it has less redundancy and one more failure can leave it without a primary. Check whether mongod on {{ $labels.member_idx }} is running, its log, DNS resolution and the network path between members, and rs.status().members[].lastHeartbeatMessage."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicationmemberunhealthy"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Reachable, but not PRIMARY / SECONDARY / ARBITER. Unreachable members
       # (state 8, DOWN) are MongoDBReplicationMemberUnhealthy's job.
@@ -201,7 +201,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             max by (cluster, namespace, job, rs_nm, member_idx) (
               mongodb_rs_members_state{member_state=~"STARTUP|STARTUP2|RECOVERING|ROLLBACK|UNKNOWN|REMOVED"}
@@ -209,7 +209,7 @@ groups:
         annotations:
           summary: "MongoDB replica set member is not serving"
           description: "Member {{ $labels.member_idx }} of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been in replica set state {{ $value }} for 15 minutes instead of PRIMARY, SECONDARY or ARBITER (0 = STARTUP, 3 = RECOVERING, 5 = STARTUP2, 6 = UNKNOWN, 9 = ROLLBACK, 10 = REMOVED). It is reachable but serves no reads and does not acknowledge majority writes, so the set has less redundancy. A member stuck in RECOVERING has usually fallen off the oplog ('too stale to catch up') and needs a resync; STARTUP2 is expected while an initial sync runs, which can take hours on a large data set; ROLLBACK means writes that never reached a majority are being undone. Check rs.status() and the member's mongod log."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicasetmembernotserving"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Fires for 15 minutes after a member becomes primary. Based on the
       # electionDate gauge, so it does not depend on series continuity.
@@ -229,7 +229,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             time()
             - max by (cluster, namespace, job, rs_nm, member_idx) (
@@ -239,7 +239,7 @@ groups:
         annotations:
           summary: "MongoDB replica set elected a new primary"
           description: "Member {{ $labels.member_idx }} became the primary of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) {{ $value | humanizeDuration }} ago. Elections happen during planned maintenance (stepdown, rolling restart, upgrade) and when the previous primary failed or lost contact with the majority. Writes fail for several seconds during an election, and drivers retry them or return errors. If no maintenance was planned, check the previous primary's mongod log for why it stepped down."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicasetprimaryelected"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # The term increases with every election attempt, including failed ones.
       - alert: MongoDBReplicaSetFrequentElections
@@ -260,7 +260,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             max by (cluster, namespace, job, rs_nm) (
               mongodb_rs_term
@@ -272,7 +272,7 @@ groups:
         annotations:
           summary: "MongoDB replica set is holding repeated elections"
           description: "Replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has advanced its election term {{ $value }} times in the last hour. Each election makes writes fail for several seconds, so applications see repeated bursts of errors. Repeated elections usually come from members missing heartbeats (an overloaded or stalled node, packet loss, DNS problems), from priority takeovers after a member restarts, or from a crash-looping primary. Compare electionDate in rs.status() with the members' mongod logs ('Starting an election', 'Stepping down')."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicasetfrequentelections"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Replication
@@ -305,7 +305,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             (
               max by (cluster, namespace, job, rs_nm, member_idx) (
@@ -323,7 +323,7 @@ groups:
         annotations:
           summary: "MongoDB secondary is lagging behind the primary"
           description: "Secondary {{ $labels.member_idx }} of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) is {{ $value | humanizeDuration }} behind the primary and has been more than 30 seconds behind for 5 minutes. Reads routed to this member return stale data, and it is a poor failover candidate: if the primary fails, writes this member has not applied yet may be rolled back. Common causes are write bursts the secondary cannot apply fast enough, slow disk or CPU on the secondary, missing indexes that make replicated updates and deletes slow, or a poor sync source. Check rs.printSecondaryReplicationInfo() and the secondary's resource usage."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicationlaghigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBReplicationLagCritical
         expr: |
@@ -349,7 +349,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             (
               max by (cluster, namespace, job, rs_nm, member_idx) (
@@ -367,7 +367,7 @@ groups:
         annotations:
           summary: "MongoDB secondary is more than 5 minutes behind the primary"
           description: "Secondary {{ $labels.member_idx }} of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) is {{ $value | humanizeDuration }} behind the primary and has been more than 5 minutes behind for 5 minutes. If the lag grows past the oplog window, the member falls off the oplog, goes into RECOVERING and needs a full initial sync, leaving the set with less redundancy for hours. Compare the lag with the oplog window (rs.printReplicationInfo() on the primary), then check the secondary's disk and CPU, its mongod log for replication errors, and whether its sync source is healthy."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbreplicationlagcritical"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # How far the majority commit point trails the primary's last applied
       # write. Evaluated on the primary only.
@@ -387,7 +387,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             (
               mongodb_rs_optimes_lastAppliedWallTime - mongodb_rs_optimes_lastCommittedWallTime
@@ -397,7 +397,7 @@ groups:
         annotations:
           summary: "MongoDB majority commit point is not advancing"
           description: "The majority commit point of replica set {{ $labels.rs_nm }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) is {{ $value | humanizeDuration }} behind the last write applied on primary {{ $labels.instance }}, and has been more than 60 seconds behind for 2 minutes. Writes with write concern majority (the default since MongoDB 5.0) wait until a majority of data-bearing voting members have applied them, so they are hanging or timing out, and majority reads return stale data. The primary also has to keep the history of every write since the commit point, which builds WiredTiger cache pressure. This typically happens when too few data-bearing members are healthy, for example a primary-secondary-arbiter set whose secondary is down. Check rs.status() for unhealthy or lagging data-bearing members."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbmajoritycommitlagging"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBFlowControlEngaged
         expr: |
@@ -411,13 +411,13 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_flowControl_isLagged == 1
         annotations:
           summary: "MongoDB flow control is throttling writes"
           description: "Flow control on {{ $labels.instance }} (replica set {{ $labels.rs_nm }}, job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been throttling writes for 5 minutes because the majority commit point is lagging (flowControlTargetLagSeconds, 10 seconds by default). The primary deliberately limits write throughput, so applications see slower writes. Find the secondary that is holding back the commit point (MongoDBReplicationLagHigh, optimes in rs.status()) and fix its lag rather than disabling flow control."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbflowcontrolengaged"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Estimated window = oplog maxSize / oplog insert byte rate over the last
       # hour. Both are uncompressed bytes. An idle oplog gives +Inf and never
@@ -436,7 +436,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_oplog_stats_storageStats_maxSize
             / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes[1h])
@@ -444,7 +444,7 @@ groups:
         annotations:
           summary: "MongoDB oplog window is shorter than 24 hours"
           description: "At the write rate of the last hour, the oplog on {{ $labels.instance }} (replica set {{ $labels.rs_nm }}, job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) holds about {{ $value | humanizeDuration }} of history, below the 24-hour target. A member that is down or lagging for longer than this window cannot catch up and needs a full initial sync, and point-in-time recovery from oplog backups covers less time. The value is an estimate (oplog maxSize divided by the oplog insert byte rate); if storage.oplogMinRetentionHours is set, the real window can be longer. Confirm with rs.printReplicationInfo(), then grow the oplog with replSetResizeOplog or find the source of the write burst."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodboplogwindowlow"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBWriteConcernTimeouts
         expr: |
@@ -458,13 +458,13 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             increase(mongodb_ss_metrics_getLastError_wtimeouts[10m]) > 0
         annotations:
           summary: "MongoDB writes are timing out waiting for write concern"
           description: "{{ $value | humanize }} writes on {{ $labels.instance }} (replica set {{ $labels.rs_nm }}, job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) exceeded their write concern wtimeout in the last 10 minutes. These writes were applied on the primary but not confirmed by enough members in time, and the applications received a writeConcernError. This usually means secondaries are lagging, down or slow, so the requested number of members cannot acknowledge the write. Check replication lag and member health; raising wtimeout only hides the problem."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbwriteconcerntimeouts"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Connections, load and latency
@@ -492,7 +492,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_connections{conn_type="current"}
             / ignoring (conn_type)
@@ -505,7 +505,7 @@ groups:
         annotations:
           summary: "MongoDB connection usage is above 80% of the limit"
           description: "{{ $value | humanizePercentage }} of the incoming connection limit on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been in use for 5 minutes. When the limit is reached, mongod refuses new connections and applications fail to connect. Check which clients hold the connections (db.currentOp(true) grouped by client and appName), driver maxPoolSize multiplied by the number of application instances, and connection leaks after failovers. The limit is net.maxIncomingConnections, capped by the process open-file limit."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbconnectionshigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBConnectionsExhausted
         expr: |
@@ -526,7 +526,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_connections{conn_type="current"}
             / ignoring (conn_type)
@@ -539,7 +539,7 @@ groups:
         annotations:
           summary: "MongoDB is running out of connections"
           description: "{{ $value | humanizePercentage }} of the incoming connection limit on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been in use for 2 minutes. mongod is refusing, or about to refuse, new connections, so any application instance that needs a new connection fails to connect, including new pods and connection pools recovering after a failover. Find the clients holding the most connections and reduce their pool sizes or restart the leaking clients; raise net.maxIncomingConnections only if the host has memory and file-descriptor headroom."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbconnectionsexhausted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # globalLock.currentQueue counts operations waiting for a lock or for an
       # execution (read/write) ticket.
@@ -555,13 +555,13 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_globalLock_currentQueue{count_type="total"} > 10
         annotations:
           summary: "MongoDB operations are queuing"
           description: "{{ $value }} operations on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) have been queued waiting for a lock or an execution ticket for 5 minutes. Requests wait before they start running, so application latency rises and timeouts follow. Typical causes are long-running or unindexed queries holding resources, a write burst, WiredTiger cache pressure that slows every operation, or an exclusive lock taken by an index build or a collection-level command. Check db.currentOp() for long-running operations and waitingForLock, and the WiredTiger cache alerts."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodboperationsqueued"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Average write latency in milliseconds (opLatencies is in microseconds),
       # with at least 1 write/s. Reads are not alerted on: awaitData getMores
@@ -583,7 +583,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             (
               rate(mongodb_ss_opLatencies_latency{op_type="writes"}[5m])
@@ -594,7 +594,7 @@ groups:
         annotations:
           summary: "MongoDB average write latency is above 100 ms"
           description: "Writes on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) took {{ $value | humanize }} ms on average over the last 5 minutes, above 100 ms, for 10 minutes. Applications writing to this node see slow writes and may hit timeouts. Check the slow query log or profiler for slow writes, WiredTiger cache pressure and disk latency, write concern waits (majority writes wait for secondaries), and lock or ticket queues. Read latency is not alerted on because change-stream and tailable-cursor getMore calls wait for new data and inflate the read average."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbwritelatencyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # WiredTiger and cursors
@@ -616,7 +616,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_wt_cache_bytes_currently_in_the_cache
             / mongodb_ss_wt_cache_maximum_bytes_configured
@@ -624,7 +624,7 @@ groups:
         annotations:
           summary: "MongoDB WiredTiger cache is above its eviction trigger"
           description: "The WiredTiger cache on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been {{ $value | humanizePercentage }} full for 10 minutes, above the 95% eviction trigger. Background eviction cannot keep up, so application threads are pulled into evicting pages, which adds latency to reads and writes. The working set probably no longer fits in the cache, or a large scan or index build is churning it. Look for collection scans in the slow query log, compare the cache size (storage.wiredTiger.engineConfig.cacheSizeGB, 50% of RAM minus 1 GB by default) with the working set, and check the container memory limit the default is derived from."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbwiredtigercachefull"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # 20% is WiredTiger's eviction_dirty_trigger: above it, application
       # threads must write dirty pages before they can continue.
@@ -642,7 +642,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache
             / mongodb_ss_wt_cache_maximum_bytes_configured
@@ -650,7 +650,7 @@ groups:
         annotations:
           summary: "MongoDB WiredTiger cache has too much dirty data"
           description: "Dirty data makes up {{ $value | humanizePercentage }} of the WiredTiger cache on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) and has been above the 20% dirty eviction trigger for 5 minutes. Application threads are forced to write dirty pages to disk before they can continue, so operations stall and latency spikes; a node that stays here can become unresponsive. Causes are a write burst faster than the disk can absorb, slow storage, or a lagging majority commit point that forces WiredTiger to retain history. Check disk write latency and throughput, the write rate, and MongoDBMajorityCommitLagging."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbwiredtigercachedirtyhigh"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBCursorsTimedOut
         expr: |
@@ -664,13 +664,13 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             increase(mongodb_ss_metrics_cursor_timedOut[10m]) > 100
         annotations:
           summary: "MongoDB is timing out abandoned cursors"
           description: "mongod on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) closed {{ $value | humanize }} cursors in the last 10 minutes because they were idle longer than the cursor timeout (10 minutes by default). An application is opening cursors and abandoning them without reading them to the end or closing them, which holds server memory and resources. Find the client with $currentOp and idleCursors: true, or in the slow query log, and fix it to close its cursors or use a limit."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbcursorstimedout"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Storage and locks
@@ -690,13 +690,13 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: storage
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction[5m]) > 0
         annotations:
           summary: "MongoDB data volume is almost out of space"
           description: "The disk space monitor of mongod on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) found free space on the data volume below its threshold (indexBuildMinAvailableDiskSpaceMB, 500 MB by default) and took action, which aborts running index builds. When the volume fills up, mongod stops to protect the data and this member is lost. Free space or grow the volume now: check volume usage, the size of the oplog, journal and diagnostic.data directory, and large collections or indexes."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodblowdiskspace"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # Primary or standalone: anything that is not a non-primary replica set
       # member. Writes are blocked while the lock is held.
@@ -714,7 +714,7 @@ groups:
           tech_stack: mongodb
           signal: symptom
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_currentop_fsync_lock_state == 1
             unless on (cluster, job, instance)
@@ -722,7 +722,7 @@ groups:
         annotations:
           summary: "MongoDB primary is fsync-locked and blocking writes"
           description: "{{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) is the primary or a standalone and has been fsync-locked for 2 minutes. While the lock is held every write on this node blocks, so applications cannot write. A backup or snapshot tool usually takes the lock with db.fsyncLock() and failed to release it. Confirm with db.currentOp().fsyncLock, make sure no snapshot is still being taken, then run db.fsyncUnlock() until the lock count reaches zero."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbprimaryfsynclocked"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       - alert: MongoDBSecondaryFsyncLocked
         expr: |
@@ -738,7 +738,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_currentop_fsync_lock_state == 1
             and on (cluster, job, instance)
@@ -746,7 +746,7 @@ groups:
         annotations:
           summary: "MongoDB secondary has been fsync-locked for 30 minutes"
           description: "Secondary {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has been fsync-locked for 30 minutes. While locked it cannot apply replicated writes, so its replication lag grows and it can fall off the oplog. Backup tools normally hold this lock only for the few seconds a snapshot takes. Check whether a backup job is stuck, then run db.fsyncUnlock() until the lock count reaches zero."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbsecondaryfsynclocked"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Backups (Percona Backup for MongoDB)
@@ -779,7 +779,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             max by (cluster, namespace, job) (
               mongodb_pbm_backup_last_transition_ts{status=~"error|down"}
@@ -797,7 +797,7 @@ groups:
         annotations:
           summary: "MongoDB backup failed"
           description: "The latest Percona Backup for MongoDB backup of the MongoDB deployment monitored by job {{ $labels.job }} (namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) failed at {{ $value | humanizeTimestamp }}, and no backup has completed successfully since. Until a backup succeeds, the newest restore point keeps getting older. Check pbm status and pbm logs --event=backup, the remote storage credentials and free space, and that pbm-agent runs next to every mongod."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbpbmbackupfailed"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # 26h assumes a daily schedule plus slack for a long backup.
       - alert: MongoDBPBMNoRecentBackup
@@ -816,7 +816,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             time()
             - max by (cluster, namespace, job) (
@@ -826,7 +826,7 @@ groups:
         annotations:
           summary: "MongoDB has no successful backup in the last 26 hours"
           description: "The last successful Percona Backup for MongoDB backup of the MongoDB deployment monitored by job {{ $labels.job }} (namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) finished {{ $value | humanizeDuration }} ago, more than 26 hours. With a daily schedule a backup has been missed, so a restore would lose more data than intended unless point-in-time recovery covers the gap. Check that the backup schedule still runs, pbm status, and whether a backup is stuck in a running state."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbpbmnorecentbackup"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # 0 = OK, 1 = error, 2 = lost.
       - alert: MongoDBPBMAgentUnhealthy
@@ -843,7 +843,7 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             max by (cluster, namespace, job, replica_set, host) (
               mongodb_pbm_agent_status
@@ -851,7 +851,7 @@ groups:
         annotations:
           summary: "MongoDB backup agent is unhealthy"
           description: "The PBM agent for {{ $labels.host }} in replica set {{ $labels.replica_set }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) has reported status {{ $value }} (1 = error, 2 = lost) for 10 minutes. Backups and point-in-time-recovery oplog slicing need a healthy agent next to every mongod, so new backups can fail or leave gaps. Check that pbm-agent is running next to this mongod, its log, and pbm status."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbpbmagentunhealthy"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
 
       # -----------------------------------------------------------------------
       # Awareness
@@ -869,10 +869,10 @@ groups:
           tech_stack: mongodb
           signal: cause
           category: data
-          runbook: runbooks/databases/mongodb.md
+          runbook: runbooks/databases/mongodb.yaml
           query: |
             mongodb_ss_uptime < 600
         annotations:
           summary: "MongoDB instance restarted"
           description: "mongod on {{ $labels.instance }} (job {{ $labels.job }}, namespace {{ $labels.namespace }}, cluster {{ $labels.cluster }}) started {{ $value | humanizeDuration }} ago. Its WiredTiger cache starts empty, so queries are slower until the working set is loaded again, and a primary restart forces an election. If this was not planned maintenance, check the end of the previous mongod log for the shutdown reason (OOM kill, fatal assertion, signal from the orchestrator)."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.md#mongodbinstancerestarted"
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/mongodb.yaml"
