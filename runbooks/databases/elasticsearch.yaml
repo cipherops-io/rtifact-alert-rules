@@ -1,4 +1,6 @@
-# Elasticsearch self-hosted runbook: VictoriaMetrics evidence only.
+# Elasticsearch self-hosted runbook: VictoriaMetrics evidence plus live
+# read-only Elasticsearch MCP calls. VM is VictoriaMetrics. There is no
+# parent/child routing: every live call uses the single configured connection.
 # Source: the 10 enabled Elasticsearch rules supplied on 2026-10-13.
 # Query inputs: raw alert label $instance + the platform's scoped VM datasource.
 # Installation target: runbooks/databases/elasticsearch.yaml
@@ -8,14 +10,26 @@
 # Supporting topk lists are target-scoped candidates; they are not full inventories.
 
 tech_stack: elasticsearch
-version: '1.0'
+version: '2.0'
 description: >-
-  VictoriaMetrics-only investigation runbook for the ten enabled rules in rules/metrics/databases/elasticsearch.yml.
+  LIVE TOOLS: besides tool.query_metrics, each alert ends with a step of
+  read-only mcp.elasticsearch.* calls against the Elasticsearch connection
+  configured for this integration. Unlike the Elastic Cloud runbook there is no
+  parent (monitoring) or child (source) deployment and no target field: the
+  stored exporter samples come from VM and current state comes from the live
+  cluster. The MCP connection must reach the same Elasticsearch cluster as the
+  alerting exporter; compare cluster_name from live cluster_health with the
+  alert's cluster label before using any live result. A failed, unauthorized or
+  unreachable live call is recorded as NOT RUN evidence and does not stop the
+  independent VM queries. Live readings are point-in-time, not the rule window;
+  native counters are cumulative since node start. Optional calls that need
+  $name (node), $index or a bound index are skipped when that value is missing.
+  The VM sections below describe the original metric-only behaviour.
+  Investigation runbook for the ten enabled rules in rules/metrics/databases/elasticsearch.yml.
   Intended for self-hosted Elasticsearch exported through prometheus-community/elasticsearch_exporter.
-  Every diagnostic call is tool.query_metrics; all queried metric names are in the supplied 229-metric
-  inventory. The exporter already collects Elasticsearch statistics; this runbook reads those stored samples
-  and does not open an Elasticsearch connection. It needs no Elasticsearch API key, password, Kibana URL
-  or CA certificate at execution time. VM access and tenant routing remain the platform's responsibility.
+  Every VM call is tool.query_metrics; all queried metric names are in the supplied 229-metric
+  inventory. The exporter already collects Elasticsearch statistics; VM steps read those stored samples.
+  Live steps use the Elasticsearch MCP connection's own credentials. VM access and tenant routing remain the platform's responsibility.
   VictoriaMetrics is the evidence store, not an Elasticsearch parent deployment. EXECUTION AND IDENTITY:
   use the same common_alerts, diagnostic_steps, tool_calls, params.queries and panel fields as the reference
   ClickHouse runbook. The sole query placeholder is $instance. The runner MUST resolve it from the original
@@ -72,8 +86,8 @@ description: >-
   High confidence in a measured symptom does not mean high confidence in its underlying cause. Correlation
   and temporal precedence support a hypothesis but do not prove an exact failed request, allocation decider,
   master election failure or disk error. Where metrics cannot decide, say root cause unconfirmed and list
-  the specific missing evidence for the owner. This version does not call logs, Kubernetes diagnostics
-  or live APIs to fill those gaps. Remediation entries are conditional human recommendations, not executable
+  the specific missing evidence for the owner. This version does not call logs or Kubernetes diagnostics;
+  live Elasticsearch APIs are limited to the read-only calls listed below. Remediation entries are conditional human recommendations, not executable
   actions. Never claim a change was applied, approve data loss, or close an incident only because the
   alert resolved, its rolling window expired or traffic stopped.
 match_keywords:
@@ -350,6 +364,273 @@ index_storage_queries: &index_storage_queries
     query: 'topk(10, elasticsearch_indices_shards_store_size_in_bytes{instance="$instance"})'
   - name: reported_read_only_indices
     query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}'
+available_tools:
+  - tool.query_metrics — VictoriaMetrics; scoped by the platform datasource
+  - mcp.elasticsearch.cluster_health — read-only; live cluster connection
+  - mcp.elasticsearch.nodes_info — read-only; live cluster connection
+  - mcp.elasticsearch.nodes_stats — read-only; live cluster connection
+  - mcp.elasticsearch.nodes_hot_threads — read-only; live cluster connection
+  - mcp.elasticsearch.cat_shards — read-only; live cluster connection
+  - mcp.elasticsearch.cluster_get_settings — read-only; live cluster connection
+  - mcp.elasticsearch.cluster_allocation_explain — read-only; live cluster connection
+  - mcp.elasticsearch.get_index — read-only; live cluster connection
+  - mcp.elasticsearch.ilm_explain_lifecycle — read-only; live cluster connection
+  - mcp.elasticsearch.search_query_dsl — read-only; not used by this runbook (no monitoring indices)
+
+# Live MCP calls. Same tools and arguments as the Elastic Cloud child calls,
+# without target: there is one connection, to the alerting cluster itself.
+live_health: &live_health
+  tool_id: mcp.elasticsearch.cluster_health
+  description: >-
+    Live: current health and aggregate shard/node/pending-task counts. Match
+    cluster_name with the alert's cluster label before trusting other live calls.
+  params:
+    arguments:
+      level: cluster
+    summary_chars: 4000
+    fields:
+      - cluster=cluster_name
+      - status=status
+      - timed_out=timed_out
+      - nodes=number_of_nodes
+      - data_nodes=number_of_data_nodes
+      - unassigned=unassigned_shards
+      - unassigned_primaries=unassigned_primary_shards
+      - active_primaries=active_primary_shards
+      - initializing=initializing_shards
+      - relocating=relocating_shards
+      - delayed_unassigned=delayed_unassigned_shards
+      - pending_tasks=number_of_pending_tasks
+      - max_task_wait_ms=task_max_waiting_in_queue_millis
+
+live_nodes_info: &live_nodes_info
+  tool_id: mcp.elasticsearch.nodes_info
+  description: >-
+    Live: node identities, roles and Elasticsearch versions. Inspect _nodes.failed;
+    a truncated summary does not prove a node is missing.
+  params:
+    arguments:
+      nodeId: _all
+      metric: _none
+    summary_chars: 4000
+
+live_jvm_stats: &live_jvm_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: current heap, memory pools, GC counts/times and uptime per node. GC
+    counters are cumulative since node start; use VM rates for the alert window.
+  params:
+    arguments:
+      metric: jvm
+    summary_chars: 4000
+
+live_breaker_stats: &live_breaker_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: circuit breaker estimated size, limit, overhead and cumulative trips
+    per node. Trips are cumulative; compare with the VM 10m increase.
+  params:
+    arguments:
+      metric: breaker
+    summary_chars: 4000
+
+live_cpu_stats: &live_cpu_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: OS/process CPU, load average and cgroup throttling counters per node.
+  params:
+    arguments:
+      metric: os,process
+    summary_chars: 4000
+
+live_disk_stats: &live_disk_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: available/total bytes for each data path and filesystem I/O counters.
+  params:
+    arguments:
+      metric: fs
+    summary_chars: 4000
+
+live_pool_stats: &live_pool_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: thread-pool queue/active/rejected counts and indexing-pressure
+    counters per node. Rejections are cumulative since node start.
+  params:
+    arguments:
+      metric: thread_pool,indexing_pressure
+    summary_chars: 4000
+
+live_index_stats: &live_index_stats
+  tool_id: mcp.elasticsearch.nodes_stats
+  description: >-
+    Live: per-node fielddata, query/request cache, segments, merge, indexing and
+    search statistics. Not a per-index breakdown.
+  params:
+    arguments:
+      metric: indices
+    summary_chars: 4000
+
+live_hot_threads: &live_hot_threads
+  tool_id: mcp.elasticsearch.nodes_hot_threads
+  description: >-
+    Live: top CPU thread samples across all nodes. Current sample only; quiet
+    output does not rule out an earlier spike.
+  params:
+    arguments:
+      type: cpu
+      threads: 3
+      interval: 500ms
+    summary_chars: 4000
+
+live_node_hot_threads: &live_node_hot_threads
+  tool_id: mcp.elasticsearch.nodes_hot_threads
+  description: >-
+    Live: focused stacks for the alert's node (exporter label name). Missing
+    $name skips only this optional call.
+  params:
+    arguments:
+      nodeId: $name
+      type: cpu
+      threads: 3
+      interval: 500ms
+    summary_chars: 4000
+
+live_shards: &live_shards
+  tool_id: mcp.elasticsearch.cat_shards
+  description: >-
+    Live: shard state, primary/replica flag, node placement and store size. Do not
+    treat a summarized prefix as the full inventory.
+  params:
+    arguments: {}
+    summary_chars: 4000
+
+live_cluster_settings: &live_cluster_settings
+  tool_id: mcp.elasticsearch.cluster_get_settings
+  description: >-
+    Live: allocation and disk-watermark settings with defaults. Precedence is
+    transient, then persistent, then defaults. Missing fields are unknown.
+  params:
+    arguments:
+      include_defaults: true
+      flat_settings: false
+    summary_chars: 4000
+    fields:
+      - transient.cluster.routing.allocation.disk.threshold_enabled
+      - transient.cluster.routing.allocation.disk.watermark.low
+      - transient.cluster.routing.allocation.disk.watermark.high
+      - transient.cluster.routing.allocation.disk.watermark.flood_stage
+      - transient.cluster.routing.allocation.enable
+      - transient.cluster.routing.rebalance.enable
+      - transient.cluster.routing.allocation.awareness
+      - transient.cluster.routing.allocation.include
+      - transient.cluster.routing.allocation.exclude
+      - transient.cluster.routing.allocation.require
+      - transient.cluster.routing.allocation.total_shards_per_node
+      - persistent.cluster.routing.allocation.disk.threshold_enabled
+      - persistent.cluster.routing.allocation.disk.watermark.low
+      - persistent.cluster.routing.allocation.disk.watermark.high
+      - persistent.cluster.routing.allocation.disk.watermark.flood_stage
+      - persistent.cluster.routing.allocation.enable
+      - persistent.cluster.routing.rebalance.enable
+      - persistent.cluster.routing.allocation.awareness
+      - persistent.cluster.routing.allocation.include
+      - persistent.cluster.routing.allocation.exclude
+      - persistent.cluster.routing.allocation.require
+      - persistent.cluster.routing.allocation.total_shards_per_node
+      - defaults.cluster.routing.allocation.disk.threshold_enabled
+      - defaults.cluster.routing.allocation.disk.watermark.low
+      - defaults.cluster.routing.allocation.disk.watermark.high
+      - defaults.cluster.routing.allocation.disk.watermark.flood_stage
+      - defaults.cluster.routing.allocation.enable
+      - defaults.cluster.routing.rebalance.enable
+      - defaults.cluster.routing.allocation.total_shards_per_node
+
+# Explains ONE automatically selected unassigned shard and binds its index.
+# With no unassigned shard the API returns an error; that is not an outage.
+live_allocation_explain: &live_allocation_explain
+  tool_id: mcp.elasticsearch.cluster_allocation_explain
+  description: >-
+    Live: allocation decision for one automatically selected unassigned shard.
+    Deciders are evidence for that shard only.
+  params:
+    arguments: {}
+    summary_chars: 4000
+    fields:
+      - index=index
+      - shard=shard
+      - primary=primary
+      - state=current_state
+      - reason=unassigned_info.reason
+      - since=unassigned_info.at
+      - details=unassigned_info.details
+      - can_allocate=can_allocate
+      - explanation=allocate_explanation
+      - node_names=node_allocation_decisions[*].node_name
+      - node_decisions=node_allocation_decisions[*].node_decision
+      - deciders=node_allocation_decisions[*].deciders[*].decider
+      - decisions=node_allocation_decisions[*].deciders[*].decision
+      - reasons=node_allocation_decisions[*].deciders[*].explanation
+    bind:
+      rtfUnassignedIndex:
+        pick: index
+
+live_allocation_index: &live_allocation_index
+  tool_id: mcp.elasticsearch.get_index
+  description: >-
+    Live: settings for the index bound by allocation explain. Inspect
+    number_of_replicas, routing filters/tier preference, index.blocks and
+    index.lifecycle. Settings omitted by the summary are unknown, not defaults.
+  params:
+    arguments:
+      index: $rtfUnassignedIndex
+    summary_chars: 4000
+
+live_allocation_ilm: &live_allocation_ilm
+  tool_id: mcp.elasticsearch.ilm_explain_lifecycle
+  description: >-
+    Live: ILM phase/action/step and any step error for the index bound by
+    allocation explain. managed=false is not an error.
+  params:
+    arguments:
+      index: $rtfUnassignedIndex
+      only_errors: false
+      only_managed: false
+    summary_chars: 4000
+
+live_alert_index: &live_alert_index
+  tool_id: mcp.elasticsearch.get_index
+  description: >-
+    Live: settings, mappings and aliases of the alert's index label. Missing
+    $index skips this optional call.
+  params:
+    arguments:
+      index: $index
+    summary_chars: 4000
+
+live_alert_shards: &live_alert_shards
+  tool_id: mcp.elasticsearch.cat_shards
+  description: >-
+    Live: shard state and placement for the alert's index label. Missing $index
+    skips this optional call.
+  params:
+    arguments:
+      index: $index
+    summary_chars: 4000
+
+live_alert_ilm: &live_alert_ilm
+  tool_id: mcp.elasticsearch.ilm_explain_lifecycle
+  description: >-
+    Live: ILM state and step error for the alert's index label. Missing $index
+    skips this optional call.
+  params:
+    arguments:
+      index: $index
+      only_errors: false
+      only_managed: false
+    summary_chars: 4000
+
 common_alerts:
   - name: ElasticsearchMetricsCollectionFailed
     patterns:
@@ -459,6 +740,19 @@ common_alerts:
                 - name: collection_incident_index_rate
                   unit: operations/s
                   query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+      - step: 4
+        title: Test live cluster access independently of the exporter
+        description: >-
+          Query the cluster directly through the MCP connection. A healthy live
+          response alongside a failed collector points to the exporter path
+          (endpoint, credentials, TLS, timeouts or a collector-specific API)
+          rather than an Elasticsearch outage. If live calls also fail, keep their
+          actual errors; the MCP connection may use a different network path and
+          credentials, so a shared failure suggests but does not prove a cluster
+          outage. Confirm cluster_name matches the alert before relying on it.
+        tool_calls:
+          - *live_health
+          - *live_nodes_info
     remediation:
       - action: repair_the_confirmed_collection_fault
         description: >-
@@ -586,6 +880,25 @@ common_alerts:
                 - name: red_index_operations_per_second
                   unit: operations/s
                   query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+      - step: 5
+        title: Identify the unassigned primary and why it cannot allocate
+        description: >-
+          Read current health and shard placement, then the allocation explanation
+          for one automatically selected unassigned shard. Prefer evidence where
+          primary=true; a replica selection explains YELLOW, not RED. Deciders such
+          as disk_threshold, filter, same_shard or max_retry name the blocking rule;
+          no_valid_shard_copy means no on-disk copy is available and needs the
+          owner, not a forced allocation. Inspect the bound index's settings and
+          ILM state for routing filters, tier preference and lifecycle errors.
+          Allocation explain selects one shard only; other red indices may have
+          different causes.
+        tool_calls:
+          - *live_health
+          - *live_shards
+          - *live_allocation_explain
+          - *live_allocation_index
+          - *live_allocation_ilm
+          - *live_cluster_settings
     remediation:
       - action: restore_confirmed_missing_capacity
         description: >-
@@ -699,6 +1012,22 @@ common_alerts:
               Cluster-management delays that may impede allocation.
             params:
               queries: *cluster_task_queries
+      - step: 4
+        title: Explain the unassigned replica against live topology and settings
+        description: >-
+          Compare data-node count from live nodes_info with the bound index's
+          number_of_replicas: replicas plus one must not exceed eligible data
+          nodes. Read the allocation decision for one unassigned shard; same_shard
+          on a single-node cluster is the expected single-node case. Check disk
+          watermark, awareness and allocation filter settings for other deciders.
+          delayed_unassigned shards may still allocate after node_left timeout.
+        tool_calls:
+          - *live_health
+          - *live_nodes_info
+          - *live_allocation_explain
+          - *live_allocation_index
+          - *live_allocation_ilm
+          - *live_cluster_settings
     remediation:
       - action: restore_replica_capacity
         description: >-
@@ -824,6 +1153,19 @@ common_alerts:
                   query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
                 - name: low_disk_index_failures_10m
                   query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+      - step: 4
+        title: Compare live free space with the effective disk watermarks
+        description: >-
+          Read live free/total bytes for each data path and the effective
+          watermarks (transient, then persistent, then defaults; values may be
+          percentages or absolute bytes, and max_headroom can apply). Locate the
+          largest shards on the alerting node from cat_shards. This shows whether
+          low or high watermark is currently exceeded and which shards relocation
+          would move; it does not identify growth rate, which comes from VM.
+        tool_calls:
+          - *live_disk_stats
+          - *live_cluster_settings
+          - *live_shards
     remediation:
       - action: restore_usable_disk_capacity
         description: >-
@@ -946,6 +1288,20 @@ common_alerts:
                   query: 'elasticsearch_cluster_health_relocating_shards{instance="$instance"}'
                 - name: critical_disk_index_failures_10m
                   query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
+      - step: 4
+        title: Check live free space, flood-stage watermark and allocation impact
+        description: >-
+          Compare live free bytes on the alerting path with the effective
+          flood_stage watermark. Above flood stage Elasticsearch sets
+          index.blocks.read_only_allow_delete on indices with shards on that node.
+          Check cluster health and shard placement for relocation or unassigned
+          shards caused by disk deciders. Do not remove read-only blocks or delete
+          indices automatically.
+        tool_calls:
+          - *live_disk_stats
+          - *live_cluster_settings
+          - *live_health
+          - *live_shards
     remediation:
       - action: restore_usable_disk_capacity
         description: >-
@@ -1087,6 +1443,21 @@ common_alerts:
               Named circuit breaker activity and current estimates.
             params:
               queries: *breaker_queries
+      - step: 4
+        title: Read live heap pools, breakers, caches and hot threads
+        description: >-
+          Compare live heap_used_percent with the VM ratio to confirm the
+          connection reaches the same nodes. The old-generation pool's usage that
+          stays high after collections indicates retained data; fielddata, query
+          cache and segment memory in indices stats show common holders. Breaker
+          estimates near their limits show which request type is consuming heap.
+          Hot threads on the alerting node can reveal expensive aggregations or
+          GC activity. All readings are a single point in time.
+        tool_calls:
+          - *live_jvm_stats
+          - *live_breaker_stats
+          - *live_index_stats
+          - *live_node_hot_threads
     remediation:
       - action: reduce_confirmed_memory_demand
         description: >-
@@ -1205,6 +1576,20 @@ common_alerts:
               Operation rates, comparison windows and mean operation time.
             params:
               queries: *node_workload_queries
+      - step: 4
+        title: Read live breaker usage, heap and cache holders
+        description: >-
+          Find the alert's breaker on the alerting node: compare estimated size
+          with limit and the cumulative tripped count. A parent breaker near its
+          limit reflects overall heap; fielddata or request breakers point to
+          aggregations or large requests. Compare fielddata/segment memory from
+          indices stats. Trips are cumulative since node start, so use the VM
+          10-minute increase for the alert window. Do not raise breaker limits
+          from this evidence alone.
+        tool_calls:
+          - *live_breaker_stats
+          - *live_jvm_stats
+          - *live_index_stats
     remediation:
       - action: reduce_the_implicated_request_memory
         description: >-
@@ -1329,6 +1714,20 @@ common_alerts:
               Storage and merge activity supporting the bottleneck assessment.
             params:
               queries: *storage_activity_queries
+      - step: 4
+        title: Read live queues, indexing pressure, CPU and hot threads
+        description: >-
+          For the alert's pool type, compare live queue size and active threads
+          with the pool's configured size; a full queue with all threads active
+          confirms saturation. indexing_pressure rejections point to bulk write
+          memory limits rather than thread-pool queues. Compare CPU and cgroup
+          throttling, then hot threads on the alerting node and cluster-wide to
+          find the busy operation. Rejection counters are cumulative.
+        tool_calls:
+          - *live_pool_stats
+          - *live_cpu_stats
+          - *live_node_hot_threads
+          - *live_hot_threads
     remediation:
       - action: reduce_overload_at_its_source
         description: >-
@@ -1494,6 +1893,22 @@ common_alerts:
                   query: 'increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m])'
                 - name: index_recovery_operations_10m
                   query: 'increase(elasticsearch_index_stats_indexing_index_total{instance="$instance"}[10m])'
+      - step: 5
+        title: Inspect the alert index's live settings, shards and lifecycle
+        description: >-
+          Read the alert index's settings and mappings for index.blocks (write or
+          read_only_allow_delete), strict dynamic mapping or field limits, and its
+          lifecycle state for rollover or step errors. Check its shards are
+          STARTED and cluster health is not red. Write pool and indexing-pressure
+          rejections show capacity-related failures. None of these show the
+          per-document error; the producer's bulk responses remain the source of
+          the exact reason.
+        tool_calls:
+          - *live_alert_index
+          - *live_alert_shards
+          - *live_alert_ilm
+          - *live_health
+          - *live_pool_stats
     remediation:
       - action: repair_the_verified_error_and_recover_failed_items
         description: >-
@@ -1629,8 +2044,8 @@ common_alerts:
           Report observed search/index activity alongside queue delay rather than asserting a full database
           outage. Aggregate activity is not proof every request succeeds. If queue age/count do not improve,
           report a persistent management backlog with the supported workload/resource context. The exact
-          queued operation and cause remain unknown without task details from the owner; this runbook
-          does not fetch them live.
+          queued operation and cause remain unknown without task details from the owner; the live
+          cluster_health call reports only the pending-task count.
         tool_calls:
           - tool_id: tool.query_metrics
             description: >-
@@ -1643,6 +2058,21 @@ common_alerts:
                 - name: task_delay_index_operations_per_second
                   unit: operations/s
                   query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+      - step: 5
+        title: Read live pending tasks, master identity and master resources
+        description: >-
+          Live cluster_health reports the pending-task count and longest wait.
+          Identify the elected master from nodes_info roles, then compare its heap,
+          GC and CPU with peers and sample hot threads cluster-wide. A master under
+          heap or GC pressure, or a large shard count, commonly delays cluster
+          state updates. Pending task sources and priorities are not returned by
+          these tools; request them from the owner if needed.
+        tool_calls:
+          - *live_health
+          - *live_nodes_info
+          - *live_jvm_stats
+          - *live_cpu_stats
+          - *live_hot_threads
     remediation:
       - action: reduce_verified_cluster_state_pressure
         description: >-
@@ -1664,13 +2094,47 @@ common_alerts:
       - >-
         Have the owner verify that the delayed creation/mapping/allocation work completed. A lower sampled
         wait alone does not prove each queued change succeeded.
+general_diagnostic:
+  steps:
+    - step: 1
+      title: Establish exporter scope and collection quality
+      description: >-
+        For an unmatched Elasticsearch alert, require $instance before querying VM.
+        Report missing or stale evidence explicitly. No remediation runs automatically.
+      tool_calls:
+        - tool_id: tool.query_metrics
+          description: Collector status, freshness and coverage.
+          params:
+            queries: *collection_quality_queries
+        - tool_id: tool.query_metrics
+          description: Cluster health and shard counts for the same target.
+          params:
+            queries: *cluster_health_queries
+    - step: 2
+      title: Read live cluster health and node identity
+      description: >-
+        Confirm the MCP connection reaches the alerting cluster by cluster_name,
+        then record health, node roles and versions as point-in-time context.
+      tool_calls:
+        - *live_health
+        - *live_nodes_info
+    - step: 3
+      title: Read a live resource snapshot
+      description: >-
+        Heap, disk and thread-pool readings for every node. They are context for
+        an unmatched alert, not evidence for its window.
+      tool_calls:
+        - *live_jvm_stats
+        - *live_disk_stats
+        - *live_pool_stats
+
 escalation: >-
   Route monitoring/collection failures to the exporter owner, capacity and cluster-availability incidents
   to the Elasticsearch/platform owner, and request-driven failures to the relevant application or producer
   owner. Preserve the rule's priority: cluster red P0; collection failure and critical disk P1; the other
   seven rules P2. Escalate on separately observed impact rather than inventing it from an empty query.
   Include object labels, time window, evidence query names/values/timestamps, coverage limitations, confidence
-  and the exact unanswered question. There is no live-tool fallback in this version.
+  and the exact unanswered question. Report live-call results separately from VM evidence, with any NOT RUN calls.
 follow_up:
   - >-
     Before deployment, verify the real runner resolves raw alert labels.instance, the VictoriaMetrics
