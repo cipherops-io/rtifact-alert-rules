@@ -1,5 +1,7 @@
 # Runbook: MongoDB (self-hosted)
 
+> The alerts link to the structured runbook [`mongodb.yaml`](mongodb.yaml), which drives the automated investigation (metric queries and live reads). This page is the human-readable companion with the manual commands.
+
 These alerts read metrics from [percona/mongodb_exporter](https://github.com/percona/mongodb_exporter) v0.40+ in its default naming mode (no `--compatible-mode`). One exporter runs next to every mongod and connects to it directly. Commands below assume the Percona Operator for MongoDB layout: `mongod` and `backup-agent` containers, data at `/data/db`. MongoDB Atlas has its own runbook: [`mongodb-atlas.yaml`](mongodb-atlas.yaml).
 
 Replica-set alerts carry `rs_nm` (replica set name) and, for member alerts, `member_idx` (the member's `host:port` as listed in `rs.status()`). Every alert carries `cluster`, `namespace` and `job`: the exporter's scrape job and namespace, which identify the MongoDB deployment. Instance alerts also carry the exporter's `instance` and `pod`.

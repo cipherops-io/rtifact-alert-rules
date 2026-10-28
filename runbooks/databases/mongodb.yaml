@@ -1,0 +1,2419 @@
+tech_stack: mongodb
+version: '1.0'
+description: 'Investigation runbook for self-hosted MongoDB (replica sets and standalone servers, including Percona Server for MongoDB run by the Percona Operator) monitored by percona/mongodb_exporter
+  in its default naming mode. It does not cover MongoDB Atlas (see the MongoDB Atlas runbook). The main evidence is VictoriaMetrics; live reads go through the MongoDB database connector (mcp.mongodb-database.mongodb_logs
+  and list_databases) as independent best-effort calls. A missing integration, a connection that does not reach the alerting deployment, a permission error or a timeout is recorded and does not stop the
+  other calls or the VictoriaMetrics evidence. The connector offers no replSetGetStatus, serverStatus or currentOp, so replica-set, load and cache evidence comes from the exporter''s metrics, not from live
+  commands. IDENTITY: job is the exporter''s scrape job and identifies one MongoDB deployment. instance is the monitored mongod: with the prometheus-mongodb-exporter chart in multi-target mode it is mongodb://<member-host>:<port>
+  (one exporter target per member); otherwise it is the exporter''s own endpoint. rs_nm is the replica set name and member_idx is a member''s host:port as listed by rs.status(); replica_set and host identify
+  a Percona Backup for MongoDB agent. Every MongoDB metric selector below uses job plus instance, or job plus rs_nm (plus member_idx), because the series'' own namespace, pod and service labels describe
+  the exporter pod. Never replace missing labels with guessed values and never add a namespace selector to a MongoDB metric. WORKLOAD LABELS: the alert processor sets namespace, service and pod to the MongoDB
+  pod, namespace and service only when the member address (member_idx, host or instance) is a cluster DNS name such as <pod>.<service>.<namespace>.svc; the exporter''s own labels are then kept as exporter_*.
+  When the address is an IP or an external host, namespace and pod are the exporter''s, and the kube_* queries in this runbook describe the exporter, not MongoDB. Alerts aggregated across members (no primary,
+  all instances down, backups) carry the exporter''s namespace and job only. TIME AND EVIDENCE: queries evaluate at the runner''s evaluation time; graphs and rolling windows give context but do not reproduce
+  the alert''s for duration or the order of events. Replica-set date metrics (optimeDate, electionDate, wall times) are milliseconds since the epoch; PBM timestamps are seconds. mongodb_rs_myState and the
+  member state series are current values; do not use the rs_state label, which the exporter reads once at connect time. Missing series, skipped calls, permission errors and timeouts mean unavailable evidence,
+  not zero or recovery. mongodb_up = 1 reports that mongod answered a ping, not that every collector succeeded. Log reads are point-in-time and cannot show history or select a member. OUTPUT: identify the
+  exact deployment (job), replica set and member where known, separate observed symptoms from inferred causes, report current versus historical evidence and gaps, and name an owner action with measurable
+  recovery checks. All remediation entries are human recommendations, not executable actions.'
+match_keywords:
+- mongodb_exporter
+- mongodb-exporter
+- mongodb_up
+- mongodb_rs
+- mongodb_ss
+- psmdb
+- percona server for mongodb
+- percona backup for mongodb
+- self-hosted mongodb
+categories:
+- DATA
+- DATABASE
+availability_queries:
+- name: mongodb_up_for_instance
+  query: mongodb_up{job="$job",instance="$instance"}
+  panel: true
+  panel_title: 'MongoDB Reachable From Exporter: 1 = Up'
+  panel_id: mongodb-mongodb-up-for-instance
+- name: mongodb_up_sample_age_seconds
+  unit: s
+  query: time() - timestamp(mongodb_up{job="$job",instance="$instance"})
+- name: mongodb_up_samples_5m
+  query: count_over_time(mongodb_up{job="$job",instance="$instance"}[5m])
+- name: mongod_uptime_seconds
+  unit: s
+  query: mongodb_ss_uptime{job="$job",instance="$instance"}
+  panel: true
+  panel_title: mongod Uptime (s)
+  panel_id: mongodb-mongod-uptime-seconds
+- name: job_scrape_up_by_instance
+  query: up{job="$job"}
+  panel: true
+  panel_title: 'Exporter Scrape by Target: 1 = Scraped'
+  panel_id: mongodb-job-scrape-up-by-instance
+replica_set_queries:
+- name: members_state_by_member
+  query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+  panel: true
+  panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+  panel_id: mongodb-members-state-by-member
+- name: members_health_by_member
+  query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+  panel: true
+  panel_title: 'Member Health: 1 = Reachable'
+  panel_id: mongodb-members-health-by-member
+- name: reporting_members
+  query: count by (rs_nm) (mongodb_rs_myState{job="$job",rs_nm="$rs_nm"})
+- name: primary_members
+  query: count by (rs_nm) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"} == 1)
+- name: election_term
+  query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"})
+- name: election_term_change_1h
+  query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 1h)
+  panel: true
+  panel_title: Election Term Increase in 1h
+  panel_id: mongodb-election-term-change-1h
+replication_queries:
+- name: secondary_lag_by_member_seconds
+  unit: s
+  query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"})
+    / 1000
+  panel: true
+  panel_title: Secondary Replication Lag by Member (s)
+  panel_id: mongodb-secondary-lag-by-member-seconds
+- name: majority_commit_lag_seconds
+  unit: s
+  query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+  panel: true
+  panel_title: Majority Commit Point Lag (s)
+  panel_id: mongodb-majority-commit-lag-seconds
+- name: flow_control_lagged
+  query: mongodb_ss_flowControl_isLagged{job="$job",instance="$instance"}
+  panel: true
+  panel_title: 'Flow Control Throttling: 1 = Engaged'
+  panel_id: mongodb-flow-control-lagged
+- name: oplog_window_seconds_estimate
+  unit: s
+  query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance="$instance"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance="$instance"}[1h])
+  panel: true
+  panel_title: Estimated Oplog Window (s)
+  panel_id: mongodb-oplog-window-seconds-estimate
+- name: write_concern_timeouts_10m
+  query: increase(mongodb_ss_metrics_getLastError_wtimeouts{job="$job",instance="$instance"}[10m])
+  panel: true
+  panel_title: Write Concern Timeouts (10m)
+  panel_id: mongodb-write-concern-timeouts-10m
+connection_queries:
+- name: connections_used_pct
+  unit: '%'
+  query: 100 * mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} / ignoring (conn_type) (mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} + ignoring
+    (conn_type) mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"})
+  panel: true
+  panel_title: Connections Used of Limit (%)
+  panel_id: mongodb-connections-used-pct
+- name: connections_current
+  query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"}
+- name: connections_available
+  query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"}
+- name: connections_created_rate
+  query: rate(mongodb_ss_connections{job="$job",instance="$instance",conn_type="totalCreated"}[5m])
+  panel: true
+  panel_title: New Connections per Second
+  panel_id: mongodb-connections-created-rate
+workload_queries:
+- name: ops_queued_by_type
+  query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+  panel: true
+  panel_title: Operations Queued by Type
+  panel_id: mongodb-ops-queued-by-type
+- name: write_latency_avg_ms
+  unit: ms
+  query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+  panel: true
+  panel_title: Average Write Latency (ms)
+  panel_id: mongodb-write-latency-avg-ms
+- name: write_ops_rate
+  query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+  panel: true
+  panel_title: Writes per Second
+  panel_id: mongodb-write-ops-rate
+- name: cursors_timed_out_10m
+  query: increase(mongodb_ss_metrics_cursor_timedOut{job="$job",instance="$instance"}[10m])
+  panel: true
+  panel_title: Cursors Timed Out (10m)
+  panel_id: mongodb-cursors-timed-out-10m
+cache_queries:
+- name: cache_used_pct
+  unit: '%'
+  query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+  panel: true
+  panel_title: WiredTiger Cache Used (%)
+  panel_id: mongodb-cache-used-pct
+- name: cache_dirty_pct
+  unit: '%'
+  query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+  panel: true
+  panel_title: WiredTiger Cache Dirty (%)
+  panel_id: mongodb-cache-dirty-pct
+- name: cache_max_bytes
+  unit: B
+  query: mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+- name: mongod_resident_memory
+  unit: MB
+  query: mongodb_ss_mem_resident{job="$job",instance="$instance"}
+storage_queries:
+- name: disk_monitor_actions_5m
+  query: increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction{job="$job",instance="$instance"}[5m])
+  panel: true
+  panel_title: Disk Space Monitor Actions (5m)
+  panel_id: mongodb-disk-monitor-actions-5m
+- name: data_volume_used_pct
+  unit: '%'
+  query: 100 * kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim=~".*$pod"} / kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim=~".*$pod"}
+  panel: true
+  panel_title: Data Volume Used (%)
+  panel_id: mongodb-data-volume-used-pct
+- name: fsync_lock_state
+  query: mongodb_currentop_fsync_lock_state{job="$job",instance="$instance"}
+  panel: true
+  panel_title: 'fsync Lock: 1 = Locked'
+  panel_id: mongodb-fsync-lock-state
+backup_queries:
+- name: pbm_backups_by_status
+  query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+  panel: true
+  panel_title: PBM Backups by Status (last transition, epoch s)
+  panel_id: mongodb-pbm-backups-by-status
+- name: pbm_last_success_age_seconds
+  unit: s
+  query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status="done"})
+  panel: true
+  panel_title: Age of Last Successful Backup (s)
+  panel_id: mongodb-pbm-last-success-age-seconds
+- name: pbm_agent_status_all
+  query: max by (replica_set, host) (mongodb_pbm_agent_status{job="$job"})
+  panel: true
+  panel_title: 'PBM Agent Status: 0 = OK, 1 = Error, 2 = Lost'
+  panel_id: mongodb-pbm-agent-status-all
+- name: pbm_backup_configured
+  query: max by (job) (mongodb_pbm_cluster_backup_configured{job="$job"})
+live_mongodb_logs:
+  tool_id: mcp.mongodb-database.mongodb_logs
+  description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+    string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+    an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+    record the call as NOT RUN.'
+  params:
+    arguments:
+      type: global
+      limit: 50
+    timeout: 10
+live_mongodb_startup_warnings:
+  tool_id: mcp.mongodb-database.mongodb_logs
+  description: 'Read at most 20 startup warnings and errors from the mongod the connection reaches. Use it to see why a recent start was unclean (unclean shutdown recovery, storage warnings). Same limits
+    as the global log call: no member selector, point-in-time, not historical.'
+  params:
+    arguments:
+      type: startupWarnings
+      limit: 20
+    timeout: 10
+live_databases:
+  tool_id: mcp.mongodb-database.list_databases
+  description: 'Bounded discovery of the databases visible to the connection, with sizes as returned. Sizes are point-in-time allocations: not growth, not working-set size and not filesystem usage. The
+    returned list can be a subset; report partial coverage. Do not fan out into per-database calls.'
+  params:
+    arguments: {}
+    timeout: 10
+common_alerts:
+- name: MongoDBExporterDown
+  patterns:
+  - MongoDBExporterDown
+  - MongoDB exporter target is not being scraped
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the exporter scrape failure
+    description: The rule is up == 0 for a MongoDB exporter job (job name contains mongo, not atlas) for 5 minutes. up says whether the metrics agent could scrape the exporter endpoint, not whether MongoDB
+      is healthy. Check sample count and flapping before treating it as a sustained outage; missing samples are unavailable evidence, not recovery.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: exporter_scrape_up
+          query: up{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'Exporter Scrape: 1 = Scraped'
+          panel_id: mongodb-exporter-scrape-up
+        - name: exporter_scrape_samples_5m
+          query: count_over_time(up{job="$job",instance="$instance"}[5m])
+        - name: exporter_scrape_flaps_1h
+          query: changes(up{job="$job",instance="$instance"}[1h])
+  - step: 2
+    title: Check whether other targets of the job still report
+    description: If every target of the job is down, suspect the exporter deployment, its Service or ServiceMonitor, or the metrics agent. If other targets still report mongodb_up, the problem is specific
+      to this exporter pod.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: job_scrape_up_by_instance
+          query: up{job="$job"}
+          panel: true
+          panel_title: 'Exporter Scrape by Target: 1 = Scraped'
+          panel_id: mongodb-job-scrape-up-by-instance
+        - name: job_mongodb_up_by_instance
+          query: mongodb_up{job="$job"}
+          panel: true
+          panel_title: 'MongoDB Reachable From Exporter by Target: 1 = Up'
+          panel_id: mongodb-job-mongodb-up-by-instance
+  - step: 3
+    title: Check the exporter pod
+    description: pod and namespace here describe the exporter, not MongoDB. Look for restarts and the last termination reason (OOMKilled, Error). Exporter logs are not read automatically; request them from
+      the monitoring owner.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pod_container_restarts
+          query: kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod"}
+          panel: true
+          panel_title: Pod Container Restarts
+          panel_id: mongodb-pod-container-restarts
+        - name: pod_last_terminated_reason
+          query: kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod"}
+        - name: pod_phase
+          query: kube_pod_status_phase{namespace="$namespace",pod="$pod"} == 1
+  remediation:
+  - action: repair_exporter_deployment
+    description: Inspect the exporter pod status and logs, its connection URI and credentials secret, TLS settings, the metrics port (9216 by default) and the ServiceMonitor or scrape config. Fix the failing
+      path; do not restart MongoDB because its exporter is down.
+    tool_id: ''
+    requires_approval: true
+  escalation: 'Monitoring owner; involve the MongoDB owner only if MongoDBDown also fires. P2: until scraping returns, the other MongoDB alerts for this target cannot fire.'
+  follow_up:
+  - Verify fresh up = 1 and mongodb_up samples for the same job.
+  - Confirm mongodb_ss_* and mongodb_rs_* series are present again so the other MongoDB alerts can evaluate.
+- name: MongoDBDown
+  patterns:
+  - MongoDBDown
+  - MongoDB instance is unreachable
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the unreachable MongoDB instance
+    description: The rule is mongodb_up == 0 for 2 minutes. mongodb_up is 1 when this exporter's ping to its mongod succeeds; 0 means it could not reach this mongod (down, overloaded, authentication or
+      network failure) without saying which. Check sample age and count. When mongod is down its serverStatus series stop, so a missing uptime is expected.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: mongodb_up_for_instance
+          query: mongodb_up{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'MongoDB Reachable From Exporter: 1 = Up'
+          panel_id: mongodb-mongodb-up-for-instance
+        - name: mongodb_up_sample_age_seconds
+          unit: s
+          query: time() - timestamp(mongodb_up{job="$job",instance="$instance"})
+        - name: mongodb_up_samples_5m
+          query: count_over_time(mongodb_up{job="$job",instance="$instance"}[5m])
+        - name: mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job",instance="$instance"}
+          panel: true
+          panel_title: mongod Uptime (s)
+          panel_id: mongodb-mongod-uptime-seconds
+  - step: 2
+    title: See how the rest of the replica set sees this member
+    description: Other members' heartbeats show whether this member is reachable from inside the replica set. Health 0 from the others supports a real mongod or network failure; healthy from the others
+      points at the exporter's own path (credentials, network policy, TLS). A standalone deployment returns no replica-set series.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: members_health_for_job
+          query: min by (rs_nm, member_idx) (mongodb_rs_members_health{job="$job"})
+        - name: members_state_for_job
+          query: max by (rs_nm, member_idx, member_state) (mongodb_rs_members_state{job="$job"})
+  - step: 3
+    title: Check the MongoDB pod
+    description: The alert's pod and namespace identify the MongoDB pod only when they were derived from the member address (a cluster DNS name); otherwise they are the exporter's and the kube queries describe
+      the exporter. Look for restarts, OOMKilled and a non-running phase.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pod_container_restarts
+          query: kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod"}
+          panel: true
+          panel_title: Pod Container Restarts
+          panel_id: mongodb-pod-container-restarts
+        - name: pod_last_terminated_reason
+          query: kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod"}
+        - name: pod_phase
+          query: kube_pod_status_phase{namespace="$namespace",pod="$pod"} == 1
+  - step: 4
+    title: Read recent mongod log entries
+    description: Near-current supporting evidence only. Look for fatal assertions, 'Slow query', election and stepdown lines, 'Too many open connections', replication errors and storage errors, and match
+      their timestamps to the alert start. An empty or unrelated result does not exclude the cause.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: recover_mongod_process
+    description: 'Inspect the MongoDB pod or host: termination reason (OOM kill, fatal assertion, disk full, failed upgrade), data volume health and the last log lines before shutdown. Restart or reschedule
+      only after the cause is understood and never delete the data volume. On a replica set, check that the member can rejoin and resync.'
+    tool_id: ''
+    requires_approval: true
+  - action: repair_exporter_access
+    description: If mongod is healthy and the other members report it healthy, check the exporter user (needs monitoring roles such as clusterMonitor), network policy, DNS and TLS between the exporter and
+      this member.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P1. If this member was the primary, confirm a new primary was elected (MongoDBReplicaSetNoPrimary).
+  follow_up:
+  - Verify mongodb_up = 1 and a fresh mongodb_ss_uptime for the same instance.
+  - Confirm the member is PRIMARY or SECONDARY again and its replication lag is shrinking.
+- name: MongoDBAllInstancesDown
+  patterns:
+  - MongoDBAllInstancesDown
+  - Every MongoDB instance of the service is unreachable
+  priority: P0
+  diagnostic_steps:
+  - step: 1
+    title: Confirm that no MongoDB instance of the job is reachable
+    description: 'The rule is max by (job) (mongodb_up) == 0 for 2 minutes: every exporter of this job reports that its mongod cannot be reached. If the scrape itself (up) is also 0 everywhere, the cause
+      is the exporter or the metrics path (see MongoDBExporterDown), not MongoDB. Do not call this a database outage until a live or application-side check agrees.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: job_mongodb_up_by_instance
+          query: mongodb_up{job="$job"}
+          panel: true
+          panel_title: 'MongoDB Reachable From Exporter by Target: 1 = Up'
+          panel_id: mongodb-job-mongodb-up-by-instance
+        - name: job_any_mongodb_up
+          query: max by (job) (mongodb_up{job="$job"})
+        - name: job_scrape_up_by_instance
+          query: up{job="$job"}
+          panel: true
+          panel_title: 'Exporter Scrape by Target: 1 = Scraped'
+          panel_id: mongodb-job-scrape-up-by-instance
+  - step: 2
+    title: Look for a shared cause
+    description: 'All members failing together usually has one cause: a node pool or zone outage, storage class or CSI failure, an expired TLS certificate or keyfile, a failed rolling upgrade, or a credential
+      change that breaks every exporter. Sample age shows when the series stopped; compare it with deployment and infrastructure events from the owners.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: job_mongodb_up_sample_age_seconds
+          unit: s
+          query: time() - timestamp(mongodb_up{job="$job"})
+        - name: job_mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job"}
+  - step: 3
+    title: Read recent mongod log entries
+    description: If the connection can still reach a member, its recent log shows why it stopped serving. If every call fails, record the failures; that is itself consistent with a full outage.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: recover_database_service
+    description: Treat as a full outage. Have the database owner check every member's pod or host, termination reason, volumes and nodes. Restore members in the order that preserves the most recent data
+      (the former primary first). Do not force a reconfiguration or delete data volumes without the owner's approval.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and platform on-call; P0. Establish application impact independently.
+  follow_up:
+  - Verify mongodb_up = 1 for every instance of the job and exactly one PRIMARY.
+  - Confirm applications can read and write again.
+- name: MongoDBReplicaSetNoPrimary
+  patterns:
+  - MongoDBReplicaSetNoPrimary
+  - MongoDB replica set has no primary
+  priority: P0
+  diagnostic_steps:
+  - step: 1
+    title: Confirm that no member sees a primary
+    description: The rule fires when members still report (mongodb_rs_myState) but none of their views contains a PRIMARY (mongodb_rs_members_state == 1) for 1 minute. The value is the number of members
+      still reporting. Writes and primary reads fail until a primary is elected. If no member reports at all, the cause is reachability, not an election problem.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: reporting_members
+          query: count by (rs_nm) (mongodb_rs_myState{job="$job",rs_nm="$rs_nm"})
+        - name: primary_members
+          query: count by (rs_nm) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"} == 1)
+        - name: exporter_view_state_by_instance
+          query: mongodb_rs_myState{job="$job",rs_nm="$rs_nm"}
+  - step: 2
+    title: Read the member states and health
+    description: 'A normal election takes about 10 to 12 seconds, so a longer gap means a majority of voting members cannot reach each other: members down, a network partition, or a reconfiguration that
+      left too few voters. Look for members that are unreachable (health 0, state 8) or stuck in RECOVERING, STARTUP2 or ROLLBACK.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: members_state_by_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-members-state-by-member
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+        - name: voting_config_by_member
+          query: max by (member_idx) (mongodb_rs_cfg_members_votes{job="$job",rs_nm="$rs_nm"})
+  - step: 3
+    title: Check for election churn
+    description: A rising election term with no primary means elections are being attempted and failing. A flat term suggests no candidate can stand, for example because too few voters are reachable.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: election_term
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"})
+        - name: election_term_change_1h
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 1h)
+          panel: true
+          panel_title: Election Term Increase in 1h
+          panel_id: mongodb-election-term-change-1h
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for 'Starting an election', 'Not electing self', 'Stepping down' and heartbeat failure lines.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: restore_voting_majority
+    description: 'Bring enough voting members back (pods, nodes, network) to restore a majority; a primary is then elected on its own. Use a forced reconfiguration (rs.reconfig with force: true) only as
+      a last resort when a majority is permanently lost, because it can roll back writes. Never run it without the database owner''s approval.'
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and platform on-call; P0. Applications cannot write until a primary exists.
+  follow_up:
+  - Verify exactly one member is PRIMARY (mongodb_rs_members_state == 1).
+  - Confirm the election term has stopped rising and replication lag is shrinking.
+- name: MongoDBReplicationMemberUnhealthy
+  patterns:
+  - MongoDBReplicationMemberUnhealthy
+  - MongoDB replica set member is unreachable
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the member is unreachable from the replica set
+    description: 'The rule fires when the replica set reports this member with health 0 for 2 minutes: other members'' heartbeats cannot reach it. The set keeps working while a majority of voters is up,
+      but redundancy is reduced. Check the heartbeat age and whether the member''s own exporter still reports.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_health_for_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-member-health-for-member
+        - name: member_state_for_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-member-state-for-member
+        - name: member_heartbeat_age_seconds
+          unit: s
+          query: time() - max by (member_idx) (mongodb_rs_members_lastHeartbeatRecv{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"}) / 1000
+        - name: member_exporter_up_if_monitored
+          query: mongodb_up{job="$job",instance=~".*$member_idx.*"}
+  - step: 2
+    title: Check the set's overall health
+    description: 'One unreachable member in a three-member set leaves no spare: a second failure loses the primary. Compare the other members'' state and health.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: members_state_by_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-members-state-by-member
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+  - step: 3
+    title: Read recent mongod log entries
+    description: The connection may not reach this member; look for heartbeat failure messages about it in what is returned.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: recover_unreachable_member
+    description: Check whether mongod on this member is running (pod or host status, OOM kills, restarts), DNS resolution of its name from the other members, and the network path and policies on port 27017.
+      If it came back but cannot catch up ('too stale'), plan a resync (empty its data directory and let it initial-sync); do this only with the owner's approval.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P1. A second member failure would leave the replica set without a primary.
+  follow_up:
+  - Verify the member's health is 1 and its state is SECONDARY or PRIMARY.
+  - Confirm its replication lag returns below 30 seconds.
+- name: MongoDBReplicaSetMemberNotServing
+  patterns:
+  - MongoDBReplicaSetMemberNotServing
+  - MongoDB replica set member is not serving
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the member's state
+    description: 'The rule fires when a reachable member stays in STARTUP, STARTUP2, RECOVERING, ROLLBACK, UNKNOWN or REMOVED for 15 minutes. State numbers: 0 STARTUP, 3 RECOVERING, 5 STARTUP2, 6 UNKNOWN,
+      9 ROLLBACK, 10 REMOVED. STARTUP2 is expected during an initial sync, which can take hours on a large data set.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_state_for_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-member-state-for-member
+        - name: member_health_for_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-member-health-for-member
+  - step: 2
+    title: Check how far behind the member is
+    description: A member in RECOVERING that is far behind has usually fallen off the oplog ('too stale to catch up') and needs a resync. Compare its distance from the primary with the oplog window.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_behind_primary_seconds
+          unit: s
+          query: (max(mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - max(mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})) / 1000
+          panel: true
+          panel_title: Member Behind Primary (s)
+          panel_id: mongodb-member-behind-primary-seconds
+        - name: oplog_window_seconds_estimate_for_member
+          unit: s
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance=~".*$member_idx.*"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance=~".*$member_idx.*"}[1h])
+          panel: true
+          panel_title: Estimated Oplog Window of This Member (s)
+          panel_id: mongodb-oplog-window-seconds-estimate-for-member
+  - step: 3
+    title: Read recent mongod log entries
+    description: Look for initial sync progress, 'too stale to catch up', rollback and storage error lines.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: resolve_non_serving_member
+    description: 'STARTUP2: let the initial sync finish and watch its progress. RECOVERING and too stale: resync the member. ROLLBACK: review the rolled-back documents under the data directory''s rollback
+      folder with the application owner. UNKNOWN or REMOVED: compare rs.conf() with the deployed members. Do not delete data directories without the owner''s approval.'
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2 while the set still has a primary and a majority.
+  follow_up:
+  - Verify the member reaches SECONDARY.
+  - Confirm its replication lag falls below 30 seconds.
+- name: MongoDBReplicaSetPrimaryElected
+  patterns:
+  - MongoDBReplicaSetPrimaryElected
+  - MongoDB replica set elected a new primary
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the election and when it happened
+    description: 'The rule is informational: it stays active for 15 minutes after a member became primary (electionDate). Elections are normal during stepdowns, rolling restarts and upgrades, and also follow
+      a primary failure. Writes fail for several seconds while an election runs.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_election_age_seconds
+          unit: s
+          query: time() - max by (member_idx) (mongodb_rs_members_electionDate{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"}) / 1000
+          panel: true
+          panel_title: Seconds Since This Member Was Elected Primary
+          panel_id: mongodb-member-election-age-seconds
+        - name: member_state_for_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-member-state-for-member
+        - name: election_term_change_6h
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 6h)
+  - step: 2
+    title: Check whether a restart explains it
+    description: A recent low uptime on the former primary points to a restart or crash. Compare uptimes across the set with the election time.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: job_mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job"}
+        - name: members_state_by_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-members-state-by-member
+  - step: 3
+    title: Read recent mongod log entries
+    description: Look for 'Stepping down' and the reason on the former primary, or 'Starting an election'.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: review_unplanned_election
+    description: If no maintenance was planned, find why the previous primary stepped down (crash, resource starvation, network loss) in its log and pod events. No action is needed after planned maintenance.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner for awareness; P3. Escalate only if elections repeat (MongoDBReplicaSetFrequentElections).
+  follow_up:
+  - Verify a single stable primary and that the election term is no longer rising.
+- name: MongoDBReplicaSetFrequentElections
+  patterns:
+  - MongoDBReplicaSetFrequentElections
+  - MongoDB replica set is holding repeated elections
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the elections
+    description: The rule fires when the election term rose by 3 or more in the last hour. The term increases with every election attempt, including failed ones, so it counts instability even when a primary
+      always exists.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: election_term
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"})
+        - name: election_term_change_1h
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 1h)
+          panel: true
+          panel_title: Election Term Increase in 1h
+          panel_id: mongodb-election-term-change-1h
+        - name: election_term_change_6h
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 6h)
+  - step: 2
+    title: Find the unstable member
+    description: Repeated elections usually come from members missing heartbeats (an overloaded or stalled node, packet loss, DNS problems), from priority takeovers after a member restarts, or from a crash-looping
+      primary. Check heartbeat age and uptime by member.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: members_state_by_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-members-state-by-member
+        - name: job_mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job"}
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+  - step: 3
+    title: Read recent mongod log entries
+    description: Look for 'Starting an election', 'Stepping down', 'heartbeat failed' and election timeout lines.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: stabilize_replica_set
+    description: 'Find and fix the member or link that misses heartbeats: resource pressure, node issues, packet loss, DNS. Review member priorities and settings.electionTimeoutMillis in rs.conf() with
+      the owner; lowering the timeout makes elections more frequent on a flaky network.'
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2. Each election makes writes fail for several seconds.
+  follow_up:
+  - Verify the election term has stayed flat for at least an hour.
+  - Confirm no member restarted or flapped in the same period.
+- name: MongoDBReplicationLagHigh
+  patterns:
+  - MongoDBReplicationLagHigh
+  - MongoDB secondary is lagging behind the primary
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the lag and rule out a deliberate delay
+    description: The rule fires when this secondary is more than 30 seconds behind the primary for 5 minutes, using the worst view of any reporting member. Delayed members (secondaryDelaySecs above 0) are
+      excluded because they lag on purpose. Lag is the difference between optime dates, so an idle primary can show small values that are not real lag.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_lag_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_idx="$member_idx",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag (s)
+          panel_id: mongodb-member-lag-seconds
+        - name: member_delay_config_seconds
+          unit: s
+          query: max by (member_idx) (mongodb_rs_cfg_members_secondaryDelaySecs{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+        - name: member_state_for_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-member-state-for-member
+  - step: 2
+    title: Compare with the oplog window
+    description: If the lag approaches the oplog window, the member can fall off the oplog, enter RECOVERING and need a full initial sync. Also see whether the primary's write rate recently increased.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: oplog_window_seconds_estimate_for_member
+          unit: s
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance=~".*$member_idx.*"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance=~".*$member_idx.*"}[1h])
+          panel: true
+          panel_title: Estimated Oplog Window of This Member (s)
+          panel_id: mongodb-oplog-window-seconds-estimate-for-member
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+  - step: 3
+    title: Check for a write burst
+    description: A burst the secondary cannot apply fast enough is the most common cause; also look at majority commit lag and flow control on the primary.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: majority_commit_lag_for_replica_set
+          unit: s
+          query: max by (rs_nm) ((mongodb_rs_optimes_lastAppliedWallTime{job="$job",rs_nm="$rs_nm"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",rs_nm="$rs_nm"}) / 1000)
+        - name: flow_control_lagged_for_replica_set
+          query: max by (rs_nm) (mongodb_ss_flowControl_isLagged{job="$job",rs_nm="$rs_nm"})
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for replication errors, slow applied operations and sync source changes in what the connection returns.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: reduce_replication_lag
+    description: Check the secondary's disk latency, CPU and memory, missing indexes that make replicated updates and deletes slow, a poor sync source, and whether a write burst or batch job can be throttled.
+      Add resources to the secondary if it is undersized compared with the primary. Resize the oplog if the window is too short for the lag.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify the lag stays below 30 seconds.
+  - Confirm the member stays SECONDARY with health 1.
+- name: MongoDBReplicationLagCritical
+  patterns:
+  - MongoDBReplicationLagCritical
+  - MongoDB secondary is more than 5 minutes behind the primary
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the lag and rule out a deliberate delay
+    description: The rule fires when this secondary is more than 300 seconds behind the primary for 5 minutes, using the worst view of any reporting member. Delayed members (secondaryDelaySecs above 0)
+      are excluded because they lag on purpose. Lag is the difference between optime dates, so an idle primary can show small values that are not real lag.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: member_lag_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_idx="$member_idx",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag (s)
+          panel_id: mongodb-member-lag-seconds
+        - name: member_delay_config_seconds
+          unit: s
+          query: max by (member_idx) (mongodb_rs_cfg_members_secondaryDelaySecs{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+        - name: member_state_for_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm",member_idx="$member_idx"})
+          panel: true
+          panel_title: Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-member-state-for-member
+  - step: 2
+    title: Compare with the oplog window
+    description: If the lag approaches the oplog window, the member can fall off the oplog, enter RECOVERING and need a full initial sync. Also see whether the primary's write rate recently increased.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: oplog_window_seconds_estimate_for_member
+          unit: s
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance=~".*$member_idx.*"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance=~".*$member_idx.*"}[1h])
+          panel: true
+          panel_title: Estimated Oplog Window of This Member (s)
+          panel_id: mongodb-oplog-window-seconds-estimate-for-member
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+  - step: 3
+    title: Check for a write burst
+    description: A burst the secondary cannot apply fast enough is the most common cause; also look at majority commit lag and flow control on the primary.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: majority_commit_lag_for_replica_set
+          unit: s
+          query: max by (rs_nm) ((mongodb_rs_optimes_lastAppliedWallTime{job="$job",rs_nm="$rs_nm"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",rs_nm="$rs_nm"}) / 1000)
+        - name: flow_control_lagged_for_replica_set
+          query: max by (rs_nm) (mongodb_ss_flowControl_isLagged{job="$job",rs_nm="$rs_nm"})
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for replication errors, slow applied operations and sync source changes in what the connection returns.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: reduce_replication_lag
+    description: Check the secondary's disk latency, CPU and memory, missing indexes that make replicated updates and deletes slow, a poor sync source, and whether a write burst or batch job can be throttled.
+      Add resources to the secondary if it is undersized compared with the primary. Resize the oplog if the window is too short for the lag.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P1. A member that falls off the oplog needs a full resync.
+  follow_up:
+  - Verify the lag stays below 30 seconds.
+  - Confirm the member stays SECONDARY with health 1.
+- name: MongoDBMajorityCommitLagging
+  patterns:
+  - MongoDBMajorityCommitLagging
+  - MongoDB majority commit point is not advancing
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the commit point is behind
+    description: 'The rule compares the last applied write with the last majority-committed write on a primary: more than 60 seconds for 2 minutes. Majority writes (the default) wait for the commit point,
+      so they hang or time out and majority reads are stale.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: majority_commit_lag_seconds
+          unit: s
+          query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+          panel: true
+          panel_title: Majority Commit Point Lag (s)
+          panel_id: mongodb-majority-commit-lag-seconds
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 2
+    title: Find the member holding the commit point back
+    description: The commit point only advances when a majority of data-bearing voting members have applied the write. Typical causes are unhealthy or lagging secondaries, or a primary-secondary-arbiter
+      set whose secondary is down.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+        - name: members_state_by_member
+          query: max by (member_idx, member_state) (mongodb_rs_members_state{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: Replica Set Member State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-members-state-by-member
+  - step: 3
+    title: Check cache pressure on the primary
+    description: While the commit point lags, WiredTiger must keep history for every write since it, which raises cache and dirty pressure.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for slow majority acknowledgements and replication errors.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: restore_majority_commit
+    description: Bring enough data-bearing voting members back in sync. In a primary-secondary-arbiter set with the secondary down, restore the secondary quickly; as a last resort the owner can temporarily
+      set its votes and priority to 0 so the majority can advance, and must undo that afterwards.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P1. Majority writes are hanging.
+  follow_up:
+  - Verify the majority commit lag drops below a few seconds.
+  - Confirm write latency returns to normal.
+- name: MongoDBFlowControlEngaged
+  patterns:
+  - MongoDBFlowControlEngaged
+  - MongoDB flow control is throttling writes
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Confirm flow control is throttling writes
+    description: 'The rule fires when flow control has been engaged on the primary for 5 minutes: the majority commit point lags by more than flowControlTargetLagSeconds (10 seconds by default), so the
+      primary deliberately limits write throughput.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: flow_control_lagged
+          query: mongodb_ss_flowControl_isLagged{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'Flow Control Throttling: 1 = Engaged'
+          panel_id: mongodb-flow-control-lagged
+        - name: flow_control_locks_per_kilo_op
+          query: mongodb_ss_flowControl_locksPerKiloOp{job="$job",instance="$instance"}
+        - name: majority_commit_lag_seconds
+          unit: s
+          query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+          panel: true
+          panel_title: Majority Commit Point Lag (s)
+          panel_id: mongodb-majority-commit-lag-seconds
+  - step: 2
+    title: Find the lagging secondary
+    description: Flow control protects the set from a slow secondary; fix that secondary rather than disabling flow control.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+  - step: 3
+    title: See the effect on writes
+    description: Writes slow down while throttled; compare latency and the write rate.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  remediation:
+  - action: fix_lagging_secondary
+    description: 'Follow the replication-lag steps for the slow secondary (resources, indexes, write burst). Do not disable flow control (enableFlowControl: false); that only moves the pressure to the WiredTiger
+      cache.'
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2. Applications see slower writes.
+  follow_up:
+  - Verify mongodb_ss_flowControl_isLagged returns to 0.
+  - Confirm secondary lag is back below 30 seconds.
+- name: MongoDBOplogWindowLow
+  patterns:
+  - MongoDBOplogWindowLow
+  - MongoDB oplog window is shorter than 24 hours
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the estimated oplog window
+    description: 'The rule estimates the window as the oplog''s maximum size divided by its insert byte rate over the last hour, below 24 hours for 30 minutes. It is an estimate: both numbers are uncompressed
+      bytes, and if storage.oplogMinRetentionHours is set the real window can be longer. Confirm with rs.printReplicationInfo() on the member.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: oplog_window_seconds_estimate
+          unit: s
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance="$instance"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance="$instance"}[1h])
+          panel: true
+          panel_title: Estimated Oplog Window (s)
+          panel_id: mongodb-oplog-window-seconds-estimate
+        - name: oplog_max_size_bytes
+          unit: B
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance="$instance"}
+        - name: oplog_insert_bytes_per_second_1h
+          unit: B/s
+          query: rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance="$instance"}[1h])
+        - name: oplog_insert_bytes_per_second_5m
+          unit: B/s
+          query: rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance="$instance"}[5m])
+  - step: 2
+    title: Compare with member lag
+    description: A member down or lagging longer than the window cannot catch up and needs an initial sync. Compare the current lag of the secondaries with the window.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+        - name: oplog_storage_size_bytes
+          unit: B
+          query: mongodb_oplog_stats_storageStats_storageSize{job="$job",instance="$instance"}
+  - step: 3
+    title: Check the write rate
+    description: A recent change in write volume (batch job, migration, new feature) usually explains a shrinking window.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  remediation:
+  - action: extend_oplog_window
+    description: Grow the oplog on every member (replSetResizeOplog, no restart needed) or reduce the write burst's volume. Plan the size from the write rate and the longest outage you want to survive.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2. Not urgent, but a member that is down longer than the window needs a full resync.
+  follow_up:
+  - Verify the estimated window is above 24 hours at the current write rate.
+  - Confirm no secondary is close to the window.
+- name: MongoDBWriteConcernTimeouts
+  patterns:
+  - MongoDBWriteConcernTimeouts
+  - MongoDB writes are timing out waiting for write concern
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the timeouts
+    description: The rule fires when writes exceeded their write concern wtimeout in the last 10 minutes. These writes were applied on the primary but not confirmed by enough members in time, and applications
+      received a writeConcernError.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_concern_timeouts_10m
+          query: increase(mongodb_ss_metrics_getLastError_wtimeouts{job="$job",instance="$instance"}[10m])
+          panel: true
+          panel_title: Write Concern Timeouts (10m)
+          panel_id: mongodb-write-concern-timeouts-10m
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 2
+    title: Check the members that must acknowledge
+    description: Timeouts usually mean secondaries are lagging, down or slow, so the requested number of members cannot acknowledge in time.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+        - name: members_health_by_member
+          query: min by (member_idx) (mongodb_rs_members_health{job="$job",rs_nm="$rs_nm"})
+          panel: true
+          panel_title: 'Member Health: 1 = Reachable'
+          panel_id: mongodb-members-health-by-member
+        - name: majority_commit_lag_seconds
+          unit: s
+          query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+          panel: true
+          panel_title: Majority Commit Point Lag (s)
+          panel_id: mongodb-majority-commit-lag-seconds
+  - step: 3
+    title: See the effect on write latency
+    description: Compare write latency with the number of timeouts.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  remediation:
+  - action: restore_write_acknowledgement
+    description: Fix the slow or unavailable members first. Raising wtimeout only hides the problem; review it with the application owner once replication is healthy.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify no new write concern timeouts in 30 minutes.
+  - Confirm secondary lag is below 30 seconds.
+- name: MongoDBConnectionsHigh
+  patterns:
+  - MongoDBConnectionsHigh
+  - MongoDB connection usage is above 80% of the limit
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify connection usage
+    description: The rule fires when current / (current + available) is above 80%. mongod refuses new connections at the limit (net.maxIncomingConnections, capped by the process open-file limit).
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} / ignoring (conn_type) (mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} + ignoring
+            (conn_type) mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"})
+          panel: true
+          panel_title: Connections Used of Limit (%)
+          panel_id: mongodb-connections-used-pct
+        - name: connections_current
+          query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"}
+        - name: connections_available
+          query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"}
+  - step: 2
+    title: Check for a connection storm or leak
+    description: A fast rise in new connections points to a storm (for example pools reconnecting after a failover); a steady high count with a low creation rate points to leaked or oversized pools. Total
+      pool size is maxPoolSize multiplied by the number of application instances.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_created_rate
+          query: rate(mongodb_ss_connections{job="$job",instance="$instance",conn_type="totalCreated"}[5m])
+          panel: true
+          panel_title: New Connections per Second
+          panel_id: mongodb-connections-created-rate
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+  - step: 3
+    title: Read recent mongod log entries
+    description: Connection accepted and ended lines show the busiest client addresses and application names; look for 'Too many open connections'.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: reduce_connection_usage
+    description: Identify the clients holding the most connections (db.currentOp(true) grouped by client and appName) and reduce their pool sizes or restart the leaking ones. Raise net.maxIncomingConnections
+      only if the host has memory and file-descriptor headroom.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify connection usage stays below 80%.
+  - Confirm the creation rate is back to its normal level.
+- name: MongoDBConnectionsExhausted
+  patterns:
+  - MongoDBConnectionsExhausted
+  - MongoDB is running out of connections
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Quantify connection usage
+    description: The rule fires when current / (current + available) is above 95%. mongod refuses new connections at the limit (net.maxIncomingConnections, capped by the process open-file limit).
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} / ignoring (conn_type) (mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} + ignoring
+            (conn_type) mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"})
+          panel: true
+          panel_title: Connections Used of Limit (%)
+          panel_id: mongodb-connections-used-pct
+        - name: connections_current
+          query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"}
+        - name: connections_available
+          query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"}
+  - step: 2
+    title: Check for a connection storm or leak
+    description: A fast rise in new connections points to a storm (for example pools reconnecting after a failover); a steady high count with a low creation rate points to leaked or oversized pools. Total
+      pool size is maxPoolSize multiplied by the number of application instances.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_created_rate
+          query: rate(mongodb_ss_connections{job="$job",instance="$instance",conn_type="totalCreated"}[5m])
+          panel: true
+          panel_title: New Connections per Second
+          panel_id: mongodb-connections-created-rate
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+  - step: 3
+    title: Read recent mongod log entries
+    description: Connection accepted and ended lines show the busiest client addresses and application names; look for 'Too many open connections'.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: reduce_connection_usage
+    description: Identify the clients holding the most connections (db.currentOp(true) grouped by client and appName) and reduce their pool sizes or restart the leaking ones. Raise net.maxIncomingConnections
+      only if the host has memory and file-descriptor headroom.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P1. New connections are being refused.
+  follow_up:
+  - Verify connection usage stays below 80%.
+  - Confirm the creation rate is back to its normal level.
+- name: MongoDBOperationsQueued
+  patterns:
+  - MongoDBOperationsQueued
+  - MongoDB operations are queuing
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the queue
+    description: The rule fires when more than 10 operations have been waiting for a lock or an execution ticket for 5 minutes (globalLock.currentQueue). Requests wait before they start, so latency rises
+      and timeouts follow.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+        - name: tickets_in_use
+          query: mongodb_ss_wt_concurrentTransactions_out{job="$job",instance="$instance"}
+        - name: write_tickets_queued_rate
+          query: rate(mongodb_ss_wt_concurrentTransactions_write_addedToQueue{job="$job",instance="$instance"}[5m])
+  - step: 2
+    title: Check what is holding resources
+    description: Typical causes are long-running or unindexed queries, a write burst, WiredTiger cache pressure that slows every operation, or an exclusive lock taken by an index build or a collection-level
+      command.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+  - step: 3
+    title: Read recent mongod log entries
+    description: Look for 'Slow query' lines with long durations and for index builds or collection commands.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: clear_queue_cause
+    description: Find the blocking operation with db.currentOp() (waitingForLock, long secs_running) and, with the owner's approval, kill a runaway operation (db.killOp). Add the missing index or throttle
+      the batch job that causes the load.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify the queue returns to near zero.
+  - Confirm write latency is back to normal.
+- name: MongoDBWriteLatencyHigh
+  patterns:
+  - MongoDBWriteLatencyHigh
+  - MongoDB average write latency is above 100 ms
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify write latency and volume
+    description: The rule fires when the average write takes more than 100 ms over 5 minutes for 10 minutes, with at least 1 write per second. Read latency is not alerted on because change streams and tailable
+      cursors inflate the read average.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  - step: 2
+    title: Check for replication and queue pressure
+    description: Majority writes wait for secondaries, so lag or a lagging commit point shows up as write latency. Queues add waiting time.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: majority_commit_lag_seconds
+          unit: s
+          query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+          panel: true
+          panel_title: Majority Commit Point Lag (s)
+          panel_id: mongodb-majority-commit-lag-seconds
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+        - name: write_concern_timeouts_10m
+          query: increase(mongodb_ss_metrics_getLastError_wtimeouts{job="$job",instance="$instance"}[10m])
+          panel: true
+          panel_title: Write Concern Timeouts (10m)
+          panel_id: mongodb-write-concern-timeouts-10m
+  - step: 3
+    title: Check cache pressure
+    description: A full or dirty cache forces application threads to evict pages, which adds latency to writes.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+  - step: 4
+    title: Read recent mongod log entries
+    description: '''Slow query'' lines show which writes are slow and why (lock wait, replication wait, index count).'
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: reduce_write_latency
+    description: Look at the slow write log lines or profiler, disk write latency, write concern waits, indexes on hot collections and the cache. Remember to set the profiler back to level 0 after investigation.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify average write latency is below 100 ms for 30 minutes.
+- name: MongoDBWiredTigerCacheFull
+  patterns:
+  - MongoDBWiredTigerCacheFull
+  - MongoDB WiredTiger cache is above its eviction trigger
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify cache usage
+    description: The rule fires when the WiredTiger cache has been above 95% (its eviction trigger) for 10 minutes. Above it, application threads are pulled into evicting pages, which adds latency to reads
+      and writes.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: cache_max_bytes
+          unit: B
+          query: mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+        - name: mongod_resident_memory
+          unit: MB
+          query: mongodb_ss_mem_resident{job="$job",instance="$instance"}
+  - step: 2
+    title: Look for the cause
+    description: The working set probably no longer fits, or a large scan or index build is churning the cache. Cache size defaults to 50% of RAM minus 1 GB; in a container it is derived from the memory
+      limit.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+  - step: 3
+    title: Check the container's memory
+    description: The alert's pod and namespace identify the MongoDB pod only when they were derived from the member address (a cluster DNS name); otherwise they are the exporter's and the kube queries describe
+      the exporter.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pod_container_restarts
+          query: kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod"}
+          panel: true
+          panel_title: Pod Container Restarts
+          panel_id: mongodb-pod-container-restarts
+        - name: pod_last_terminated_reason
+          query: kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod"}
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for collection scans in 'Slow query' lines.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: relieve_cache_pressure
+    description: Find collection scans in the slow query log and add indexes, compare cacheSizeGB with the working set, and size the container memory limit accordingly. Give the node more memory or shard
+      the data if the working set has outgrown it.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2.
+  follow_up:
+  - Verify cache usage stays below 95%.
+  - Confirm read and write latency are normal.
+- name: MongoDBWiredTigerCacheDirtyHigh
+  patterns:
+  - MongoDBWiredTigerCacheDirtyHigh
+  - MongoDB WiredTiger cache has too much dirty data
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify dirty cache
+    description: The rule fires when dirty data is above 20% of the cache (the dirty eviction trigger) for 5 minutes. Application threads must write dirty pages before continuing, so operations stall.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  - step: 2
+    title: Check for a lagging commit point
+    description: A lagging majority commit point forces WiredTiger to retain history, which keeps pages dirty.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: majority_commit_lag_seconds
+          unit: s
+          query: (mongodb_rs_optimes_lastAppliedWallTime{job="$job",instance="$instance"} - mongodb_rs_optimes_lastCommittedWallTime{job="$job",instance="$instance"}) / 1000
+          panel: true
+          panel_title: Majority Commit Point Lag (s)
+          panel_id: mongodb-majority-commit-lag-seconds
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+  - step: 3
+    title: See the effect on latency
+    description: Compare write latency and queues with the dirty ratio.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+  remediation:
+  - action: reduce_dirty_cache
+    description: Check disk write latency and throughput on the data volume (slow or burst-limited volumes are a frequent cause), throttle the write burst, and fix a lagging commit point first if there
+      is one.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner; P2. A node that stays here can become unresponsive.
+  follow_up:
+  - Verify dirty cache stays below 20%.
+  - Confirm write latency is normal.
+- name: MongoDBCursorsTimedOut
+  patterns:
+  - MongoDBCursorsTimedOut
+  - MongoDB is timing out abandoned cursors
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Quantify abandoned cursors
+    description: The rule fires when more than 100 cursors timed out in 10 minutes (idle longer than the cursor timeout, 10 minutes by default). An application opens cursors and abandons them without reading
+      them to the end or closing them.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: cursors_timed_out_10m
+          query: increase(mongodb_ss_metrics_cursor_timedOut{job="$job",instance="$instance"}[10m])
+          panel: true
+          panel_title: Cursors Timed Out (10m)
+          panel_id: mongodb-cursors-timed-out-10m
+        - name: cursors_open
+          query: mongodb_ss_metrics_cursor_open{job="$job",instance="$instance"}
+  - step: 2
+    title: Check the connection side
+    description: Abandoned cursors often accompany many connections or a recent deployment.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_current
+          query: mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"}
+        - name: connections_created_rate
+          query: rate(mongodb_ss_connections{job="$job",instance="$instance",conn_type="totalCreated"}[5m])
+          panel: true
+          panel_title: New Connections per Second
+          panel_id: mongodb-connections-created-rate
+  remediation:
+  - action: fix_cursor_leak
+    description: 'Find the client with $currentOp and idleCursors: true or in the slow query log, and fix the application to close its cursors, iterate them to the end or use a limit. Avoid noCursorTimeout
+      cursors.'
+    tool_id: ''
+    requires_approval: true
+  escalation: Application owner of the offending client, with the MongoDB database owner; P3.
+  follow_up:
+  - Verify the timed-out cursor count stays low for a day.
+- name: MongoDBLowDiskSpace
+  patterns:
+  - MongoDBLowDiskSpace
+  - MongoDB data volume is almost out of space
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Confirm mongod's disk space monitor acted
+    description: 'The rule fires when mongod''s disk space monitor took action in the last 5 minutes: free space on the data volume fell below indexBuildMinAvailableDiskSpaceMB (500 MB by default), which
+      aborts running index builds. When the volume fills, mongod stops and this member is lost.'
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: disk_monitor_actions_5m
+          query: increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction{job="$job",instance="$instance"}[5m])
+          panel: true
+          panel_title: Disk Space Monitor Actions (5m)
+          panel_id: mongodb-disk-monitor-actions-5m
+        - name: data_mount_available_reported
+          query: mongodb_sys_mounts_data_db_available{job="$job",instance="$instance"}
+  - step: 2
+    title: Check the data volume
+    description: The alert's pod and namespace identify the MongoDB pod only when they were derived from the member address (a cluster DNS name); otherwise they are the exporter's and the kube queries describe
+      the exporter. The volume query matches the claim name that ends with the pod name.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: data_volume_used_pct
+          unit: '%'
+          query: 100 * kubelet_volume_stats_used_bytes{namespace="$namespace",persistentvolumeclaim=~".*$pod"} / kubelet_volume_stats_capacity_bytes{namespace="$namespace",persistentvolumeclaim=~".*$pod"}
+          panel: true
+          panel_title: Data Volume Used (%)
+          panel_id: mongodb-data-volume-used-pct
+        - name: oplog_storage_size_bytes
+          unit: B
+          query: mongodb_oplog_stats_storageStats_storageSize{job="$job",instance="$instance"}
+  - step: 3
+    title: Read recent log entries and database sizes
+    description: Sizes are point-in-time allocations, not growth or filesystem usage, and the list may be a subset.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+    - tool_id: mcp.mongodb-database.list_databases
+      description: 'Bounded discovery of the databases visible to the connection, with sizes as returned. Sizes are point-in-time allocations: not growth, not working-set size and not filesystem usage.
+        The returned list can be a subset; report partial coverage. Do not fan out into per-database calls.'
+      params:
+        arguments: {}
+        timeout: 10
+  remediation:
+  - action: free_or_grow_data_volume
+    description: Free space or grow the volume now. Check the size of the oplog, journal and diagnostic.data directory and the largest collections and indexes; grow the PVC if the storage class allows expansion.
+      Dropping data or compacting needs the owner's approval.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and platform on-call; P1. The member stops if the volume fills.
+  follow_up:
+  - Verify free space is well above the monitor threshold and no more actions are taken.
+  - Confirm any aborted index builds were restarted.
+- name: MongoDBPrimaryFsyncLocked
+  patterns:
+  - MongoDBPrimaryFsyncLocked
+  - MongoDB primary is fsync-locked and blocking writes
+  priority: P1
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the lock and the node's role
+    description: The rule fires when a primary or standalone has been fsync-locked for 2 minutes. While the lock is held every write on the node blocks. Backup and snapshot tools take the lock with db.fsyncLock()
+      and must release it.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: fsync_lock_state
+          query: mongodb_currentop_fsync_lock_state{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'fsync Lock: 1 = Locked'
+          panel_id: mongodb-fsync-lock-state
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 2
+    title: See the effect on writes
+    description: Blocked writes show up as rising queues and latency.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: write_ops_rate
+          query: rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])
+          panel: true
+          panel_title: Writes per Second
+          panel_id: mongodb-write-ops-rate
+  - step: 3
+    title: Check whether a backup is running
+    description: A backup in progress explains a lock; a stuck backup does not.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_backups_by_status
+          query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+          panel: true
+          panel_title: PBM Backups by Status (last transition, epoch s)
+          panel_id: mongodb-pbm-backups-by-status
+  - step: 4
+    title: Read recent mongod log entries
+    description: Look for fsync and lock messages.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: release_fsync_lock
+    description: Confirm with db.currentOp().fsyncLock and make sure no snapshot is still being taken, then run db.fsyncUnlock() until the lock count reaches zero. Find why the backup tool did not release
+      it.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and backup owner; P1. Applications cannot write.
+  follow_up:
+  - Verify mongodb_currentop_fsync_lock_state = 0.
+  - Confirm queues and write latency return to normal.
+- name: MongoDBSecondaryFsyncLocked
+  patterns:
+  - MongoDBSecondaryFsyncLocked
+  - MongoDB secondary has been fsync-locked for 30 minutes
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the lock and the member's role
+    description: The rule fires when a secondary has been fsync-locked for 30 minutes. Backup tools normally hold the lock only for the few seconds a snapshot takes. While locked, the member cannot apply
+      replicated writes.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: fsync_lock_state
+          query: mongodb_currentop_fsync_lock_state{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'fsync Lock: 1 = Locked'
+          panel_id: mongodb-fsync-lock-state
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 2
+    title: Check the replication impact
+    description: Lag grows while the lock is held; a long lock can push the member off the oplog.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_for_job
+          unit: s
+          query: max by (rs_nm, member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right mongodb_rs_members_optimeDate{job="$job",member_state="SECONDARY"})
+            / 1000
+        - name: oplog_window_seconds_estimate
+          unit: s
+          query: mongodb_oplog_stats_storageStats_maxSize{job="$job",instance="$instance"} / rate(mongodb_oplog_stats_wt_cursor_insert_key_and_value_bytes{job="$job",instance="$instance"}[1h])
+          panel: true
+          panel_title: Estimated Oplog Window (s)
+          panel_id: mongodb-oplog-window-seconds-estimate
+  - step: 3
+    title: Check whether a backup is running
+    description: A stuck backup job usually owns the lock.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_backups_by_status
+          query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+          panel: true
+          panel_title: PBM Backups by Status (last transition, epoch s)
+          panel_id: mongodb-pbm-backups-by-status
+  remediation:
+  - action: release_fsync_lock
+    description: Check the backup or snapshot job that locked this member, then run db.fsyncUnlock() until the lock count reaches zero.
+    tool_id: ''
+    requires_approval: true
+  escalation: Backup owner with the MongoDB database owner; P2.
+  follow_up:
+  - Verify mongodb_currentop_fsync_lock_state = 0.
+  - Confirm the member's lag returns below 30 seconds.
+- name: MongoDBPBMBackupFailed
+  patterns:
+  - MongoDBPBMBackupFailed
+  - MongoDB backup failed
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Identify the failed backup
+    description: The rule fires when the newest failed backup (status error or down) is newer than the newest successful one, or no backup has ever succeeded. PBM timestamps are in seconds.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_backups_by_status
+          query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+          panel: true
+          panel_title: PBM Backups by Status (last transition, epoch s)
+          panel_id: mongodb-pbm-backups-by-status
+        - name: pbm_last_failure_age_seconds
+          unit: s
+          query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status=~"error|down"})
+        - name: pbm_last_success_age_seconds
+          unit: s
+          query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status="done"})
+          panel: true
+          panel_title: Age of Last Successful Backup (s)
+          panel_id: mongodb-pbm-last-success-age-seconds
+  - step: 2
+    title: Check the agents and configuration
+    description: A backup needs a healthy pbm-agent next to every mongod and a configured storage target.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_agent_status_all
+          query: max by (replica_set, host) (mongodb_pbm_agent_status{job="$job"})
+          panel: true
+          panel_title: 'PBM Agent Status: 0 = OK, 1 = Error, 2 = Lost'
+          panel_id: mongodb-pbm-agent-status-all
+        - name: pbm_backup_configured
+          query: max by (job) (mongodb_pbm_cluster_backup_configured{job="$job"})
+        - name: pbm_backup_duration_seconds
+          unit: s
+          query: max by (name, status) (mongodb_pbm_backup_duration_seconds{job="$job"})
+  remediation:
+  - action: repair_backup
+    description: Run pbm status and pbm logs --event=backup to see the failure. Check the remote storage credentials, free space and network, that pbm-agent runs next to every mongod, and then run a new
+      backup.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and backup owner; P2. The newest restore point is getting older.
+  follow_up:
+  - Verify a new backup finishes with status done.
+  - Confirm the agents are healthy.
+- name: MongoDBPBMNoRecentBackup
+  patterns:
+  - MongoDBPBMNoRecentBackup
+  - MongoDB has no successful backup in the last 26 hours
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Quantify the age of the last successful backup
+    description: The rule fires when no backup has completed successfully for more than 26 hours (a daily schedule plus slack).
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_last_success_age_seconds
+          unit: s
+          query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status="done"})
+          panel: true
+          panel_title: Age of Last Successful Backup (s)
+          panel_id: mongodb-pbm-last-success-age-seconds
+        - name: pbm_backups_by_status
+          query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+          panel: true
+          panel_title: PBM Backups by Status (last transition, epoch s)
+          panel_id: mongodb-pbm-backups-by-status
+        - name: pbm_backup_configured
+          query: max by (job) (mongodb_pbm_cluster_backup_configured{job="$job"})
+  - step: 2
+    title: Check whether a backup is running or failing
+    description: A backup stuck in a running state or repeated failures both stop new successes.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_backup_duration_seconds
+          unit: s
+          query: max by (name, status) (mongodb_pbm_backup_duration_seconds{job="$job"})
+        - name: pbm_last_failure_age_seconds
+          unit: s
+          query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status=~"error|down"})
+        - name: pbm_agent_status_all
+          query: max by (replica_set, host) (mongodb_pbm_agent_status{job="$job"})
+          panel: true
+          panel_title: 'PBM Agent Status: 0 = OK, 1 = Error, 2 = Lost'
+          panel_id: mongodb-pbm-agent-status-all
+  remediation:
+  - action: restore_backup_schedule
+    description: Confirm the schedule still runs (CronJob, operator custom resource or system cron) and its last exit status, check pbm status for a stuck backup, and run a backup by hand if needed (pbm
+      backup).
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and backup owner; P2.
+  follow_up:
+  - Verify a backup completes and the age of the last success resets.
+  - Confirm the next scheduled backup runs.
+- name: MongoDBPBMAgentUnhealthy
+  patterns:
+  - MongoDBPBMAgentUnhealthy
+  - MongoDB backup agent is unhealthy
+  priority: P2
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the agent state
+    description: The rule fires when a PBM agent reports error (1) or lost (2) for 10 minutes. Backups and point-in-time-recovery oplog slicing need a healthy agent next to every mongod.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_agent_status_for_host
+          query: max by (replica_set, host) (mongodb_pbm_agent_status{job="$job",replica_set="$replica_set",host="$host"})
+          panel: true
+          panel_title: 'PBM Agent Status: 0 = OK, 1 = Error, 2 = Lost'
+          panel_id: mongodb-pbm-agent-status-for-host
+        - name: pbm_agent_status_all
+          query: max by (replica_set, host) (mongodb_pbm_agent_status{job="$job"})
+          panel: true
+          panel_title: 'PBM Agent Status: 0 = OK, 1 = Error, 2 = Lost'
+          panel_id: mongodb-pbm-agent-status-all
+  - step: 2
+    title: Check the backups
+    description: A missing agent can fail new backups or leave gaps.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pbm_backups_by_status
+          query: max by (name, status, type) (mongodb_pbm_backup_last_transition_ts{job="$job"})
+          panel: true
+          panel_title: PBM Backups by Status (last transition, epoch s)
+          panel_id: mongodb-pbm-backups-by-status
+        - name: pbm_last_success_age_seconds
+          unit: s
+          query: time() - max by (job) (mongodb_pbm_backup_last_transition_ts{job="$job",status="done"})
+          panel: true
+          panel_title: Age of Last Successful Backup (s)
+          panel_id: mongodb-pbm-last-success-age-seconds
+  remediation:
+  - action: repair_pbm_agent
+    description: Check that pbm-agent is running next to the affected mongod, its log and its connection to the remote storage and to mongod (pbm status). Restart the agent with the owner's approval.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner and backup owner; P2.
+  follow_up:
+  - Verify the agent status returns to 0.
+  - Confirm the next backup completes.
+- name: MongoDBInstanceRestarted
+  patterns:
+  - MongoDBInstanceRestarted
+  - MongoDB instance restarted
+  priority: P3
+  diagnostic_steps:
+  - step: 1
+    title: Confirm the restart
+    description: The rule fires while mongod's uptime is below 10 minutes. The WiredTiger cache starts empty, so queries are slower until the working set is loaded, and a primary restart forces an election.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job",instance="$instance"}
+          panel: true
+          panel_title: mongod Uptime (s)
+          panel_id: mongodb-mongod-uptime-seconds
+        - name: mongodb_up_for_instance
+          query: mongodb_up{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'MongoDB Reachable From Exporter: 1 = Up'
+          panel_id: mongodb-mongodb-up-for-instance
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 2
+    title: Check how it ended
+    description: The alert's pod and namespace identify the MongoDB pod only when they were derived from the member address (a cluster DNS name); otherwise they are the exporter's and the kube queries describe
+      the exporter. OOMKilled or Error as the last termination reason points to a crash, not planned maintenance.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: pod_container_restarts
+          query: kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod"}
+          panel: true
+          panel_title: Pod Container Restarts
+          panel_id: mongodb-pod-container-restarts
+        - name: pod_last_terminated_reason
+          query: kube_pod_container_status_last_terminated_reason{namespace="$namespace",pod="$pod"}
+        - name: pod_phase
+          query: kube_pod_status_phase{namespace="$namespace",pod="$pod"} == 1
+  - step: 3
+    title: Check the effect on the set
+    description: A restarted member must catch up; a restarted primary triggers an election.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: secondary_lag_by_member_seconds
+          unit: s
+          query: max by (member_idx) (max without (member_idx, member_state) (mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="PRIMARY"}) - ignoring (member_idx, member_state) group_right
+            mongodb_rs_members_optimeDate{job="$job",rs_nm="$rs_nm",member_state="SECONDARY"}) / 1000
+          panel: true
+          panel_title: Secondary Replication Lag by Member (s)
+          panel_id: mongodb-secondary-lag-by-member-seconds
+        - name: election_term_change_1h
+          query: max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"}) - max by (rs_nm) (mongodb_rs_term{job="$job",rs_nm="$rs_nm"} offset 1h)
+          panel: true
+          panel_title: Election Term Increase in 1h
+          panel_id: mongodb-election-term-change-1h
+  - step: 4
+    title: Read startup warnings and recent log entries
+    description: Look for unclean shutdown recovery and storage warnings.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most 20 startup warnings and errors from the mongod the connection reaches. Use it to see why a recent start was unclean (unclean shutdown recovery, storage warnings). Same limits
+        as the global log call: no member selector, point-in-time, not historical.'
+      params:
+        arguments:
+          type: startupWarnings
+          limit: 20
+        timeout: 10
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+  remediation:
+  - action: review_unplanned_restart
+    description: If the restart was not planned, check the end of the previous log and the pod's last termination reason (OOM kill, fatal assertion, liveness probe failure, node drain). No action is needed
+      after planned maintenance.
+    tool_id: ''
+    requires_approval: true
+  escalation: MongoDB database owner for awareness; P3.
+  follow_up:
+  - Verify the member is back to PRIMARY or SECONDARY with normal lag.
+  - Confirm the restart does not repeat.
+general_diagnostic:
+  steps:
+  - step: 1
+    title: Establish the exact target and collection quality
+    description: For an unmatched MongoDB alert, require job and instance before querying metrics. Report missing or historical evidence explicitly. No remediation runs automatically.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: mongodb_up_for_instance
+          query: mongodb_up{job="$job",instance="$instance"}
+          panel: true
+          panel_title: 'MongoDB Reachable From Exporter: 1 = Up'
+          panel_id: mongodb-mongodb-up-for-instance
+        - name: mongodb_up_sample_age_seconds
+          unit: s
+          query: time() - timestamp(mongodb_up{job="$job",instance="$instance"})
+        - name: mongod_uptime_seconds
+          unit: s
+          query: mongodb_ss_uptime{job="$job",instance="$instance"}
+          panel: true
+          panel_title: mongod Uptime (s)
+          panel_id: mongodb-mongod-uptime-seconds
+        - name: job_scrape_up_by_instance
+          query: up{job="$job"}
+          panel: true
+          panel_title: 'Exporter Scrape by Target: 1 = Scraped'
+          panel_id: mongodb-job-scrape-up-by-instance
+  - step: 2
+    title: Read the replica set view for the deployment
+    description: Member states and health as reported by the exporters of this job. A standalone deployment returns no replica-set series.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: members_state_for_job
+          query: max by (rs_nm, member_idx, member_state) (mongodb_rs_members_state{job="$job"})
+        - name: members_health_for_job
+          query: min by (rs_nm, member_idx) (mongodb_rs_members_health{job="$job"})
+        - name: node_replset_state
+          query: mongodb_rs_myState{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Node Replica Set State (1 = PRIMARY, 2 = SECONDARY)
+          panel_id: mongodb-node-replset-state
+  - step: 3
+    title: Read load, cache and connection context
+    description: Point-in-time context for an unmatched alert, not evidence for its window.
+    tool_calls:
+    - tool_id: tool.query_metrics
+      description: VictoriaMetrics evidence for this step.
+      params:
+        queries:
+        - name: connections_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} / ignoring (conn_type) (mongodb_ss_connections{job="$job",instance="$instance",conn_type="current"} + ignoring
+            (conn_type) mongodb_ss_connections{job="$job",instance="$instance",conn_type="available"})
+          panel: true
+          panel_title: Connections Used of Limit (%)
+          panel_id: mongodb-connections-used-pct
+        - name: ops_queued_by_type
+          query: mongodb_ss_globalLock_currentQueue{job="$job",instance="$instance"}
+          panel: true
+          panel_title: Operations Queued by Type
+          panel_id: mongodb-ops-queued-by-type
+        - name: write_latency_avg_ms
+          unit: ms
+          query: (rate(mongodb_ss_opLatencies_latency{job="$job",instance="$instance",op_type="writes"}[5m]) / rate(mongodb_ss_opLatencies_ops{job="$job",instance="$instance",op_type="writes"}[5m])) / 1000
+          panel: true
+          panel_title: Average Write Latency (ms)
+          panel_id: mongodb-write-latency-avg-ms
+        - name: cache_used_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_bytes_currently_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Used (%)
+          panel_id: mongodb-cache-used-pct
+        - name: cache_dirty_pct
+          unit: '%'
+          query: 100 * mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache{job="$job",instance="$instance"} / mongodb_ss_wt_cache_maximum_bytes_configured{job="$job",instance="$instance"}
+          panel: true
+          panel_title: WiredTiger Cache Dirty (%)
+          panel_id: mongodb-cache-dirty-pct
+  - step: 4
+    title: Read recent mongod log entries
+    description: Near-current supporting evidence only; no member selector.
+    tool_calls:
+    - tool_id: mcp.mongodb-database.mongodb_logs
+      description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
+        string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
+        an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
+        record the call as NOT RUN.'
+      params:
+        arguments:
+          type: global
+          limit: 50
+        timeout: 10
+escalation: MongoDB database owner; include the exact job, instance, replica set and member, fresh VM evidence, available live results and unresolved scope or permission gaps.

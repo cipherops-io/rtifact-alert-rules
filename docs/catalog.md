@@ -103,34 +103,34 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `MongoDBExporterDown` | warning | P2 | 5m | cause | `up{job=~".*mongo.*", job!~".*atlas.*"} == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBDown` | critical | P1 | 2m | symptom | `mongodb_up == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBAllInstancesDown` | critical | P0 | 2m | symptom | `max by (cluster, namespace, job) ( mongodb_up ) == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicaSetNoPrimary` | critical | P0 | 1m | symptom | `count by (cluster, namespace, job, rs_nm) ( mongodb_rs_myState ) unless count b…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicationMemberUnhealthy` | critical | P1 | 2m | cause | `min by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_health…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicaSetMemberNotServing` | warning | P2 | 15m | cause | `max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_state{…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicaSetPrimaryElected` | info | P3 | 0m | cause | `time() - max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_membe…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicaSetFrequentElections` | warning | P2 | 5m | symptom | `max by (cluster, namespace, job, rs_nm) ( mongodb_rs_term ) - max by (cluster, …` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicationLagHigh` | warning | P2 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicationLagCritical` | critical | P1 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBMajorityCommitLagging` | critical | P1 | 2m | symptom | `( mongodb_rs_optimes_lastAppliedWallTime - mongodb_rs_optimes_lastCommittedWall…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBFlowControlEngaged` | warning | P2 | 5m | symptom | `mongodb_ss_flowControl_isLagged == 1` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBOplogWindowLow` | warning | P2 | 30m | cause | `mongodb_oplog_stats_storageStats_maxSize / rate(mongodb_oplog_stats_wt_cursor_i…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBWriteConcernTimeouts` | warning | P2 | 5m | symptom | `increase(mongodb_ss_metrics_getLastError_wtimeouts[10m]) > 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBConnectionsHigh` | warning | P2 | 5m | cause | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBConnectionsExhausted` | critical | P1 | 2m | symptom | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBOperationsQueued` | warning | P2 | 5m | symptom | `mongodb_ss_globalLock_currentQueue{count_type="total"} > 10` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBWriteLatencyHigh` | warning | P2 | 10m | symptom | `( rate(mongodb_ss_opLatencies_latency{op_type="writes"}[5m]) / rate(mongodb_ss_…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBWiredTigerCacheFull` | warning | P2 | 10m | cause | `mongodb_ss_wt_cache_bytes_currently_in_the_cache / mongodb_ss_wt_cache_maximum_…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBWiredTigerCacheDirtyHigh` | warning | P2 | 5m | cause | `mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache / mongodb_ss_wt_cache_maxi…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBCursorsTimedOut` | warning | P3 | 10m | cause | `increase(mongodb_ss_metrics_cursor_timedOut[10m]) > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBLowDiskSpace` | critical | P1 | 1m | cause | `increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction[5m]) > 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBPrimaryFsyncLocked` | critical | P1 | 2m | symptom | `mongodb_currentop_fsync_lock_state == 1 unless on (cluster, job, instance) (mon…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBSecondaryFsyncLocked` | warning | P2 | 30m | cause | `mongodb_currentop_fsync_lock_state == 1 and on (cluster, job, instance) (mongod…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBPBMBackupFailed` | warning | P2 | 5m | cause | `max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_ts{status…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBPBMNoRecentBackup` | warning | P2 | 15m | cause | `time() - max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBPBMAgentUnhealthy` | warning | P2 | 10m | cause | `max by (cluster, namespace, job, replica_set, host) ( mongodb_pbm_agent_status …` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBInstanceRestarted` | info | P3 | 0m | cause | `mongodb_ss_uptime < 600` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBExporterDown` | warning | P2 | 5m | cause | `up{job=~".*mongo.*", job!~".*atlas.*"} == 0` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBDown` | critical | P1 | 2m | symptom | `mongodb_up == 0` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBAllInstancesDown` | critical | P0 | 2m | symptom | `max by (cluster, namespace, job) ( mongodb_up ) == 0` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicaSetNoPrimary` | critical | P0 | 1m | symptom | `count by (cluster, namespace, job, rs_nm) ( mongodb_rs_myState ) unless count b…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicationMemberUnhealthy` | critical | P1 | 2m | cause | `min by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_health…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicaSetMemberNotServing` | warning | P2 | 15m | cause | `max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_state{…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicaSetPrimaryElected` | info | P3 | 0m | cause | `time() - max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_membe…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicaSetFrequentElections` | warning | P2 | 5m | symptom | `max by (cluster, namespace, job, rs_nm) ( mongodb_rs_term ) - max by (cluster, …` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicationLagHigh` | warning | P2 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBReplicationLagCritical` | critical | P1 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBMajorityCommitLagging` | critical | P1 | 2m | symptom | `( mongodb_rs_optimes_lastAppliedWallTime - mongodb_rs_optimes_lastCommittedWall…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBFlowControlEngaged` | warning | P2 | 5m | symptom | `mongodb_ss_flowControl_isLagged == 1` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBOplogWindowLow` | warning | P2 | 30m | cause | `mongodb_oplog_stats_storageStats_maxSize / rate(mongodb_oplog_stats_wt_cursor_i…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBWriteConcernTimeouts` | warning | P2 | 5m | symptom | `increase(mongodb_ss_metrics_getLastError_wtimeouts[10m]) > 0` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBConnectionsHigh` | warning | P2 | 5m | cause | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBConnectionsExhausted` | critical | P1 | 2m | symptom | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBOperationsQueued` | warning | P2 | 5m | symptom | `mongodb_ss_globalLock_currentQueue{count_type="total"} > 10` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBWriteLatencyHigh` | warning | P2 | 10m | symptom | `( rate(mongodb_ss_opLatencies_latency{op_type="writes"}[5m]) / rate(mongodb_ss_…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBWiredTigerCacheFull` | warning | P2 | 10m | cause | `mongodb_ss_wt_cache_bytes_currently_in_the_cache / mongodb_ss_wt_cache_maximum_…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBWiredTigerCacheDirtyHigh` | warning | P2 | 5m | cause | `mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache / mongodb_ss_wt_cache_maxi…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBCursorsTimedOut` | warning | P3 | 10m | cause | `increase(mongodb_ss_metrics_cursor_timedOut[10m]) > 100` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBLowDiskSpace` | critical | P1 | 1m | cause | `increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction[5m]) > 0` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBPrimaryFsyncLocked` | critical | P1 | 2m | symptom | `mongodb_currentop_fsync_lock_state == 1 unless on (cluster, job, instance) (mon…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBSecondaryFsyncLocked` | warning | P2 | 30m | cause | `mongodb_currentop_fsync_lock_state == 1 and on (cluster, job, instance) (mongod…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBPBMBackupFailed` | warning | P2 | 5m | cause | `max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_ts{status…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBPBMNoRecentBackup` | warning | P2 | 15m | cause | `time() - max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_…` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBPBMAgentUnhealthy` | warning | P2 | 10m | cause | `max by (cluster, namespace, job, replica_set, host) ( mongodb_pbm_agent_status …` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
+| `MongoDBInstanceRestarted` | info | P3 | 0m | cause | `mongodb_ss_uptime < 600` | [mongodb.yaml](runbooks/databases/mongodb.yaml) |
 
 ### `rules/metrics/databases/mysql.yml`
 
@@ -545,6 +545,7 @@
 - [clickhouse.md](runbooks/databases/clickhouse.md)
 - [elasticsearch-cloud.yaml](runbooks/databases/elasticsearch-cloud.yaml)
 - [mongodb-atlas.yaml](runbooks/databases/mongodb-atlas.yaml)
+- [mongodb.md](runbooks/databases/mongodb.md)
 - [core-apps-log-alerts.yaml](runbooks/logs/core-apps-log-alerts.yaml)
 - [service-error-logs.yaml](runbooks/logs/service-error-logs.yaml)
 - [rabbitmq.md](runbooks/messaging/rabbitmq.md)
