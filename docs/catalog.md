@@ -103,15 +103,34 @@
 
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
-| `MongoDBDown` | critical | P1 | 1m | symptom | `up{job=~"mongodb.*"} == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBReplicationMemberUnhealthy` | critical | P1 | 1m | symptom | `mongodb_rs_members_health == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBConnectionsHigh` | warning | P2 | 5m | cause | `mongodb_connections{state="current"} / mongodb_connections{state="available"} >…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBCursorsTimedOut` | warning | P2 | 5m | symptom | `rate(mongodb_metrics_cursor_timed_out_total[5m]) > 5` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBHighDiskUsage` | warning | P2 | 5m | cause | `(node_filesystem_size_bytes{mountpoint="/data/db"} - node_filesystem_free_bytes…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBOplogWindowLow` | warning | P2 | 5m | cause | `mongodb_mongod_replset_oplog_tail_timestamp - mongodb_mongod_replset_oplog_head…` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBLockRatioHigh` | warning | P2 | 5m | cause | `mongodb_mongod_global_lock_ratio > 0.50` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBFlushAverageMsHigh` | warning | P3 | 10m | cause | `mongodb_mongod_background_flushing_average_ms > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
-| `MongoDBWiredTigerCacheEvictions` | warning | P2 | 5m | cause | `rate(mongodb_mongod_wiredtiger_cache_evicted_total[5m]) > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBExporterDown` | warning | P2 | 5m | cause | `up{job=~".*mongo.*", job!~".*atlas.*"} == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBDown` | critical | P1 | 2m | symptom | `mongodb_up == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBAllInstancesDown` | critical | P0 | 2m | symptom | `max by (cluster, namespace, job) ( mongodb_up ) == 0` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicaSetNoPrimary` | critical | P0 | 1m | symptom | `count by (cluster, namespace, job, rs_nm) ( mongodb_rs_myState ) unless count b…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicationMemberUnhealthy` | critical | P1 | 2m | cause | `min by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_health…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicaSetMemberNotServing` | warning | P2 | 15m | cause | `max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_members_state{…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicaSetPrimaryElected` | info | P3 | 0m | cause | `time() - max by (cluster, namespace, job, rs_nm, member_idx) ( mongodb_rs_membe…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicaSetFrequentElections` | warning | P2 | 5m | symptom | `max by (cluster, namespace, job, rs_nm) ( mongodb_rs_term ) - max by (cluster, …` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicationLagHigh` | warning | P2 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBReplicationLagCritical` | critical | P1 | 5m | cause | `( max by (cluster, namespace, job, rs_nm, member_idx) ( max without (member_idx…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBMajorityCommitLagging` | critical | P1 | 2m | symptom | `( mongodb_rs_optimes_lastAppliedWallTime - mongodb_rs_optimes_lastCommittedWall…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBFlowControlEngaged` | warning | P2 | 5m | symptom | `mongodb_ss_flowControl_isLagged == 1` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBOplogWindowLow` | warning | P2 | 30m | cause | `mongodb_oplog_stats_storageStats_maxSize / rate(mongodb_oplog_stats_wt_cursor_i…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBWriteConcernTimeouts` | warning | P2 | 5m | symptom | `increase(mongodb_ss_metrics_getLastError_wtimeouts[10m]) > 0` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBConnectionsHigh` | warning | P2 | 5m | cause | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBConnectionsExhausted` | critical | P1 | 2m | symptom | `mongodb_ss_connections{conn_type="current"} / ignoring (conn_type) ( mongodb_ss…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBOperationsQueued` | warning | P2 | 5m | symptom | `mongodb_ss_globalLock_currentQueue{count_type="total"} > 10` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBWriteLatencyHigh` | warning | P2 | 10m | symptom | `( rate(mongodb_ss_opLatencies_latency{op_type="writes"}[5m]) / rate(mongodb_ss_…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBWiredTigerCacheFull` | warning | P2 | 10m | cause | `mongodb_ss_wt_cache_bytes_currently_in_the_cache / mongodb_ss_wt_cache_maximum_…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBWiredTigerCacheDirtyHigh` | warning | P2 | 5m | cause | `mongodb_ss_wt_cache_tracked_dirty_bytes_in_the_cache / mongodb_ss_wt_cache_maxi…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBCursorsTimedOut` | warning | P3 | 10m | cause | `increase(mongodb_ss_metrics_cursor_timedOut[10m]) > 100` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBLowDiskSpace` | critical | P1 | 1m | cause | `increase(mongodb_ss_metrics_diskSpaceMonitor_tookAction[5m]) > 0` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBPrimaryFsyncLocked` | critical | P1 | 2m | symptom | `mongodb_currentop_fsync_lock_state == 1 unless on (cluster, job, instance) (mon…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBSecondaryFsyncLocked` | warning | P2 | 30m | cause | `mongodb_currentop_fsync_lock_state == 1 and on (cluster, job, instance) (mongod…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBPBMBackupFailed` | warning | P2 | 5m | cause | `max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_ts{status…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBPBMNoRecentBackup` | warning | P2 | 15m | cause | `time() - max by (cluster, namespace, job) ( mongodb_pbm_backup_last_transition_…` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBPBMAgentUnhealthy` | warning | P2 | 10m | cause | `max by (cluster, namespace, job, replica_set, host) ( mongodb_pbm_agent_status …` | [mongodb.md](runbooks/databases/mongodb.md) |
+| `MongoDBInstanceRestarted` | info | P3 | 0m | cause | `mongodb_ss_uptime < 600` | [mongodb.md](runbooks/databases/mongodb.md) |
 
 ### `rules/metrics/databases/mysql.yml`
 
@@ -130,6 +149,18 @@
 | `MySQLTableLockWaits` | warning | P2 | 5m | cause | `rate(mysql_global_status_table_locks_waited[5m]) > 100` | [mysql.md](runbooks/databases/mysql.md) |
 | `MySQLAbortedConnections` | warning | P2 | 5m | cause | `rate(mysql_global_status_aborted_connects[5m]) > 5` | [mysql.md](runbooks/databases/mysql.md) |
 | `MySQLLongRunningTransaction` | warning | P2 | 1m | cause | `mysql_info_schema_innodb_trx_wait_time_seconds > 300` | [mysql.md](runbooks/databases/mysql.md) |
+
+### `rules/metrics/databases/neo4j.yml`
+
+| Alert | Severity | Priority | For | Signal | Expression | Runbook |
+|---|---|---|---|---|---|---|
+| `Neo4jTargetConnectionFailed` | critical | P1 | 2m | symptom | `neo4j_exporter_up == 0` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jDatabaseOffline` | critical | P1 | 2m | symptom | `neo4j_database_online == 0` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jIndexesFailed` | warning | P2 | 5m | symptom | `neo4j_indexes_failed > 0` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jJVMHeapHigh` | warning | P2 | 10m | cause | `neo4j_jvm_heap_used_bytes / neo4j_jvm_heap_max_bytes > 0.85 and neo4j_jvm_heap_…` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jJVMGCOverheadHigh` | warning | P2 | 10m | cause | `sum without (gc) (rate(neo4j_jvm_gc_collection_seconds_total[5m])) > 0.10` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jJVMProcessCPUHigh` | warning | P2 | 15m | cause | `neo4j_jvm_process_cpu_load > 0.90 and neo4j_jvm_process_cpu_load <= 1` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
+| `Neo4jJVMFileDescriptorsHigh` | warning | P2 | 10m | cause | `neo4j_jvm_open_file_descriptors / neo4j_jvm_max_file_descriptors > 0.85 and neo…` | [neo4j.yaml](runbooks/databases/neo4j.yaml) |
 
 ### `rules/metrics/databases/postgresql.yml`
 
@@ -521,4 +552,4 @@
 
 ---
 
-_340 alerts across 30 files in 8 categories._
+_366 alerts across 31 files in 8 categories._
