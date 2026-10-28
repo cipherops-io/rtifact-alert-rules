@@ -44,7 +44,7 @@ Cause alerts ("this will become bad soon") and SLO yellow-line. Examples:
 Tuning opportunities and informational. Examples:
 - `RedisMemoryFragmentationHigh`
 - `MySQLQCacheHitRatioLow`
-- `MongoDBFlushAverageMsHigh`
+- `MongoDBCursorsTimedOut`
 
 ### `info` + `P3`
 
