@@ -541,6 +541,7 @@
 
 ## runbooks without alert rules
 
+- [aws-cloudwatch.yaml](runbooks/cloud/aws-cloudwatch.yaml)
 - [gcp-load-balancer.yaml](runbooks/cloud/gcp-load-balancer.yaml)
 - [clickhouse.md](runbooks/databases/clickhouse.md)
 - [elasticsearch-cloud.yaml](runbooks/databases/elasticsearch-cloud.yaml)
