@@ -17,7 +17,7 @@ tests:
         sourceType: metric
         severity: critical
         priority: P0
-        notify_every: 10m
+        notify_every: 5m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -50,7 +50,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 1h
         tech_stack: istio
         signal: cause
         category: ingress
@@ -70,7 +70,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 1h
         tech_stack: istio
         signal: cause
         category: ingress
@@ -100,7 +100,7 @@ tests:
         sourceType: metric
         severity: critical
         priority: P0
-        notify_every: 10m
+        notify_every: 5m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -143,7 +143,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 1h
         tech_stack: istio
         signal: cause
         category: ingress
@@ -192,7 +192,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -232,7 +232,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -281,7 +281,7 @@ tests:
         sourceType: metric
         severity: critical
         priority: P1
-        notify_every: 30m
+        notify_every: 10m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -318,7 +318,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -365,7 +365,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -447,7 +447,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 1h
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -484,7 +484,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P3
-        notify_every: 6h
+        notify_every: 2h
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -545,7 +545,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -597,7 +597,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P2
-        notify_every: 2h
+        notify_every: 30m
         tech_stack: istio
         signal: symptom
         category: ingress
@@ -627,7 +627,7 @@ tests:
         sourceType: metric
         severity: warning
         priority: P3
-        notify_every: 6h
+        notify_every: 1h
         tech_stack: istio
         signal: symptom
         category: ingress

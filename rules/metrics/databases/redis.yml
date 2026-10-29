@@ -9,7 +9,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -34,7 +34,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -55,7 +55,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -73,7 +73,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "24h"
+          notify_every: "15m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -91,7 +91,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -109,7 +109,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: redis
           signal: cause
           category: data
@@ -130,7 +130,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: redis
           signal: cause
           category: data
@@ -151,7 +151,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: redis
           signal: cause
           category: data
@@ -169,7 +169,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "4h"
           tech_stack: redis
           signal: cause
           category: data
@@ -187,7 +187,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: redis
           signal: cause
           category: data
@@ -220,7 +220,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: redis
           signal: cause
           category: data
@@ -241,7 +241,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: redis
           signal: cause
           category: data
@@ -262,7 +262,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: redis
           signal: cause
           category: data
@@ -280,7 +280,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "2h"
           tech_stack: redis
           signal: symptom
           category: data
@@ -298,7 +298,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: redis
           signal: symptom
           category: data
@@ -316,7 +316,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: redis
           signal: symptom
           category: data
@@ -328,18 +328,18 @@ groups:
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisblockedclientshigh"
 
       - alert: RedisSlowLogGrowing
-        expr: increase(redis_slowlog_last_id[5m]) > 0
-        for: 5m
+        expr: increase(redis_slowlog_last_id[5m]) >= 20
+        for: 10m
         labels:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "24h"
+          notify_every: "2h"
           tech_stack: redis
           signal: cause
           category: data
           runbook: runbooks/databases/redis.yaml
-          query: increase(redis_slowlog_last_id[5m]) > 0
+          query: increase(redis_slowlog_last_id[5m]) >= 20
         annotations:
           summary: "Redis slowlog is growing"
           description: "New Redis slowlog entries were observed on {{ $labels.instance }}. One or more commands are exceeding the configured slowlog threshold and may be increasing request latency for all clients because Redis command execution is largely single-threaded. Expensive commands, large keys, broad scans, Lua scripts, or slow disk/network conditions can delay unrelated cache, session, lock, queue, and rate-limit operations."
@@ -352,7 +352,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: redis
           signal: cause
           category: data
@@ -370,7 +370,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "2h"
           tech_stack: redis
           signal: cause
           category: data
@@ -388,7 +388,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: redis
           signal: cause
           category: data

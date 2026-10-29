@@ -10,7 +10,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -29,7 +29,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -51,7 +51,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P0
-          notify_every: "10m"
+          notify_every: "5m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -70,7 +70,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -91,7 +91,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -133,7 +133,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -152,7 +152,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P0
-          notify_every: "10m"
+          notify_every: "5m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -173,7 +173,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "2h"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -197,7 +197,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -218,7 +218,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -239,7 +239,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -260,7 +260,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: kafka
           signal: cause
           category: messaging
@@ -289,7 +289,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -311,7 +311,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "1h"
           tech_stack: kafka
           signal: symptom
           category: messaging
@@ -356,7 +356,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "1h"
           tech_stack: kafka
           signal: cause
           category: messaging

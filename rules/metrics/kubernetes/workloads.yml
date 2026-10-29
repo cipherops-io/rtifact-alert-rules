@@ -12,7 +12,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -38,7 +38,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -97,7 +97,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "4h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: cause
           category: workload
@@ -147,7 +147,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -166,7 +166,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -186,7 +186,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: cause
           category: rollout
@@ -206,7 +206,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -226,7 +226,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: symptom
           category: rollout
@@ -246,7 +246,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: symptom
           category: workload
@@ -325,7 +325,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: kubernetes
           signal: cause
           category: scheduling

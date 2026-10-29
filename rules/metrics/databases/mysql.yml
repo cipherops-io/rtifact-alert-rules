@@ -8,6 +8,7 @@ groups:
         labels:
           severity: critical
           priority: P1
+          notify_every: "10m"
           tech_stack: mysql
           signal: symptom
           category: data
@@ -24,6 +25,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "1h"
           tech_stack: mysql
           signal: cause
           category: data
@@ -40,6 +42,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data
@@ -57,6 +60,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "1h"
           tech_stack: mysql
           signal: symptom
           category: data
@@ -74,6 +78,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data
@@ -90,6 +95,7 @@ groups:
         labels:
           severity: critical
           priority: P1
+          notify_every: "15m"
           tech_stack: mysql
           signal: symptom
           category: data
@@ -106,6 +112,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data
@@ -126,6 +133,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "1h"
           tech_stack: mysql
           signal: cause
           category: storage
@@ -146,6 +154,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "2h"
           tech_stack: mysql
           signal: cause
           category: data
@@ -163,6 +172,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: symptom
           category: data
@@ -180,6 +190,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data
@@ -197,6 +208,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data
@@ -214,6 +226,7 @@ groups:
         labels:
           severity: warning
           priority: P2
+          notify_every: "30m"
           tech_stack: mysql
           signal: cause
           category: data

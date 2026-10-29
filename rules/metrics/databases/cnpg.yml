@@ -10,7 +10,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -65,7 +65,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -84,7 +84,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -103,7 +103,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -122,7 +122,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -178,7 +178,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -199,7 +199,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -224,7 +224,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -303,7 +303,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -322,7 +322,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -341,7 +341,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -361,7 +361,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: storage
@@ -380,7 +380,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: cause
           category: storage
@@ -400,7 +400,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -420,7 +420,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -439,7 +439,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -459,7 +459,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -478,7 +478,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -498,7 +498,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: cnpg
           signal: cause
           category: data
@@ -518,7 +518,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -537,7 +537,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: cnpg
           signal: symptom
           category: data
@@ -562,7 +562,7 @@ groups:
           cnpg_cluster: '{{ reReplaceAll "-[0-9]+$" "" $labels.pod }}'
           severity: warning
           priority: P3
-          notify_every: "24h"
+          notify_every: "4h"
           tech_stack: cnpg
           signal: cause
           category: data
