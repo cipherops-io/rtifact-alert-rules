@@ -15,7 +15,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -36,7 +36,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -57,7 +57,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "15m"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -78,7 +78,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -103,7 +103,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -131,7 +131,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "4h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -180,7 +180,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "24h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -240,7 +240,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -261,7 +261,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -282,7 +282,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "2h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -329,7 +329,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -351,7 +351,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -373,7 +373,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -433,7 +433,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -490,7 +490,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -517,7 +517,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -551,7 +551,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -581,7 +581,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -605,7 +605,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -627,7 +627,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -653,7 +653,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "24h"
+          notify_every: "4h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -718,7 +718,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "30m"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -740,7 +740,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "2h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -761,7 +761,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "4h"
           tech_stack: clickhouse
           signal: symptom
           category: data
@@ -786,7 +786,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "2h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -814,7 +814,7 @@ groups:
           sourceType: metric
           severity: critical
           priority: P1
-          notify_every: "30m"
+          notify_every: "10m"
           tech_stack: clickhouse
           signal: cause
           category: storage
@@ -839,7 +839,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "2h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: storage
@@ -866,7 +866,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P2
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: data
@@ -988,7 +988,7 @@ groups:
           sourceType: metric
           severity: warning
           priority: P3
-          notify_every: "12h"
+          notify_every: "1h"
           tech_stack: clickhouse
           signal: cause
           category: network
