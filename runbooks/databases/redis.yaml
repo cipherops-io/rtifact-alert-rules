@@ -49,6 +49,9 @@ description: >-
 # it can never describe a different instance. Its output is labelled
 # "(fallback for tool.query_db_activity)" and is coarser (INFO counters, no
 # per-client or per-command list) — say so when it is the source.
+# SLOWLOG reads fall back to `mcp.redis.slow_log` (same routing rule). Unlike the
+# tunnel read it returns raw entries: argument values are NOT redacted, so the
+# RCA quotes only the command, its key and the client — never the values.
 match_keywords:
   - redis
   - dragonfly
@@ -1410,8 +1413,15 @@ common_alerts:
           Note: argument VALUES are redacted to "?" by design (slowlog carries raw
           payloads); the command and its first key are preserved, so describe the
           command shape and key, and do not claim to know the values.
-          If the step failed (no redis-cli in the container, AUTH required, pod
-          gone), say the exact command could not be read and fall back to metrics.
+          If the tunnel read failed (no tunnel on this cluster, no redis-cli in the
+          container, AUTH required, pod gone), the MCP slow log fallback runs instead —
+          its output is marked "(fallback for tool.query_db_activity)" and is the raw
+          SLOWLOG list: read the command name, first key, duration and client address
+          from each entry and derive the worst command and the repeated command shapes
+          yourself, quoting them verbatim; argument values are NOT redacted there, so
+          never repeat them. If both reads failed or the fallback was NOT RUN (no
+          routing rule for this instance), say the exact command could not be read and
+          fall back to metrics.
         tool_calls:
           - tool_id: "tool.query_db_activity"
             description: "Live SLOWLOG GET on the alerting Redis/Dragonfly pod: command, key, duration, and the client that issued it."
@@ -1419,6 +1429,12 @@ common_alerts:
               engine: "redis"
               query_id: "slowlog"
               limit: 10
+            fallback:
+              - tool_id: "mcp.redis.slow_log"
+                target: "child"
+                description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool (default 10 newest entries) — command, key, duration and client; argument values arrive unredacted, quote only the command and key."
+                params:
+                  summary_chars: 4000
     remediation: # suggestion-only
       - action: "optimize_slow_commands"
         description: "Fix the exact commands step 3 named (quote them in the action — command, key and client IP): replace KEYS with SCAN, avoid large HGETALL/SMEMBERS/ZRANGE on big collections (paginate), break up big keys, and review long Lua scripts. Start with the highest-count entry in repeated_commands, not the single slowest outlier."
@@ -1555,6 +1571,12 @@ common_alerts:
               engine: "redis"
               query_id: "slowlog"
               limit: 10
+            fallback:
+              - tool_id: "mcp.redis.slow_log"
+                target: "child"
+                description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool — the exact expensive commands, keys and clients (quote only the command and key, never argument values)."
+                params:
+                  summary_chars: 4000
     remediation: # suggestion-only
       - action: "optimize_or_shard_for_cpu"
         description: "When step 1 shows expensive commands (high avg duration / slowlog): optimise them (SCAN over KEYS, paginate big-collection reads, trim Lua) per the slowlog. When it shows a genuine traffic spike: add read replicas for read-heavy load or shard the keyspace — Redis cannot use more than one core for the command loop, so vertical CPU alone won't help."
