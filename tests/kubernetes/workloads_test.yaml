@@ -22,7 +22,7 @@ tests:
               sourceType: metric
               severity: critical
               priority: P1
-              notify_every: "24h"
+              notify_every: "30m"
               tech_stack: kubernetes
               signal: symptom
               category: workload
@@ -190,7 +190,7 @@ tests:
               sourceType: metric
               severity: critical
               priority: P1
-              notify_every: "30m"
+              notify_every: "15m"
               tech_stack: kubernetes
               signal: cause
               category: storage
