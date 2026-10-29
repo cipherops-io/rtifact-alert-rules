@@ -2,7 +2,7 @@ tech_stack: mongodb
 version: '1.0'
 description: 'Investigation runbook for self-hosted MongoDB (replica sets and standalone servers, including Percona Server for MongoDB run by the Percona Operator) monitored by percona/mongodb_exporter
   in its default naming mode. It does not cover MongoDB Atlas (see the MongoDB Atlas runbook). The main evidence is VictoriaMetrics; live reads go through the MongoDB database connector (mcp.mongodb-database.mongodb_logs
-  and list_databases) as independent best-effort calls. A missing integration, a connection that does not reach the alerting deployment, a permission error or a timeout is recorded and does not stop the
+  and list_databases) as independent best-effort calls. Every connector call carries target: child, so forge sends it only to the operator whose platform routing rule (mcp.mcp_config_registry) matches this alert; with no matching rule it is NOT RUN rather than sent to another deployment''s connector. A missing integration, a connection that does not reach the alerting deployment, a permission error or a timeout is recorded and does not stop the
   other calls or the VictoriaMetrics evidence. The connector offers no replSetGetStatus, serverStatus or currentOp, so replica-set, load and cache evidence comes from the exporter''s metrics, not from live
   commands. IDENTITY: job is the exporter''s scrape job and identifies one MongoDB deployment. instance is the monitored mongod: with the prometheus-mongodb-exporter chart in multi-target mode it is mongodb://<member-host>:<port>
   (one exporter target per member); otherwise it is the exporter''s own endpoint. rs_nm is the replica set name and member_idx is a member''s host:port as listed by rs.status(); replica_set and host identify
@@ -199,6 +199,7 @@ backup_queries:
   query: max by (job) (mongodb_pbm_cluster_backup_configured{job="$job"})
 live_mongodb_logs:
   tool_id: mcp.mongodb-database.mongodb_logs
+  target: child
   description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
     string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
     an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -210,6 +211,7 @@ live_mongodb_logs:
     timeout: 10
 live_mongodb_startup_warnings:
   tool_id: mcp.mongodb-database.mongodb_logs
+  target: child
   description: 'Read at most 20 startup warnings and errors from the mongod the connection reaches. Use it to see why a recent start was unclean (unclean shutdown recovery, storage warnings). Same limits
     as the global log call: no member selector, point-in-time, not historical.'
   params:
@@ -219,6 +221,7 @@ live_mongodb_startup_warnings:
     timeout: 10
 live_databases:
   tool_id: mcp.mongodb-database.list_databases
+  target: child
   description: 'Bounded discovery of the databases visible to the connection, with sizes as returned. Sizes are point-in-time allocations: not growth, not working-set size and not filesystem usage. The
     returned list can be a subset; report partial coverage. Do not fan out into per-database calls.'
   params:
@@ -364,6 +367,7 @@ common_alerts:
       their timestamps to the alert start. An empty or unrelated result does not exclude the cause.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -435,6 +439,7 @@ common_alerts:
     description: If the connection can still reach a member, its recent log shows why it stopped serving. If every call fails, record the failures; that is itself consistent with a full outage.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -516,6 +521,7 @@ common_alerts:
     description: Look for 'Starting an election', 'Not electing self', 'Stepping down' and heartbeat failure lines.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -588,6 +594,7 @@ common_alerts:
     description: The connection may not reach this member; look for heartbeat failure messages about it in what is returned.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -657,6 +664,7 @@ common_alerts:
     description: Look for initial sync progress, 'too stale to catch up', rollback and storage error lines.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -725,6 +733,7 @@ common_alerts:
     description: Look for 'Stepping down' and the reason on the former primary, or 'Starting an election'.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -793,6 +802,7 @@ common_alerts:
     description: Look for 'Starting an election', 'Stepping down', 'heartbeat failed' and election timeout lines.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -881,6 +891,7 @@ common_alerts:
     description: Look for replication errors, slow applied operations and sync source changes in what the connection returns.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -969,6 +980,7 @@ common_alerts:
     description: Look for replication errors, slow applied operations and sync source changes in what the connection returns.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1065,6 +1077,7 @@ common_alerts:
     description: Look for slow majority acknowledgements and replication errors.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1359,6 +1372,7 @@ common_alerts:
     description: Connection accepted and ended lines show the busiest client addresses and application names; look for 'Too many open connections'.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1427,6 +1441,7 @@ common_alerts:
     description: Connection accepted and ended lines show the busiest client addresses and application names; look for 'Too many open connections'.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1502,6 +1517,7 @@ common_alerts:
     description: Look for 'Slow query' lines with long durations and for index builds or collection commands.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1596,6 +1612,7 @@ common_alerts:
     description: '''Slow query'' lines show which writes are slow and why (lock wait, replication wait, index count).'
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1687,6 +1704,7 @@ common_alerts:
     description: Look for collection scans in 'Slow query' lines.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1878,6 +1896,7 @@ common_alerts:
     description: Sizes are point-in-time allocations, not growth or filesystem usage, and the list may be a subset.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -1888,6 +1907,7 @@ common_alerts:
           limit: 50
         timeout: 10
     - tool_id: mcp.mongodb-database.list_databases
+      target: child
       description: 'Bounded discovery of the databases visible to the connection, with sizes as returned. Sizes are point-in-time allocations: not growth, not working-set size and not filesystem usage.
         The returned list can be a subset; report partial coverage. Do not fan out into per-database calls.'
       params:
@@ -1970,6 +1990,7 @@ common_alerts:
     description: Look for fsync and lock messages.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -2291,6 +2312,7 @@ common_alerts:
     description: Look for unclean shutdown recovery and storage warnings.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most 20 startup warnings and errors from the mongod the connection reaches. Use it to see why a recent start was unclean (unclean shutdown recovery, storage warnings). Same limits
         as the global log call: no member selector, point-in-time, not historical.'
       params:
@@ -2299,6 +2321,7 @@ common_alerts:
           limit: 20
         timeout: 10
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
@@ -2407,6 +2430,7 @@ general_diagnostic:
     description: Near-current supporting evidence only; no member selector.
     tool_calls:
     - tool_id: mcp.mongodb-database.mongodb_logs
+      target: child
       description: 'Read at most the 50 most recent mongod log entries through the MongoDB database connector. This is getLog-style recent output from the member the connection reaches (a replica-set connection
         string usually selects the primary), not a historical or per-member log search, and the tool has no member selector. Use it only as supporting near-current evidence: a missing message does not prove
         an event did not happen earlier or on another member. Do not retry on failure and redact credentials and literals before model use. If the integration is missing or cannot reach the alerting deployment,
