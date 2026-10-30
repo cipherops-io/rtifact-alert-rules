@@ -49,7 +49,7 @@ description: >-
 # it can never describe a different instance. Its output is labelled
 # "(fallback for tool.query_db_activity)" and is coarser (INFO counters, no
 # per-client or per-command list) — say so when it is the source.
-# SLOWLOG reads fall back to `mcp.redis.slow_log` (same routing rule). Unlike the
+# SLOWLOG reads fall back to `mcp.redis.slowlog_get` (same routing rule). Unlike the
 # tunnel read it returns raw entries: argument values are NOT redacted, so the
 # RCA quotes only the command, its key and the client — never the values.
 match_keywords:
@@ -1430,10 +1430,12 @@ common_alerts:
               query_id: "slowlog"
               limit: 10
             fallback:
-              - tool_id: "mcp.redis.slow_log"
+              - tool_id: "mcp.redis.slowlog_get"
                 target: "child"
-                description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool (default 10 newest entries) — command, key, duration and client; argument values arrive unredacted, quote only the command and key."
+                description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool (20 newest entries) — command, key, duration and client; argument values arrive unredacted, quote only the command and key."
                 params:
+                  arguments:
+                    count: 20
                   summary_chars: 4000
     remediation: # suggestion-only
       - action: "optimize_slow_commands"
@@ -1572,10 +1574,12 @@ common_alerts:
               query_id: "slowlog"
               limit: 10
             fallback:
-              - tool_id: "mcp.redis.slow_log"
+              - tool_id: "mcp.redis.slowlog_get"
                 target: "child"
                 description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool — the exact expensive commands, keys and clients (quote only the command and key, never argument values)."
                 params:
+                  arguments:
+                    count: 20
                   summary_chars: 4000
     remediation: # suggestion-only
       - action: "optimize_or_shard_for_cpu"
