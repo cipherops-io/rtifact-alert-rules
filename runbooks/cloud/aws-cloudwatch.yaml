@@ -1,0 +1,1660 @@
+# Rtifact Amazon CloudWatch v1 runbook.
+# Covers the default alert rules rt-mcp-conductor creates in the customer's AWS account
+# (apps/sai/src/apps/AWS/CloudWatch/alertRules). One file for every CloudWatch alert: rules for
+# further AWS services are added as new common_alerts entries next to the RDS ones.
+tech_stack: aws-cloudwatch
+version: '1.0'
+description: |
+  Runbook for Amazon CloudWatch alarms that Rtifact creates and receives through EventBridge.
+  Version 1 covers the nine Amazon RDS default rules. rt-alert-processor-service attaches this
+  file to every CLOUDWATCH alert, so an alarm that matches no entry runs general_diagnostic.
+
+  HOW THE ALARMS WORK: each default rule is ONE multi time series alarm per AWS account and
+  Region. Its Metrics Insights query groups by DBInstanceIdentifier, so CloudWatch evaluates
+  every RDS instance separately and sends one contributor event per instance that breaches or
+  recovers. Rtifact keeps one alert per instance. Titles arrive as
+  "[CloudWatch] <alarm name> (<DB instance>)", e.g.
+  "[CloudWatch] rtifact-rds-cpu-above-90 (orders-db)". The alarm name identifies the rule; the
+  bracketed value is the instance. Thresholds are one value for the whole fleet.
+
+  INPUTS: impacted entities carry DBInstanceIdentifier (the contributor), AlarmArn,
+  AWSAccountId and Region. Calls use $DBInstanceIdentifier; when it is absent (an alarm without
+  an RDS instance dimension) those calls are NOT RUN and must be reported as an evidence gap,
+  never replaced by a guessed instance. Alarm names are written into each entry because the
+  alarm name is not a resolvable alert variable and each entry covers exactly one Rtifact alarm.
+
+  TIME WINDOW: the CloudWatch tools are called without startTime/endTime and use their
+  defaults: analyze_metric and get_alarm_history read the 24 hours before the investigation
+  runs. Locate the incident inside that window using the alert's start time; if the
+  investigation runs long after the alert, say the onset may sit at the window's edge.
+  analyze_metric never treats a missing period as zero: report gaps as gaps.
+
+  CLOUDWATCH CALLS go to the tenant's Amazon CloudWatch connection (app "cloudwatch"). With
+  several CloudWatch connections (accounts or Regions), add a routing rule so the call reaches
+  the connection whose account and Region match the alert; a metric with no datapoints for this
+  instance usually means the wrong account or Region, not a healthy instance.
+
+  LIVE POSTGRES READS (mcp.postgres.execute_query, target: child) run ONLY when a platform
+  routing rule (mcp.mcp_config_registry) maps the alert's DBInstanceIdentifier to the Postgres
+  connection for that same instance; with no matching rule they are NOT RUN, so they never read
+  a different database. The connection reaches one endpoint, so is_primary in each result says
+  which side was read. The connection user should be read-only and hold pg_monitor; otherwise
+  other sessions' query text reads "<insufficient privilege>". top statements need the
+  pg_stat_statements extension. Every statement is a SELECT on catalog and statistics views,
+  tagged rtifact-diagnostic, with query literals masked to "?".
+
+  NOT AVAILABLE in v1 (report as gaps, do not infer): RDS DescribeDBInstances (instance class,
+  allocated storage, storage type, Multi-AZ), RDS events (failover, reboot, maintenance,
+  storage-full), Performance Insights top SQL, and exported PostgreSQL logs (the Logs Insights
+  tools need explicit start and end times, which this runbook cannot supply).
+
+  EVIDENCE RULE: separate the alarm's reported breach, measured metric behaviour, live database
+  state at investigation time, candidate contributors and missing evidence. A live read is the
+  state NOW, not at alarm time. A quiet metric or empty result is not proof of health. UNKNOWN
+  or partial RCA is a successful safe outcome. Remediation entries are recommendations for the
+  DB owner: empty tool_id never dispatches.
+match_keywords:
+  - cloudwatch
+  - amazon cloudwatch
+  - aws rds
+  - rtifact-rds-
+
+categories:
+  - DATA
+  - DATABASE
+  - CLOUD
+
+available_tools:
+  - mcp.cloudwatch.describe_alarms - alarm configuration and its alarm-level state (any instance in ALARM)
+  - mcp.cloudwatch.get_alarm_history - state transitions in the last 24 hours, one row per instance
+  - mcp.cloudwatch.analyze_metric - one AWS/RDS metric for one instance, 24 hours, statistics/trend/gaps
+  - mcp.postgres.execute_query - read-only catalog/statistics SELECTs on the routed instance (target child)
+
+# ── Live Postgres reads (shared blocks) ─────────────────────────────────────────
+# Same SQL as the CNPG runbook's MCP fallbacks where the view is the same, plus RDS storage and
+# memory views. Each is used through a YAML alias inside the alert entries below.
+
+rds_pg_connections: &rds_pg_connections
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read on the routed instance: client connections against max_connections,
+    state mix, idle-in-transaction count and age, top clients, and what active sessions wait on.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'max_connections', current_setting('max_connections')::int,
+            'superuser_reserved_connections', current_setting('superuser_reserved_connections')::int,
+            'client_connections', (SELECT count(*) FROM pg_stat_activity
+                                   WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()),
+            'by_state', COALESCE((
+              SELECT json_object_agg(st, n) FROM (
+                SELECT coalesce(state, 'unknown') AS st, count(*) AS n FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND pid <> pg_backend_pid() GROUP BY 1) x), '{}'::json),
+            'idle_in_transaction', (
+              SELECT json_build_object(
+                'count', count(*),
+                'oldest_seconds', round(extract(epoch FROM max(now() - state_change))::numeric, 1))
+              FROM pg_stat_activity WHERE state LIKE 'idle in transaction%'),
+            'top_clients', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT usename, application_name, datname, client_addr::text AS client_addr,
+                       count(*) AS connections,
+                       count(*) FILTER (WHERE state = 'active') AS active,
+                       count(*) FILTER (WHERE state LIKE 'idle in transaction%') AS idle_in_transaction
+                FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()
+                GROUP BY 1, 2, 3, 4 ORDER BY connections DESC LIMIT 8) r), '[]'::json),
+            'active_waits', COALESCE((
+              SELECT json_object_agg(w, n) FROM (
+                SELECT wait_event_type || ':' || wait_event AS w, count(*) AS n FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND state = 'active' AND wait_event IS NOT NULL
+                  AND pid <> pg_backend_pid()
+                GROUP BY 1 ORDER BY 2 DESC LIMIT 8) x), '{}'::json)
+          ) AS live
+    timeout: 15
+    summary_chars: 4000
+
+rds_pg_top_statements: &rds_pg_top_statements
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: heaviest statements by total execution time from pg_stat_statements,
+    literal-masked, with block reads and temp writes. Counters are cumulative since the last
+    stats reset, so a statement's share is a candidate contributor, not proof it caused this alarm.
+    Fails if pg_stat_statements is not installed: report that as a gap.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'statements', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT s.queryid::text AS queryid, d.datname, u.rolname AS usename, s.calls,
+                       round(s.total_exec_time::numeric, 1) AS total_exec_ms,
+                       round(s.mean_exec_time::numeric, 2)  AS mean_exec_ms,
+                       round(s.max_exec_time::numeric, 1)   AS max_exec_ms,
+                       s.rows, s.shared_blks_hit, s.shared_blks_read, s.temp_blks_written,
+                       left(regexp_replace(regexp_replace(s.query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_statements s
+                LEFT JOIN pg_database d ON d.oid = s.dbid
+                LEFT JOIN pg_roles u ON u.oid = s.userid
+                WHERE s.query NOT LIKE '%rtifact-diagnostic%'
+                ORDER BY s.total_exec_time DESC LIMIT 5) r), '[]'::json)
+          ) AS live
+    timeout: 15
+    summary_chars: 4000
+
+rds_pg_long_transactions: &rds_pg_long_transactions
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: open transactions older than 60s with pid, state, ages, wait event,
+    blockers and literal-masked SQL.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'server_version', current_setting('server_version'),
+            'is_primary', NOT pg_is_in_recovery(),
+            'backends', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT a.pid,
+                       a.usename,
+                       a.application_name,
+                       a.client_addr::text AS client_addr,
+                       a.datname,
+                       a.state,
+                       a.backend_type,
+                       a.wait_event_type,
+                       a.wait_event,
+                       a.backend_xmin::text AS backend_xmin,
+                       round(extract(epoch FROM now() - a.xact_start)::numeric, 2)    AS tx_age_seconds,
+                       round(extract(epoch FROM now() - a.query_start)::numeric, 2)   AS query_age_seconds,
+                       round(extract(epoch FROM now() - a.state_change)::numeric, 2)  AS state_age_seconds,
+                       pg_blocking_pids(a.pid) AS blocked_by,
+                       left(regexp_replace(regexp_replace(a.query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_activity a
+                WHERE a.xact_start IS NOT NULL
+                  AND a.state <> 'idle'
+                  AND a.pid <> pg_backend_pid()
+                  AND now() - a.xact_start > make_interval(secs => 60)
+                ORDER BY a.xact_start ASC
+                LIMIT 5
+              ) r), '[]'::json)
+          ) AS live
+    timeout: 15
+    summary_chars: 4000
+
+rds_pg_replication: &rds_pg_replication
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: per-standby lag (seconds and bytes) and slots when the connection
+    reaches the source, replay delay and WAL receiver status when it reaches a replica.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'standbys', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT application_name, client_addr::text AS client_addr, state, sync_state,
+                       round(extract(epoch FROM write_lag)::numeric, 3)  AS write_lag_seconds,
+                       round(extract(epoch FROM flush_lag)::numeric, 3)  AS flush_lag_seconds,
+                       round(extract(epoch FROM replay_lag)::numeric, 3) AS replay_lag_seconds,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, replay_lsn)::bigint AS replay_lag_bytes,
+                       round(extract(epoch FROM now() - reply_time)::numeric, 1) AS last_reply_age_seconds
+                FROM pg_stat_replication
+                ORDER BY replay_lag_bytes DESC NULLS FIRST LIMIT 10) r), '[]'::json),
+            'slots', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT slot_name, slot_type, active, wal_status,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, restart_lsn)::bigint AS retained_wal_bytes
+                FROM pg_replication_slots
+                ORDER BY retained_wal_bytes DESC NULLS LAST LIMIT 10) r), '[]'::json),
+            'standby', CASE WHEN pg_is_in_recovery() THEN json_build_object(
+                'replay_delay_seconds',
+                  round(extract(epoch FROM now() - pg_last_xact_replay_timestamp())::numeric, 1),
+                'receive_replay_gap_bytes',
+                  pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn())::bigint,
+                'wal_receiver_status', (SELECT status FROM pg_stat_wal_receiver LIMIT 1),
+                'max_standby_streaming_delay', current_setting('max_standby_streaming_delay'),
+                'hot_standby_feedback', current_setting('hot_standby_feedback')) END
+          ) AS live
+    timeout: 15
+    summary_chars: 4000
+
+rds_pg_vacuum: &rds_pg_vacuum
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: xmin horizon holders, oldest-frozen tables, running (anti-wraparound)
+    vacuums, dead rows and per-database XID/MXID age, in the database the connection is
+    configured for (it cannot switch databases).
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'database', current_database(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'autovacuum', current_setting('autovacuum'),
+            'autovacuum_max_workers', current_setting('autovacuum_max_workers')::int,
+            'autovacuum_freeze_max_age', current_setting('autovacuum_freeze_max_age')::bigint,
+            'tables', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT s.schemaname || '.' || s.relname AS relation,
+                       s.n_live_tup, s.n_dead_tup,
+                       round(100.0 * s.n_dead_tup / nullif(s.n_live_tup + s.n_dead_tup, 0), 1) AS dead_pct,
+                       pg_total_relation_size(s.relid) AS total_bytes,
+                       s.n_mod_since_analyze,
+                       s.last_autovacuum, s.last_vacuum, s.last_autoanalyze,
+                       s.autovacuum_count,
+                       age(c.relfrozenxid) AS xid_age
+                FROM pg_stat_user_tables s JOIN pg_class c ON c.oid = s.relid
+                ORDER BY s.n_dead_tup DESC LIMIT 8) r), '[]'::json),
+            'running_vacuums', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT p.pid, p.datname, p.relid::regclass::text AS relation, p.phase,
+                       round(100.0 * p.heap_blks_scanned / nullif(p.heap_blks_total, 0), 1) AS scanned_pct,
+                       round(extract(epoch FROM now() - a.xact_start)::numeric, 1) AS running_seconds,
+                       a.query LIKE 'autovacuum:%' AS is_autovacuum,
+                       a.query LIKE '%(to prevent wraparound)%' AS to_prevent_wraparound
+                FROM pg_stat_progress_vacuum p JOIN pg_stat_activity a USING (pid)) r), '[]'::json),
+            'oldest_xid_tables', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT c.oid::regclass::text AS relation, c.relkind,
+                       age(c.relfrozenxid) AS xid_age, mxid_age(c.relminmxid) AS mxid_age,
+                       pg_total_relation_size(c.oid) AS total_bytes
+                FROM pg_class c WHERE c.relkind IN ('r', 'm', 't')
+                ORDER BY age(c.relfrozenxid) DESC LIMIT 8) r), '[]'::json),
+            'xid_age_by_database', COALESCE((
+              SELECT json_object_agg(datname, age(datfrozenxid)) FROM pg_database WHERE datallowconn), '{}'::json),
+            'mxid_age_by_database', COALESCE((
+              SELECT json_object_agg(datname, mxid_age(datminmxid)) FROM pg_database WHERE datallowconn), '{}'::json),
+            'xmin_horizon', json_build_object(
+              'oldest_backend', (
+                SELECT to_jsonb(r) FROM (
+                  SELECT pid, usename, application_name, datname, state, age(backend_xmin) AS xmin_age,
+                         round(extract(epoch FROM now() - xact_start)::numeric, 1) AS tx_age_seconds
+                  FROM pg_stat_activity WHERE backend_xmin IS NOT NULL AND pid <> pg_backend_pid()
+                  ORDER BY age(backend_xmin) DESC LIMIT 1) r),
+              'prepared_xacts', (SELECT count(*) FROM pg_prepared_xacts),
+              'oldest_prepared_xact_age', (SELECT max(age(transaction)) FROM pg_prepared_xacts),
+              'oldest_slot_xmin_age', (SELECT max(greatest(age(xmin), age(catalog_xmin))) FROM pg_replication_slots),
+              'oldest_standby_feedback_xmin_age', (SELECT max(age(backend_xmin)) FROM pg_stat_replication))
+          ) AS live
+    timeout: 20
+    summary_chars: 4000
+
+rds_pg_storage: &rds_pg_storage
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: what occupies the volume - database sizes, the largest relations in
+    the connected database (heap and index bytes), WAL retained by replication slots, temp-file
+    totals and WAL retention settings. Sizes are the state NOW; they are not a growth rate.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'database', current_database(),
+            'database_sizes', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT datname, pg_database_size(oid) AS bytes FROM pg_database
+                WHERE datallowconn
+                  AND (has_database_privilege(oid, 'CONNECT')
+                       OR pg_has_role(current_user, 'pg_read_all_stats', 'MEMBER'))
+                ORDER BY 2 DESC LIMIT 10) r), '[]'::json),
+            'largest_relations', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT c.oid::regclass::text AS relation, c.relkind,
+                       pg_total_relation_size(c.oid) AS total_bytes,
+                       pg_relation_size(c.oid) AS heap_bytes,
+                       pg_indexes_size(c.oid) AS index_bytes
+                FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relkind IN ('r', 'm') AND n.nspname NOT IN ('pg_catalog', 'information_schema')
+                ORDER BY pg_total_relation_size(c.oid) DESC LIMIT 10) r), '[]'::json),
+            'slots', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT slot_name, slot_type, active, wal_status,
+                       pg_wal_lsn_diff(CASE WHEN pg_is_in_recovery() THEN pg_last_wal_receive_lsn()
+                                            ELSE pg_current_wal_lsn() END, restart_lsn)::bigint AS retained_wal_bytes
+                FROM pg_replication_slots
+                ORDER BY retained_wal_bytes DESC NULLS LAST LIMIT 10) r), '[]'::json),
+            'temp_by_database', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT datname, temp_files, temp_bytes, stats_reset FROM pg_stat_database
+                WHERE datname IS NOT NULL ORDER BY temp_bytes DESC LIMIT 5) r), '[]'::json),
+            'wal_settings', json_build_object(
+              'max_wal_size', current_setting('max_wal_size'),
+              'wal_keep_size', current_setting('wal_keep_size'),
+              'max_slot_wal_keep_size', current_setting('max_slot_wal_keep_size'))
+          ) AS live
+    timeout: 20
+    summary_chars: 4000
+
+rds_pg_memory: &rds_pg_memory
+  tool_id: mcp.postgres.execute_query
+  target: child
+  description: >-
+    CONDITIONAL live read: memory-related settings (shared_buffers, work_mem, maintenance_work_mem,
+    max_connections and friends), connection and active-session counts, parallel workers,
+    temp-file totals and the longest-running active statements, literal-masked.
+  params:
+    arguments:
+      query: |-
+          /* rtifact-diagnostic */ SELECT json_build_object(
+            'server_now', now(),
+            'is_primary', NOT pg_is_in_recovery(),
+            'settings', (SELECT json_object_agg(name, current_setting(name)) FROM pg_settings
+                         WHERE name IN ('shared_buffers', 'work_mem', 'maintenance_work_mem',
+                                        'autovacuum_work_mem', 'hash_mem_multiplier', 'temp_buffers',
+                                        'effective_cache_size', 'max_connections',
+                                        'max_parallel_workers', 'max_parallel_workers_per_gather')),
+            'client_connections', (SELECT count(*) FROM pg_stat_activity
+                                   WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()),
+            'active_sessions', (SELECT count(*) FROM pg_stat_activity
+                                WHERE backend_type = 'client backend' AND state = 'active'
+                                  AND pid <> pg_backend_pid()),
+            'parallel_workers', (SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'parallel worker'),
+            'temp_by_database', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT datname, temp_files, temp_bytes, stats_reset FROM pg_stat_database
+                WHERE datname IS NOT NULL ORDER BY temp_bytes DESC LIMIT 5) r), '[]'::json),
+            'longest_active', COALESCE((
+              SELECT json_agg(to_jsonb(r)) FROM (
+                SELECT pid, usename, application_name, datname, wait_event_type, wait_event,
+                       round(extract(epoch FROM now() - query_start)::numeric, 1) AS query_age_seconds,
+                       left(regexp_replace(regexp_replace(query, '''[^'']*''', '?', 'g'), '\m[0-9]+(\.[0-9]+)*\M', '?', 'g'), 300) AS query
+                FROM pg_stat_activity
+                WHERE backend_type = 'client backend' AND state = 'active' AND pid <> pg_backend_pid()
+                ORDER BY query_start ASC LIMIT 5) r), '[]'::json)
+          ) AS live
+    timeout: 15
+    summary_chars: 4000
+
+common_alerts:
+  - name: AwsRdsCpuHigh
+    patterns:
+      - rtifact-rds-cpu-above-90
+      - rds_cpu_above_90
+      - 'RDS: CPU above 90%'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: AVG(CPUUtilization) > 90% on every one of 5 consecutive 1-minute periods, per
+          RDS instance. Read the alarm configuration and its state history. The alarm state is
+          alarm-level (ALARM while ANY instance breaches); use only history rows whose db equals
+          the alert's instance for this instance's onset and recovery. A missing row is not
+          recovery. Repeated ALARM rows for the same instance are one ongoing breach.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-cpu-above-90']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'operator=ComparisonOperator'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'datapoints=DatapointsToAlarm'
+                - 'missing_data=TreatMissingData'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-cpu-above-90
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure CPU on the instance
+        description: >-
+          Report the peak, the 24-hour baseline, when CPU left the baseline and whether it is
+          still high, a step change (new workload, deploy, batch job) versus a slow climb
+          (data or traffic growth) versus a repeating daily pattern (scheduled job). Missing
+          periods are gaps, not zero.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: CPUUtilization for the instance, 1-minute resolution, last 24 hours.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: CPUUtilization
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+      - step: 3
+        title: Correlate CPU with connections, I/O, database load and CPU credits
+        description: >-
+          Compare onsets with step 2. Connections rising first points at more clients or a pool
+          change; ReadIOPS rising with CPU points at queries scanning more data (missing index,
+          cache misses); DBLoadCPU (published only with Performance Insights) confirms sessions
+          waiting on CPU. CPUCreditBalance is published only for burstable (db.t*) classes: a
+          balance near zero means the instance is throttled to its baseline, which raises CPU
+          percentage without more work. A metric with no datapoints is not published for this
+          instance; say so instead of guessing.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DatabaseConnections, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DatabaseConnections
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DBLoadCPU (Performance Insights only), 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DBLoadCPU
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: CPUCreditBalance (burstable classes only), 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: CPUCreditBalance
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 4
+        title: Find the statements and sessions using CPU (live, when routed)
+        description: >-
+          Name the heaviest statements by total and mean execution time and the active sessions
+          and what they wait on. A statement with high calls and high shared_blks_read usually
+          lacks an index; many active sessions with no wait event are on CPU. These are
+          candidate contributors seen NOW; tie one to the alarm only when its timing fits step 2.
+          If the reads are NOT RUN (no routing rule) or fail, say the workload could not be
+          identified live.
+        tool_calls:
+          - *rds_pg_top_statements
+          - *rds_pg_connections
+    remediation:
+      - action: tune_top_statements
+        description: Review the statements step 4 named with the service owner (indexes, query
+          rewrites, batching) before changing capacity.
+        tool_id: ''
+        requires_approval: true
+      - action: limit_concurrency
+        description: If connections or active sessions rose with CPU, cap the application's pool or
+          put a pooler (RDS Proxy, PgBouncer) in front so concurrency matches the vCPU count.
+        tool_id: ''
+        requires_approval: true
+      - action: resize_instance
+        description: If CPU is high from steady legitimate load, or a burstable class has exhausted
+          its CPU credits, move to a larger or non-burstable class. A class change restarts the
+          instance (a failover on Multi-AZ); schedule it with the DB owner.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; involve the service owner of any statement step 4 named. Raise to P1
+      when the application reports errors or timeouts against this instance.
+    follow_up:
+      - Confirm recovery from a newer OK contributor event for this instance, not from one quiet
+        datapoint.
+      - Report the root cause as not established when only the CPU series is available.
+
+  - name: AwsRdsFreeStorageLow
+    patterns:
+      - rtifact-rds-free-storage-below-10gib
+      - rds_free_storage_below_10gib
+      - 'RDS: Free storage below 10 GiB'
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: MIN(FreeStorageSpace) < 10 GiB (10737418240 bytes) on every one of 5 consecutive
+          1-minute periods, per RDS instance. The threshold is absolute for the whole fleet: on
+          a small volume 10 GiB can be most of the disk, on a large one a few percent. The
+          allocated size is not available in v1; do not state a percentage full. When the
+          volume fills, the instance stops accepting writes (storage-full).
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-free-storage-below-10gib']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'operator=ComparisonOperator'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-free-storage-below-10gib
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure how fast free storage is falling
+        description: >-
+          FreeStorageSpace is in bytes; divide by 1073741824 for GiB. Report the lowest value,
+          the trend over 24 hours and a sudden drop (bulk load, index build, a stuck slot
+          retaining WAL, temp files from a large sort) versus a steady decline (data growth).
+          An estimate of time to full is a projection from this window only; label it so. A
+          sudden RISE means space was freed or storage was added.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: FreeStorageSpace minimum, 5-minute resolution, last 24 hours.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: FreeStorageSpace
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 2500
+      - step: 3
+        title: Check whether WAL is filling the volume
+        description: >-
+          These PostgreSQL metrics say whether write-ahead log, not table data, is taking the
+          space. TransactionLogsDiskUsage (bytes of WAL on disk) or ReplicationSlotDiskUsage
+          climbing while FreeStorageSpace falls points at WAL retained for a replication slot;
+          OldestReplicationSlotLag growing names a slot whose consumer stopped (a logical
+          replication, DMS or CDC client). A high TransactionLogsGeneration rate is heavy
+          writes. No datapoints means the metric is not published (for example a non-PostgreSQL
+          engine).
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: TransactionLogsDiskUsage, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: TransactionLogsDiskUsage
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReplicationSlotDiskUsage, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReplicationSlotDiskUsage
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: OldestReplicationSlotLag, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: OldestReplicationSlotLag
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: TransactionLogsGeneration, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: TransactionLogsGeneration
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 4
+        title: Find what occupies the volume (live, when routed)
+        description: >-
+          Name the biggest consumers: the largest databases and relations (heap versus index
+          bytes), inactive slots with large retained_wal_bytes, and temp_bytes (cumulative since
+          stats_reset, so large only means temp files were written at some point). Many dead
+          rows in the vacuum view point at bloat that VACUUM can reuse but not return to the
+          volume. Sizes are the state now; they are not a growth rate.
+        tool_calls:
+          - *rds_pg_storage
+          - *rds_pg_vacuum
+    remediation:
+      - action: add_storage
+        description: Increase allocated storage or enable storage autoscaling with a maximum. After
+          a storage change RDS blocks further storage changes for six hours or until optimization
+          finishes, so size the increase for that period.
+        tool_id: ''
+        requires_approval: true
+      - action: release_retained_wal
+        description: If step 3 or 4 named an inactive replication slot, confirm with its owner that
+          the consumer is gone, then drop the slot so PostgreSQL can remove the retained WAL.
+        tool_id: ''
+        requires_approval: true
+      - action: reclaim_space
+        description: Archive or delete data with the data owner, and rebuild bloated tables or
+          indexes (pg_repack, VACUUM FULL in a window) to return space to the volume.
+        tool_id: ''
+        requires_approval: true
+    escalation: P1 DB owner immediately - writes stop when the volume is full. Pull in the owner
+      of any replication slot or bulk job that steps 3 and 4 named.
+    follow_up:
+      - Confirm FreeStorageSpace stays above the threshold after the fix and the contributor
+        returns to OK.
+      - Add an alert on OldestReplicationSlotLag or inactive slots if a slot caused this.
+
+  - name: AwsRdsFreeableMemoryLow
+    patterns:
+      - rtifact-rds-freeable-memory-below-256mib
+      - rds_freeable_memory_below_256mib
+      - 'RDS: Freeable memory below 256 MiB'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: MIN(FreeableMemory) < 256 MiB on every one of 10 consecutive 1-minute periods,
+          per RDS instance. The threshold is absolute: the instance's total memory is not
+          available in v1, so do not state a percentage. Low FreeableMemory alone does not mean
+          the instance is failing; PostgreSQL relies on the OS cache.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-freeable-memory-below-256mib']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-freeable-memory-below-256mib
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure memory, swap and connections together
+        description: >-
+          FreeableMemory and SwapUsage are bytes (divide by 1048576 for MiB). Memory falling
+          while DatabaseConnections rises points at per-connection memory (each backend plus
+          work_mem per sort or hash). SwapUsage rising after FreeableMemory bottoms out means
+          real memory pressure; low FreeableMemory with flat swap is often just a full cache.
+          Rising ReadIOPS with falling memory means the cache is being evicted and reads go to
+          disk.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: FreeableMemory minimum, 1-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: FreeableMemory
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: SwapUsage maximum, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: SwapUsage
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DatabaseConnections, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DatabaseConnections
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Read memory settings and the sessions using memory (live, when routed)
+        description: >-
+          Compare work_mem and maintenance_work_mem with the number of active sessions and
+          parallel workers: each sort or hash can use work_mem (times hash_mem_multiplier for
+          hashes), so many concurrent heavy queries multiply it. Large temp_bytes means queries
+          spill to disk because work_mem is too small for them. Name the longest-running active
+          statements as candidates. RDS sets shared_buffers from the instance class by default;
+          a custom parameter group may have raised it.
+        tool_calls:
+          - *rds_pg_memory
+          - *rds_pg_connections
+    remediation:
+      - action: reduce_connection_memory
+        description: Cap connections with a pooler (RDS Proxy, PgBouncer) and lower work_mem for the
+          heavy sessions or roles instead of globally.
+        tool_id: ''
+        requires_approval: true
+      - action: review_parameter_group
+        description: Have the DB owner check shared_buffers, work_mem and maintenance_work_mem in the
+          instance's parameter group against its class before changing them.
+        tool_id: ''
+        requires_approval: true
+      - action: resize_instance
+        description: If memory is short under legitimate load, move to a class with more memory. A
+          class change restarts the instance; schedule it with the DB owner.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 if swap keeps rising or the application reports timeouts.
+    follow_up:
+      - Confirm FreeableMemory recovers and SwapUsage stops rising before closing.
+      - Report the root cause as not established when only the memory series is available.
+
+  - name: AwsRdsSwapUsageHigh
+    patterns:
+      - rtifact-rds-swap-usage-above-256mib
+      - rds_swap_usage_above_256mib
+      - 'RDS: Swap usage above 256 MiB'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: MAX(SwapUsage) > 256 MiB on every one of 10 consecutive 1-minute periods, per RDS
+          instance. Swap use slows queries because memory pages are read back from disk. A
+          small, flat amount of swap that never changes can be left over from an old peak.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-swap-usage-above-256mib']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-swap-usage-above-256mib
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure swap against free memory, connections and latency
+        description: >-
+          Swap growing while FreeableMemory is near its minimum is active memory pressure; swap
+          that rose once and stays flat while FreeableMemory recovered is residue from an earlier
+          peak. Rising ReadLatency in the same window shows the user-visible effect. Connections
+          rising first points at per-connection memory.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: SwapUsage maximum, 1-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: SwapUsage
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: FreeableMemory minimum, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: FreeableMemory
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DatabaseConnections, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DatabaseConnections
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadLatency, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadLatency
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Read memory settings and the sessions using memory (live, when routed)
+        description: >-
+          Same reading as for low freeable memory: compare work_mem, maintenance_work_mem and
+          parallel workers with the number of active sessions, check temp_bytes for queries that
+          spill, and name the longest-running active statements as candidates.
+        tool_calls:
+          - *rds_pg_memory
+          - *rds_pg_connections
+    remediation:
+      - action: reduce_connection_memory
+        description: Cap connections with a pooler (RDS Proxy, PgBouncer) and lower work_mem for the
+          heavy sessions or roles instead of globally.
+        tool_id: ''
+        requires_approval: true
+      - action: resize_instance
+        description: If swap grows under legitimate load, move to a class with more memory. A class
+          change restarts the instance; schedule it with the DB owner.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 when latency or application timeouts rise with swap.
+    follow_up:
+      - Confirm swap stops growing; swap that stays allocated but flat after recovery is not an
+        ongoing problem.
+
+  - name: AwsRdsReadLatencyHigh
+    patterns:
+      - rtifact-rds-read-latency-above-20ms
+      - rds_read_latency_above_20ms
+      - 'RDS: Read latency above 20 ms'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: AVG(ReadLatency) > 20 ms (0.02 seconds) on every one of 10 consecutive 1-minute
+          periods, per RDS instance. ReadLatency is the average time per disk read I/O, in
+          seconds; it is storage latency, not query latency.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-read-latency-above-20ms']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-read-latency-above-20ms
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure read latency and the I/O behind it
+        description: >-
+          Latency rising together with ReadIOPS and DiskQueueDepth means more reads than the
+          volume serves at speed (a heavier workload or cache misses). Latency rising while IOPS
+          stay flat or fall points at the storage being throttled: BurstBalance near zero (gp2)
+          or EBSIOBalance% near zero (burstable instance classes) means I/O credits are used up.
+          No datapoints for a credit metric means it does not apply to this instance.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadLatency, 1-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadLatency
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DiskQueueDepth, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DiskQueueDepth
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: BurstBalance (gp2 storage only), 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: BurstBalance
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: EBSIOBalance% (burstable instance classes only), 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: EBSIOBalance%
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Find the statements reading from disk (live, when routed)
+        description: >-
+          Statements with the most shared_blks_read relative to shared_blks_hit read from disk
+          rather than the cache: candidates for an index or a smaller result. Active sessions
+          waiting on IO:DataFileRead confirm reads are the bottleneck now.
+        tool_calls:
+          - *rds_pg_top_statements
+          - *rds_pg_connections
+    remediation:
+      - action: reduce_reads
+        description: Add or fix indexes for the statements step 3 named and review queries that scan
+          large tables, with the service owner.
+        tool_id: ''
+        requires_approval: true
+      - action: raise_storage_performance
+        description: If credits are exhausted or IOPS are at the volume's limit, move gp2 to gp3 or
+          provision more IOPS (gp3, io1, io2). A storage-type change runs online but adds I/O
+          while it optimizes.
+        tool_id: ''
+        requires_approval: true
+      - action: add_memory
+        description: If cache misses drive the reads, a class with more memory keeps more of the
+          working set cached. A class change restarts the instance.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 when application latency or timeouts rise with it.
+    follow_up:
+      - Confirm ReadLatency returns under the threshold and the contributor returns to OK.
+
+  - name: AwsRdsWriteLatencyHigh
+    patterns:
+      - rtifact-rds-write-latency-above-20ms
+      - rds_write_latency_above_20ms
+      - 'RDS: Write latency above 20 ms'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: AVG(WriteLatency) > 20 ms (0.02 seconds) on every one of 10 consecutive 1-minute
+          periods, per RDS instance. WriteLatency is the average time per disk write I/O, in
+          seconds; slow writes delay commits because WAL must reach disk.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-write-latency-above-20ms']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-write-latency-above-20ms
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure write latency and the writes behind it
+        description: >-
+          Latency rising with WriteIOPS and TransactionLogsGeneration (WAL bytes per second)
+          means a heavier write load (bulk load, batch update, index build). Latency rising
+          with DiskQueueDepth but flat IOPS points at the volume being throttled: check
+          BurstBalance (gp2). No datapoints for a metric means it does not apply.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: WriteLatency, 1-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: WriteLatency
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: WriteIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: WriteIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: TransactionLogsGeneration, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: TransactionLogsGeneration
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: DiskQueueDepth, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: DiskQueueDepth
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: BurstBalance (gp2 storage only), 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: BurstBalance
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Find the writers and long transactions (live, when routed)
+        description: >-
+          Name the statements with the most execution time and temp writes, and any long
+          transactions. Active sessions waiting on IO:WALWrite or IO:WALSync confirm commits wait
+          for the disk now; Lock waits point at contention rather than storage.
+        tool_calls:
+          - *rds_pg_top_statements
+          - *rds_pg_long_transactions
+    remediation:
+      - action: reduce_write_bursts
+        description: Spread bulk loads and batch updates over time and commit in larger batches,
+          with the service owner.
+        tool_id: ''
+        requires_approval: true
+      - action: raise_storage_performance
+        description: If the volume is throttled or at its IOPS limit, move gp2 to gp3 or provision
+          more IOPS (gp3, io1, io2).
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 when commits time out in the application.
+    follow_up:
+      - Confirm WriteLatency returns under the threshold and the contributor returns to OK.
+
+  - name: AwsRdsReplicaLagHigh
+    patterns:
+      - rtifact-rds-replica-lag-above-60s
+      - rds_replica_lag_above_60s
+      - 'RDS: Replica lag above 60 seconds'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this replica's transitions
+        description: >-
+          Rule: MAX(ReplicaLag) > 60 seconds on every one of 5 consecutive 1-minute periods.
+          Only read replicas publish ReplicaLag, so the alert's instance is the REPLICA. Its
+          source instance is not in the alert and DescribeDBInstances is not available in v1:
+          name the source as unknown unless the live replication read shows it.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-replica-lag-above-60s']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-replica-lag-above-60s
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure lag and whether the replica keeps up with replay
+        description: >-
+          A lag that climbs steadily means the replica cannot replay WAL as fast as the source
+          writes it; a sawtooth that returns to near zero means bursts it catches up on. High
+          replica CPU or WriteLatency points at the replica being undersized for replay (it must
+          apply every write the source makes). A lag that grows linearly with no recovery can
+          mean replication stopped. The source's write rate is not available without its
+          instance ID.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReplicaLag maximum, 1-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReplicaLag
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 60
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: Replica CPUUtilization, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: CPUUtilization
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: Replica WriteLatency, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: WriteLatency
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Read the replication view and queries holding replay back (live, when routed)
+        description: >-
+          On the replica, replay_delay_seconds and receive_replay_gap_bytes say whether WAL is
+          arriving but not being applied (replay is slow or paused by a conflicting query) or
+          not arriving at all (wal_receiver_status not "streaming": network or source issue).
+          Long transactions on the replica can pause replay up to max_standby_streaming_delay.
+          If the connection reaches the source instead, standbys[] shows each replica's lag in
+          seconds and bytes.
+        tool_calls:
+          - *rds_pg_replication
+          - *rds_pg_long_transactions
+    remediation:
+      - action: size_replica_for_replay
+        description: Give the replica at least the source's instance class and storage performance
+          so it can apply every write the source makes.
+        tool_id: ''
+        requires_approval: true
+      - action: limit_replica_queries
+        description: Move long reporting queries off the replica or review
+          max_standby_streaming_delay and hot_standby_feedback with the DB owner (feedback adds
+          bloat on the source).
+        tool_id: ''
+        requires_approval: true
+      - action: recreate_replica
+        description: If replication stopped and does not resume, recreate the read replica from the
+          source after the DB owner confirms.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 when applications read stale data that matters or the lag
+      keeps growing without recovery.
+    follow_up:
+      - Confirm ReplicaLag returns near zero and the contributor returns to OK.
+
+  - name: AwsRdsTransactionIdWraparound
+    patterns:
+      - rtifact-rds-transaction-ids-above-1b
+      - rds_transaction_ids_above_1b
+      - 'RDS PostgreSQL: Transaction IDs used above 1 billion'
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: MAX(MaximumUsedTransactionIDs) > 1,000,000,000 on every one of 5 consecutive
+          1-minute periods, per PostgreSQL instance. The metric is the age of the oldest
+          unfrozen transaction ID; PostgreSQL stops accepting writes near 2.1 billion to
+          prevent wraparound, so the gap to that is the urgency.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-transaction-ids-above-1b']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-transaction-ids-above-1b
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure whether the age is still climbing
+        description: >-
+          A steadily RISING line means anti-wraparound vacuum is not keeping up: something
+          blocks it (step 3). A sawtooth that drops back means vacuum IS freezing and this is a
+          peak. Estimate how long until 2.1 billion only as a projection from this window.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: MaximumUsedTransactionIDs, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: MaximumUsedTransactionIDs
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Maximum
+                period: 300
+              timeout: 30
+              summary_chars: 2500
+      - step: 3
+        title: Find what stops vacuum from freezing, and the oldest tables (live, when routed)
+        description: >-
+          Vacuum cannot freeze past the OLDEST snapshot anyone holds. Read xmin_horizon first; it
+          names the blocker: oldest_backend (a long or idle-in-transaction session: quote pid,
+          usename, application_name, tx_age_seconds), prepared_xacts > 0 with a large
+          oldest_prepared_xact_age (an abandoned two-phase transaction), oldest_slot_xmin_age (a
+          replication slot, often an inactive one) or oldest_standby_feedback_xmin_age (a
+          replica with hot_standby_feedback running long queries). If none is old, vacuum is
+          not reaching the tables: oldest_xid_tables[] lists them. running_vacuums[] with
+          to_prevent_wraparound=true means the emergency vacuum is already running; do not
+          promise its finish time. autovacuum = off explains it on its own.
+        tool_calls:
+          - *rds_pg_vacuum
+          - *rds_pg_long_transactions
+    remediation:
+      - action: remove_the_horizon_blocker
+        description: Clear what step 3 named as holding the xmin horizon - end the old session after
+          its owner confirms (rds_superuser can run pg_terminate_backend), resolve the abandoned
+          prepared transaction, or drop the inactive replication slot. Vacuum makes progress only
+          once it is gone.
+        tool_id: ''
+        requires_approval: true
+      - action: vacuum_freeze_oldest_tables
+        description: Once nothing blocks the horizon, run VACUUM (FREEZE, VERBOSE) on the oldest
+          tables step 3 listed, biggest first. Do not cancel an anti-wraparound autovacuum that is
+          already running; it restarts from the beginning.
+        tool_id: ''
+        requires_approval: true
+      - action: tune_autovacuum_for_freeze
+        description: Prevent recurrence by raising autovacuum_max_workers or maintenance_work_mem, or
+          lowering autovacuum_freeze_max_age for hot tables, in the parameter group.
+        tool_id: ''
+        requires_approval: true
+    escalation: P1 DB owner immediately - writes stop near 2.1 billion. Include the blocker step 3
+      named so the owner of that session, slot or prepared transaction is pulled in.
+    follow_up:
+      - Track the age falling after the blocker is removed; it drops only when vacuum finishes the
+        oldest table, which can take hours on large tables.
+      - Add alerts on long idle-in-transaction sessions and inactive replication slots; they are
+        the usual root cause.
+
+  - name: AwsRdsBurstBalanceLow
+    patterns:
+      - rtifact-rds-burst-balance-below-20
+      - rds_burst_balance_below_20
+      - 'RDS: Storage burst balance below 20%'
+    priority: P2
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the alarm and this instance's transitions
+        description: >-
+          Rule: MIN(BurstBalance) < 20% on every one of 5 consecutive 1-minute periods. Only gp2
+          volumes publish BurstBalance. A gp2 volume earns 3 IOPS per GiB (at least 100) and
+          bursts to 3,000 IOPS while it has credits; at zero it drops to that baseline. The
+          volume size is not available in v1, so do not state the baseline.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.describe_alarms
+            description: Alarm configuration and alarm-level state.
+            params:
+              arguments:
+                alarmNames: ['rtifact-rds-burst-balance-below-20']
+              timeout: 20
+              rows: 'MetricAlarms[*]'
+              max_rows: 5
+              summary_chars: 2000
+              fields:
+                - 'name=AlarmName'
+                - 'state=StateValue'
+                - 'reason=StateReason'
+                - 'state_updated=StateUpdatedTimestamp'
+                - 'threshold=Threshold'
+                - 'periods=EvaluationPeriods'
+                - 'query=Metrics[0].Expression'
+          - tool_id: mcp.cloudwatch.get_alarm_history
+            description: State transitions in the last 24 hours, one row per instance.
+            params:
+              arguments:
+                alarmName: rtifact-rds-burst-balance-below-20
+                historyItemType: StateUpdate
+                limit: 50
+              timeout: 20
+              rows: 'AlarmHistoryItems[*]'
+              max_rows: 25
+              summary_chars: 3000
+              fields:
+                - 'time=Timestamp'
+                - 'db=AlarmContributorAttributes.DBInstanceIdentifier'
+                - 'summary=HistorySummary'
+      - step: 2
+        title: Measure how fast credits drain and the I/O spending them
+        description: >-
+          A steady decline means sustained I/O above the volume's baseline; a sharp drop means a
+          burst (batch job, vacuum, backup, index build). ReadIOPS plus WriteIOPS shows which
+          side spends the credits. Rising ReadLatency or WriteLatency once the balance nears zero
+          is the user-visible effect.
+        tool_calls:
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: BurstBalance minimum, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: BurstBalance
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Minimum
+                period: 300
+              timeout: 30
+              summary_chars: 2500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: WriteIOPS, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: WriteIOPS
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+          - tool_id: mcp.cloudwatch.analyze_metric
+            description: ReadLatency, 5-minute resolution.
+            params:
+              arguments:
+                namespace: AWS/RDS
+                metricName: ReadLatency
+                dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+                statistic: Average
+                period: 300
+              timeout: 30
+              summary_chars: 1500
+      - step: 3
+        title: Find the statements doing the I/O (live, when routed)
+        description: >-
+          Statements with high shared_blks_read or temp_blks_written spend the credits; a running
+          vacuum on a large table can too. Name them as candidates and tie them to the drain only
+          when their timing fits step 2.
+        tool_calls:
+          - *rds_pg_top_statements
+          - *rds_pg_vacuum
+    remediation:
+      - action: move_to_gp3
+        description: Change the storage type from gp2 to gp3, which has a 3,000 IOPS baseline and no
+          burst credits. The change runs online but adds I/O while the volume optimizes.
+        tool_id: ''
+        requires_approval: true
+      - action: reduce_io
+        description: Index the statements step 3 named, and schedule batch jobs and maintenance off
+          peak.
+        tool_id: ''
+        requires_approval: true
+    escalation: P2 DB owner; raise to P1 if latency is already rising and the balance is near zero.
+    follow_up:
+      - Confirm BurstBalance recovers above the threshold and the contributor returns to OK.
+
+general_diagnostic:
+  steps:
+    - step: 1
+      title: Read the instance's main RDS metrics
+      description: >-
+        For a CloudWatch alert that matches no entry (for example a customer's own alarm). These
+        calls need DBInstanceIdentifier; for an alarm on another AWS service they are NOT RUN and
+        the alert's NewStateReason and entities are the only evidence. Report which of CPU, free
+        storage, freeable memory and connections moved at the alert's start time; do not name a
+        cause from one series.
+      tool_calls:
+        - tool_id: mcp.cloudwatch.analyze_metric
+          description: CPUUtilization, 5-minute resolution.
+          params:
+            arguments:
+              namespace: AWS/RDS
+              metricName: CPUUtilization
+              dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+              statistic: Average
+              period: 300
+            timeout: 30
+            summary_chars: 1500
+        - tool_id: mcp.cloudwatch.analyze_metric
+          description: FreeStorageSpace, 5-minute resolution.
+          params:
+            arguments:
+              namespace: AWS/RDS
+              metricName: FreeStorageSpace
+              dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+              statistic: Minimum
+              period: 300
+            timeout: 30
+            summary_chars: 1500
+        - tool_id: mcp.cloudwatch.analyze_metric
+          description: FreeableMemory, 5-minute resolution.
+          params:
+            arguments:
+              namespace: AWS/RDS
+              metricName: FreeableMemory
+              dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+              statistic: Minimum
+              period: 300
+            timeout: 30
+            summary_chars: 1500
+        - tool_id: mcp.cloudwatch.analyze_metric
+          description: DatabaseConnections, 5-minute resolution.
+          params:
+            arguments:
+              namespace: AWS/RDS
+              metricName: DatabaseConnections
+              dimensions: [{Name: DBInstanceIdentifier, Value: $DBInstanceIdentifier}]
+              statistic: Average
+              period: 300
+            timeout: 30
+            summary_chars: 1500
+    - step: 2
+      title: Read the live connection picture (when routed)
+      description: >-
+        Connection totals against max_connections, state mix and active waits on the routed
+        instance, as context for the alarm. NOT RUN without a routing rule.
+      tool_calls:
+        - *rds_pg_connections
+
+escalation: |-
+  P1 for free storage and transaction ID wraparound (writes stop); P2 for the others. Raise a P2 to P1 when the application reports errors or timeouts against the instance. Always name the instance, the alarm and the evidence gaps.
+follow_up:
+  - Close on a newer OK contributor event for the same instance, not on the absence of new ALARM events.
+  - Keep the evidence and the stated gaps in the final report even when the cause is not established.
+  - For customer-impacting alerts, ask the owning team to confirm application recovery separately.
