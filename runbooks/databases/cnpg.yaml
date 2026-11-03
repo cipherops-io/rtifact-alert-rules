@@ -1084,19 +1084,28 @@ common_alerts:
     priority: P1
     diagnostic_steps:
       - step: 1
-        title: "Find inactive slots and — crucially — how much WAL each is retaining"
+        title: "Name the dead slot on the PRIMARY and how much WAL it is pinning"
         description: >-
-          The alert keys on cnpg_pg_replication_slots_active == 0. IMPORTANT nuance for multi-node
-          CNPG: standbys keep HA replication slots that are NORMALLY inactive, so an inactive slot
-          BY ITSELF is not necessarily a problem — the danger is an inactive slot that is RETAINING
-          WAL (its consumer is gone but Postgres still preserves WAL for it, growing pg_wal without
-          bound). worst_slot_retained_bytes surfaces the slot_name holding the most WAL. Interpret:
-          inactive_slot_count > 0 AND max_slot_retained_bytes high/growing => a genuine dead slot is
-          pinning WAL — the real, P1 problem (disk-fill risk). inactive_slot_count > 0 AND
-          max_slot_retained_bytes ~0 => benign inactive HA slots; do not over-escalate. Name the
-          offending slot from worst_slot_retained_bytes, and quote worst_data_volume_used_pct /
-          worst_pg_wal_dir_bytes for how close the retained WAL actually is to filling the volume
-          (pg_wal shares the data volume here) instead of asserting a generic disk-fill risk.
+          The alert carries the firing slot in its slot_name entity. The rule fires on the
+          primary only; CNPG copies every primary HA slot (_cnpg_<cluster>_<n>) onto each
+          standby, where it is inactive by design, so an alert raised on a standby
+          (alert_pod_in_recovery=1, from an older rule) is reporting the standby's COPY of the
+          primary's slot. In that case say so and base the finding on the primary's slot, not
+          the copy. alert_pod_in_recovery and alert_slot_retained_bytes need the alert's pod and
+          are skipped when the alert carries none; then rely on the primary_dead_slot_* values.
+          alert_slot_retained_bytes is the inactive slot on the alert's own pod;
+          primary_dead_slot_retained_bytes is the inactive slot on the primary holding the most
+          WAL. Name the slot (slot_name) and the pod (pod) from those labels; they normally
+          agree with the alert's slot_name, and if they differ, report the alert's slot_name and
+          mention the other slot separately. Interpret: primary_dead_slot_retained_bytes large
+          (hundreds of MB or more) => a real dead slot pinning WAL on the primary.
+          primary_dead_slot_growth_6h > 0 => retention is still climbing; quote it as WAL added
+          over the last 6 hours (it grows in 16 MB segment steps, so a flat last hour does not
+          mean it stopped). No primary_dead_slot_retained_bytes series => the primary has no
+          inactive slot right now; the alert has cleared or only a standby copy was firing; do
+          not escalate. Quote worst_data_volume_used_pct and worst_pg_wal_dir_bytes for how
+          close the retained WAL is to filling the volume (pg_wal shares the data volume here)
+          instead of asserting a generic disk-fill risk.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Worst data-volume utilisation and pg_wal directory size across the cluster — how much room the retained WAL still has."
@@ -1109,68 +1118,91 @@ common_alerts:
             params:
               queries: *infra_panels
           - tool_id: "tool.query_metrics"
-            description: "Count of inactive slots, the single worst slot by retained WAL (surfaces slot_name), and max retained bytes across the cluster."
+            description: "Whether the alert's pod is a standby, the inactive slot on the alert's pod, the primary's worst inactive slot (slot_name + pod), and how much WAL it gained in 6h."
             params:
               queries:
-                - name: inactive_slot_count
-                  query: 'count(cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) or vector(0)'
-                  panel: true
-                  panel_title: "Inactive Replication Slots"
-                  panel_id: "cnpg-inactive-slots"
-                - name: worst_slot_retained_bytes
+                - name: alert_pod_in_recovery
+                  query: 'max by (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"})'
+                - name: alert_slot_retained_bytes
                   unit: "B"
-                  query: 'topk(1, max by (slot_name) (cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"}))'
+                  query: 'topk(1, max by (pod, slot_name) (cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod="$pod"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod="$pod"} == 0)))'
+                - name: primary_dead_slot_retained_bytes
+                  unit: "B"
+                  query: 'topk(1, max by (pod, slot_name) (cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)))'
                   panel: true
-                  panel_title: "WAL Retained by Slot"
+                  panel_title: "WAL Retained by Dead Slot (primary)"
                   panel_id: "cnpg-slot-retained-bytes"
-                - name: max_slot_retained_bytes
+                - name: primary_dead_slot_growth_6h
                   unit: "B"
-                  query: 'max(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  query: 'topk(1, max by (slot_name) (delta(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"}[6h]) and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)))'
+                - name: inactive_slot_count_primary
+                  query: 'count(cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0 and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)) or vector(0)'
+                  panel: true
+                  panel_title: "Inactive Replication Slots (primary)"
+                  panel_id: "cnpg-inactive-slots"
       - step: 2
-        title: "Explain WHY the slot is dead — is a replica gone — and how fast WAL is piling up"
+        title: "Find the slot's owner replica — stalled (recover it) or gone (orphan)"
         description: >-
-          A dead slot usually means its consumer disappeared. Interpret: streaming_replicas below
-          expected (instances - 1) or replicas_with_receiver_up below expected => a replica
-          disconnected/was removed and left its slot orphaned — that orphan is the dead slot
-          retaining WAL. wal_generation_bytes_per_s
-          high while retention grows => WAL is accumulating fast behind the slot, so the disk-fill
-          clock is short — escalate urgency. replication_lag_s also high => the same missing/slow
-          replica is behind on the slot it does hold. If all replicas are present and streaming, an
-          inactive-but-retaining slot is likely a leftover from a past topology change.
+          A CNPG HA slot is named after the instance that consumes it: _cnpg_<cluster>_<n> belongs
+          to pod <cluster>-<n> (_cnpg_vibeapps_postgres_3 => vibeapps-postgres-3). The slot_owner_*
+          queries take the primary's worst inactive _cnpg_ slot (the one step 1 named) and resolve
+          its owner pod from the slot's ordinal. No slot_owner_present series => the primary has
+          no inactive _cnpg_ slot; for any other slot (a logical/user slot such as a CDC
+          connector) say the consumer is external, name the slot, and do not use slot_owner_*.
+          Interpret:
+          slot_owner_present = 0 => no instance with that ordinal exists any more; the slot is a
+          genuine ORPHAN left by a removed replica, and dropping it is the fix.
+          slot_owner_present = 1 => the owner replica still exists, so the slot is NOT an orphan
+          and must not be dropped. Name the owner pod (pod label of slot_owner_wal_receiver_up)
+          and report its state: slot_owner_wal_receiver_up = 0 => the replica is up but has
+          stopped streaming from the primary; that stalled replica IS the root cause, and the
+          slot will drain by itself once it streams again (a CNPGClusterReplicaWALReceiverDown
+          alert on that pod is the same incident). slot_owner_ready = 1 with the receiver down
+          => Kubernetes reports the pod healthy, so nothing in pod status shows the failure;
+          say so. streaming_replicas below replica_count confirms the primary is serving fewer
+          standbys than exist. cnpg_pg_replication_lag reads 0 on a replica that is not
+          receiving WAL; never treat a lag of 0 as healthy while the receiver is down.
+          wal_generation_bytes_per_s high => the retained WAL grows fast, so the disk-fill clock
+          is short; escalate.
         tool_calls:
           - tool_id: "tool.query_metrics"
-            description: "Primary's streaming-replica count, WAL receiver state, WAL generation rate, and current replication lag."
+            description: "Owner of the dead slot (pod <cluster>-<n> from _cnpg_<cluster>_<n>): does it exist, is it Ready, is its WAL receiver up; primary's streaming-replica count vs replicas; WAL generation rate."
             params:
               queries:
+                - name: slot_owner_present
+                  query: 'count(label_replace(cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"}, "ord", "$1", "pod", ".+-([0-9]+)") and on (ord) label_replace(topk(1, cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+",slot_name=~"_cnpg_.+"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)")) or (count(label_replace(topk(1, cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+",slot_name=~"_cnpg_.+"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)")) * 0)'
+                - name: slot_owner_wal_receiver_up
+                  query: 'max by (pod) (label_replace(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"}, "ord", "$1", "pod", ".+-([0-9]+)") and on (ord) label_replace(topk(1, cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+",slot_name=~"_cnpg_.+"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)"))'
+                - name: slot_owner_ready
+                  query: 'max by (pod) (label_replace(kube_pod_status_ready{namespace="$namespace",pod=~"$service-[0-9]+",condition="true"}, "ord", "$1", "pod", ".+-([0-9]+)") and on (ord) label_replace(topk(1, cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+",slot_name=~"_cnpg_.+"} and on (pod, slot_name) (cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} == 0) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0)), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)"))'
                 - name: streaming_replicas
-                  query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                  query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"} and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0))'
                   panel: true
                   panel_title: "Streaming Replicas"
                   panel_id: "cnpg-streaming-replicas"
-                - name: replicas_with_receiver_up
-                  query: 'sum(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod=~"$service-[0-9]+"})'
+                - name: replica_count
+                  query: 'count(cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 1) or vector(0)'
                 - name: wal_generation_bytes_per_s
                   unit: "B/s"
                   query: 'sum(rate(cnpg_collector_wal_bytes{namespace="$namespace",pod=~"$service-[0-9]+"}[5m]))'
                   panel: true
                   panel_title: "WAL Generation Rate"
                   panel_id: "cnpg-wal-generation-rate"
-                - name: replication_lag_s
-                  unit: "s"
-                  query: 'max(cnpg_pg_replication_lag{namespace="$namespace",pod=~"$service-[0-9]+"})'
       - step: 3
         title: "Read the slots live — which slot, active or not, and exactly how much WAL it holds"
         description: >-
-          Live read of pg_replication_slots and pg_stat_replication (read-only session). The pod
-          is the alert's, or the cluster's primary when the alert names none. Interpret:
-          slots[] lists slot_name, active, wal_status and retained_wal_bytes — the dead slot is
-          the one with active=false AND large retained_wal_bytes; quote both. wal_status
-          "extended" or "unreserved" => the slot is already beyond max_wal_size / close to
-          max_slot_wal_keep_size and the primary is at risk; "lost" => the slot is already
-          invalid and can no longer serve its replica. standbys[] shows which replicas ARE
-          streaming — a slot whose name matches no streaming standby is the orphan left by a
-          removed replica. Run on a standby (is_primary=false), the slot list reflects that
-          standby only — say so rather than reporting it as the primary's.
+          Live read of pg_replication_slots and pg_stat_replication (read-only session). The
+          tunnel read runs on the alert's pod; the MCP fallback runs on whichever instance the
+          connector reaches, which is_primary reports. Interpret: slots[] lists slot_name,
+          active, wal_status and retained_wal_bytes; the dead slot is the one with active=false
+          AND large retained_wal_bytes; quote both and check it is the slot step 1 named.
+          wal_status "extended" or "unreserved" => the slot is already beyond max_wal_size /
+          close to max_slot_wal_keep_size and the primary is at risk; "lost" => the slot is
+          already invalid and its replica can no longer catch up from it (it needs re-cloning).
+          standbys[] shows which replicas ARE streaming; a slot whose owner is missing from
+          standbys[] is NOT automatically an orphan: step 2 decides that (owner present but not
+          streaming = stalled replica; owner absent = orphan). With is_primary=false the slot
+          list is a standby's mirrored copy; say so rather than reporting it as the primary's.
         tool_calls:
           - tool_id: "tool.query_db_activity"
             description: "Live replication slots with retained WAL and wal_status, plus the standbys currently streaming."
@@ -1181,19 +1213,153 @@ common_alerts:
               limit: 10
             fallback:
               - *cnpg_mcp_replication
-    remediation: # suggestion-only — dropping a slot is a manual psql action; never drop a slot still in use
-      - action: "drop_orphaned_replication_slot"
-        description: "ONLY when step 1 names an inactive slot with large/growing retained WAL AND step 2 confirms its consumer replica is permanently gone: drop the orphan on the primary via psql — SELECT pg_drop_replication_slot('<slot_name>') — to release the retained WAL. Never drop a slot whose replica is merely temporarily disconnected and expected back."
+    remediation: # suggestion-only — slot and replica fixes are manual psql / kubectl-cnpg actions
+      - action: "recover_owner_replica"
+        description: "When step 2 shows the slot's owner replica still exists (slot_owner_present = 1) but its WAL receiver is down: fix that replica, not the slot. Check its postgres logs for the streaming error; for a transient connection failure delete the pod (kubectl delete pod <owner-pod>; CNPG recreates it on the same PVC). If the logs say the requested WAL segment has already been removed, or step 3 shows wal_status 'lost', re-clone it with kubectl cnpg destroy <cluster> <ordinal> so CNPG builds a fresh replica. Once it streams again the slot reactivates and the retained WAL drains."
         tool_id: ""
         requires_approval: true
-      - action: "recover_or_remove_replica"
-        description: "If a replica disconnected (step 2), either recover it (so it reactivates its slot and drains the backlog) or, if intentionally removed, let CNPG reconcile / clean up its HA slot. Recovering the consumer is the non-destructive way to clear retention."
+      - action: "drop_orphaned_replication_slot"
+        description: "ONLY when step 2 shows slot_owner_present = 0 (no instance with the slot's ordinal exists) or the slot is a non-CNPG slot whose consumer has been permanently retired: drop it on the primary via psql — SELECT pg_drop_replication_slot('<slot_name>') — to release the retained WAL. Never drop a slot whose owner replica still exists; that forces the replica to be rebuilt."
         tool_id: ""
         requires_approval: true
     escalation: "Platform/DBA on-call — retained WAL behind a dead slot fills pg_wal and will eventually stop writes cluster-wide (P1). Escalate faster when WAL generation is high and retention is climbing."
     follow_up:
       - "After clearing, confirm retained-WAL bytes for the slot drop to ~0 and pg_wal volume usage recovers."
       - "Audit for leftover slots after any planned replica scale-down / topology change so orphans are removed promptly."
+
+  - name: "CNPGClusterReplicaWALReceiverDown"
+    patterns:
+      [
+        "CNPGClusterReplicaWALReceiverDown",
+        "wal receiver is down",
+        "wal receiver down",
+        "no longer streaming from the primary",
+      ]
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm the replica on $pod stopped streaming, and whether Kubernetes noticed"
+        description: >-
+          The alert fires when $pod is in recovery (a replica) but its WAL receiver is down: it
+          is no longer receiving WAL from the primary. Report against $pod. Interpret:
+          receiver_up = 0 and in_recovery = 1 confirm it. pod_ready = 1 with restarts_6h = 0 =>
+          the pod is Running and Ready, so the failure is invisible in pod status and no restart
+          has happened; say so explicitly. restarts_6h > 0 => the replica has been crash-looping
+          or was restarted; the logs in step 3 explain why. receiver_up_fraction_6h shows how
+          much of the last 6h it streamed (0 => down for the whole window, so not a blip).
+          cnpg_pg_replication_lag reads 0 on a replica that is not receiving WAL (nothing to
+          replay); never treat lag 0 as healthy while the receiver is down.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "WAL receiver state, recovery mode, readiness, recent restarts and the share of the last 6h the receiver was up, all on the alerting replica."
+            params:
+              queries:
+                - name: receiver_up
+                  query: 'max by (pod) (cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod="$pod"})'
+                  panel: true
+                  panel_title: "WAL Receiver Up"
+                  panel_id: "cnpg-wal-receiver-up"
+                - name: in_recovery
+                  query: 'max by (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"})'
+                - name: pod_ready
+                  query: 'max by (pod) (kube_pod_status_ready{namespace="$namespace",pod="$pod",condition="true"})'
+                - name: restarts_6h
+                  query: 'max by (pod) (increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod="$pod",container="postgres"}[6h]))'
+                - name: receiver_up_fraction_6h
+                  query: 'max by (pod) (avg_over_time(cnpg_pg_replication_is_wal_receiver_up{namespace="$namespace",pod="$pod"}[6h]))'
+          - tool_id: "tool.query_metrics"
+            description: "Cluster-wide per-pod CPU and memory for every instance of this CNPG cluster."
+            params:
+              queries: *infra_panels
+      - step: 2
+        title: "Primary side — how many replicas stream, and how much WAL the primary holds for $pod"
+        description: >-
+          The primary keeps a CNPG HA slot for each replica, named _cnpg_<cluster>_<n> for pod
+          <cluster>-<n>; replica_slot_* read the slot for $pod's ordinal on the primary.
+          Interpret: streaming_replicas below replica_count => the primary serves fewer standbys
+          than exist; the missing one is $pod. replica_slot_active = 0 with
+          replica_slot_retained_bytes large => the primary is holding WAL for $pod, growing by
+          replica_slot_growth_6h; that is why a CNPGClusterDeadReplicationSlot alert on the
+          primary names this replica's slot (same incident; the slot must NOT be dropped while
+          this replica exists). Quote worst_data_volume_used_pct and worst_pg_wal_dir_bytes for
+          how much room the primary's pg_wal has left. No replica_slot_* series => the cluster
+          runs without HA replication slots; the primary is not retaining WAL for $pod, so the
+          risk is that $pod needs WAL the primary has already recycled (check step 3 logs).
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Primary's streaming-replica count vs replicas, and the primary-side slot for this replica: active, WAL retained, and WAL gained over 6h."
+            params:
+              queries:
+                - name: streaming_replicas
+                  query: 'max(cnpg_pg_replication_streaming_replicas{namespace="$namespace",pod=~"$service-[0-9]+"} and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0))'
+                  panel: true
+                  panel_title: "Streaming Replicas"
+                  panel_id: "cnpg-streaming-replicas"
+                - name: replica_count
+                  query: 'count(cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 1) or vector(0)'
+                - name: replica_slot_active
+                  query: 'max by (slot_name) (label_replace(cnpg_pg_replication_slots_active{namespace="$namespace",pod=~"$service-[0-9]+"} and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)") and on (ord) label_replace(cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"}, "ord", "$1", "pod", ".+-([0-9]+)"))'
+                - name: replica_slot_retained_bytes
+                  unit: "B"
+                  query: 'max by (slot_name) (label_replace(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"} and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)") and on (ord) label_replace(cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"}, "ord", "$1", "pod", ".+-([0-9]+)"))'
+                  panel: true
+                  panel_title: "WAL Held on Primary for This Replica"
+                  panel_id: "cnpg-replica-slot-retained-bytes"
+                - name: replica_slot_growth_6h
+                  unit: "B"
+                  query: 'max by (slot_name) (label_replace(delta(cnpg_pg_replication_slots_pg_wal_lsn_diff{namespace="$namespace",pod=~"$service-[0-9]+"}[6h]) and on (pod) (cnpg_pg_replication_in_recovery{namespace="$namespace",pod=~"$service-[0-9]+"} == 0), "ord", "$1", "slot_name", "_cnpg_.+_([0-9]+)") and on (ord) label_replace(cnpg_pg_replication_in_recovery{namespace="$namespace",pod="$pod"}, "ord", "$1", "pod", ".+-([0-9]+)"))'
+          - tool_id: "tool.query_metrics"
+            description: "Worst data-volume utilisation and pg_wal directory size across the cluster — how much room the primary's retained WAL still has."
+            params:
+              queries: *storage_panels
+      - step: 3
+        title: "Why the receiver stopped — the replica's own postgres log"
+        description: >-
+          Quote the streaming error from $pod's log verbatim. Interpret: "requested WAL segment
+          ... has already been removed" => the primary no longer has the WAL this replica needs;
+          it cannot catch up by streaming and must be re-cloned. "could not connect to the
+          primary server" / "connection refused" / "timeout" / "no pg_hba.conf entry" =>
+          network, DNS, NetworkPolicy, credentials or certificate problem between $pod and the
+          -rw service. "timeline ... is not a child of" / "requested timeline" => the replica
+          diverged after a failover and needs re-cloning. "restoring WAL from archive" / restore
+          command lines with no streaming error => the replica is replaying from the WAL archive
+          instead of streaming; say so and check whether it is still advancing. No error lines
+          in the window => say the log did not show the cause rather than guessing.
+        tool_calls:
+          - tool_id: "tool.read_logs"
+            description: "Postgres container logs on the replica filtered for WAL receiver / streaming / connection / timeline / restore errors."
+            params:
+              tail_lines: 300
+          - tool_id: "tool.capture_diagnostics"
+            description: "Pod events, restarts and probe failures for the replica pod."
+      - step: 4
+        title: "Live primary view — which standbys stream and the state of this replica's slot"
+        description: >-
+          MCP read of the PRIMARY's pg_stat_replication and pg_replication_slots (target: child,
+          so it runs only when a routing rule matches this alert; otherwise NOT RUN). With
+          is_primary=true: $pod missing from standbys[] (application_name = pod name) confirms
+          the primary sees no stream from it. Its slot in slots[] (_cnpg_<cluster>_<n>): quote
+          active, retained_wal_bytes and wal_status. wal_status "lost" => the primary already
+          discarded WAL the replica needs; re-clone it, a restart will not help. "reserved" or
+          "extended" => the WAL is still there; a restart of $pod can resume streaming once the
+          step 3 cause is fixed. If is_primary=false the connection reached a replica, so this
+          is not the primary's view; say so. If the call failed or was NOT RUN, say the live
+          view was not available and keep the metric-based reading.
+        tool_calls:
+          - *cnpg_mcp_primary_replication
+    remediation: # suggestion-only — the replica is the problem; never restart the primary (forces failover)
+      - action: "fix_replica_streaming"
+        description: "When step 3 shows a connection/auth/network error and step 4 shows wal_status 'reserved' or 'extended': fix that cause, then delete the replica pod (kubectl delete pod <replica-pod>; CNPG recreates it on the same PVC) so the WAL receiver reconnects. Never restart the primary."
+        tool_id: ""
+        requires_approval: true
+      - action: "reclone_replica"
+        description: "When step 3 shows 'WAL segment has already been removed' or a timeline divergence, or step 4 shows wal_status 'lost': the replica cannot catch up. Re-clone it with kubectl cnpg destroy <cluster> <ordinal of the replica pod>; CNPG builds a fresh replica from the primary and recreates its slot."
+        tool_id: ""
+        requires_approval: true
+    escalation: "DBA / platform on-call (P1) — the cluster has lost a standby, so HA and failover capacity are reduced, and the primary keeps retaining WAL for this replica until it streams again or is rebuilt."
+    follow_up:
+      - "After recovery confirm receiver_up = 1, streaming_replicas = replica_count, and the primary's slot for this replica drains to ~0."
+      - "If it recurs, check the replica's resources and node, NetworkPolicy to the -rw service, and whether wal_keep_size / max_slot_wal_keep_size are sized for the longest expected outage."
 
   - name: "CNPGClusterHighConnections"
     patterns:
