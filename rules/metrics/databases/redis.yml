@@ -273,23 +273,23 @@ groups:
           description: "Redis connected clients are above 80% of maxclients on {{ $labels.instance }}. Redis still has connection headroom, but sustained growth can lead to rejected connections and application errors. This is an early warning for connection leaks, aggressive client pools, insufficient pooling limits, deployment scale-out, or clients stuck in long-running/blocking operations."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisconnectedclientshigh"
 
-      - alert: RedisNotEnoughConnections
-        expr: redis_connected_clients < 5
-        for: 5m
-        labels:
-          sourceType: metric
-          severity: warning
-          priority: P3
-          notify_every: "2h"
-          tech_stack: redis
-          signal: symptom
-          category: data
-          runbook: runbooks/databases/redis.yaml
-          query: redis_connected_clients < 5
-        annotations:
-          summary: "Redis has very few client connections"
-          description: "Redis instance {{ $labels.instance }} has fewer than 5 connected clients for 5 minutes. For a production instance that normally serves active traffic, this may indicate application connectivity failures, DNS/service discovery issues, network policy changes, client authentication failures, or an upstream outage preventing applications from reaching Redis. For idle, batch, standby, or non-production instances, this may be expected and should be filtered."
-          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisnotenoughconnections"
+      # - alert: RedisNotEnoughConnections
+      #   expr: redis_connected_clients < 5
+      #   for: 5m
+      #   labels:
+      #     sourceType: metric
+      #     severity: warning
+      #     priority: P3
+      #     notify_every: "2h"
+      #     tech_stack: redis
+      #     signal: symptom
+      #     category: data
+      #     runbook: runbooks/databases/redis.yaml
+      #     query: redis_connected_clients < 5
+      #   annotations:
+      #     summary: "Redis has very few client connections"
+      #     description: "Redis instance {{ $labels.instance }} has fewer than 5 connected clients for 5 minutes. For a production instance that normally serves active traffic, this may indicate application connectivity failures, DNS/service discovery issues, network policy changes, client authentication failures, or an upstream outage preventing applications from reaching Redis. For idle, batch, standby, or non-production instances, this may be expected and should be filtered."
+      #     runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisnotenoughconnections"
 
       - alert: RedisRejectedConnections
         expr: increase(redis_rejected_connections_total[1m]) > 5
