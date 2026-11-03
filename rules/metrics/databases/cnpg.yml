@@ -189,10 +189,15 @@ groups:
           description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} is failing to archive WAL segments. Continued failure blocks point-in-time recovery and lets pg_wal grow on this instance."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterwalarchivefailing"
 
+      # Primary only. CNPG mirrors the primary's HA slots (_cnpg_<cluster>_<n>) onto
+      # every standby, where they are inactive by design and always lag a little, so
+      # without the in_recovery guard each standby re-fires the primary's dead slot
+      # (and benign copies with a few KB retained fire on healthy clusters).
       - alert: CNPGClusterDeadReplicationSlot
         expr: |
           cnpg_pg_replication_slots_active == 0
           and cnpg_pg_replication_slots_pg_wal_lsn_diff > 0
+          and on (namespace, pod) cnpg_pg_replication_in_recovery == 0
         for: 10m
         labels:
           sourceType: metric
@@ -207,6 +212,7 @@ groups:
           query: |
             cnpg_pg_replication_slots_active == 0
             and cnpg_pg_replication_slots_pg_wal_lsn_diff > 0
+            and on (namespace, pod) cnpg_pg_replication_in_recovery == 0
         annotations:
           summary: "CloudNativePG has an inactive replication slot"
           description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) pod {{ $labels.pod }} has an inactive {{ $labels.slot_type }} replication slot {{ $labels.slot_name }} still holding WAL — pg_wal will grow unboundedly until the consumer returns or the slot is dropped."
