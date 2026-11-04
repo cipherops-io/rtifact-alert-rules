@@ -1,27 +1,29 @@
-# Rtifact Amazon CloudWatch v1 runbook.
+# Amazon CloudWatch v1 runbook.
 # Covers the default alert rules rt-mcp-conductor creates in the customer's AWS account
 # (apps/sai/src/apps/AWS/CloudWatch/alertRules). One file for every CloudWatch alert: rules for
 # further AWS services are added as new common_alerts entries next to the RDS ones.
 tech_stack: aws-cloudwatch
 version: '1.0'
 description: |
-  Runbook for Amazon CloudWatch alarms that Rtifact creates and receives through EventBridge.
+  Runbook for the Amazon CloudWatch alarms the platform creates (all named monitor-*) and
+  receives through EventBridge.
   Version 1 covers the nine Amazon RDS default rules. rt-alert-processor-service attaches this
   file to every CLOUDWATCH alert, so an alarm that matches no entry runs general_diagnostic.
 
   HOW THE ALARMS WORK: each default rule is ONE multi time series alarm per AWS account and
   Region. Its Metrics Insights query groups by DBInstanceIdentifier, so CloudWatch evaluates
   every RDS instance separately and sends one contributor event per instance that breaches or
-  recovers. Rtifact keeps one alert per instance. Titles arrive as
+  recovers. The platform keeps one alert per instance. Titles arrive as
   "[CloudWatch] <alarm name> (<DB instance>)", e.g.
-  "[CloudWatch] rtifact-rds-cpu-above-90 (orders-db)". The alarm name identifies the rule; the
+  "[CloudWatch] monitor-rds-cpu-above-90 (orders-db)". The alarm name identifies the rule; the
   bracketed value is the instance. Thresholds are one value for the whole fleet.
 
   INPUTS: impacted entities carry DBInstanceIdentifier (the contributor), AlarmArn,
   AWSAccountId and Region. Calls use $DBInstanceIdentifier; when it is absent (an alarm without
   an RDS instance dimension) those calls are NOT RUN and must be reported as an evidence gap,
   never replaced by a guessed instance. Alarm names are written into each entry because the
-  alarm name is not a resolvable alert variable and each entry covers exactly one Rtifact alarm.
+  alarm name is not a resolvable alert variable and each entry covers exactly one of the
+  platform's alarms.
 
   TIME WINDOW: the CloudWatch tools are called without startTime/endTime and use their
   defaults: analyze_metric and get_alarm_history read the 24 hours before the investigation
@@ -41,7 +43,7 @@ description: |
   which side was read. The connection user should be read-only and hold pg_monitor; otherwise
   other sessions' query text reads "<insufficient privilege>". top statements need the
   pg_stat_statements extension. Every statement is a SELECT on catalog and statistics views,
-  tagged rtifact-diagnostic, with query literals masked to "?".
+  tagged monitor-diagnostic, with query literals masked to "?".
 
   NOT AVAILABLE in v1 (report as gaps, do not infer): RDS DescribeDBInstances (instance class,
   allocated storage, storage type, Multi-AZ), RDS events (failover, reboot, maintenance,
@@ -57,7 +59,7 @@ match_keywords:
   - cloudwatch
   - amazon cloudwatch
   - aws rds
-  - rtifact-rds-
+  - monitor-rds-
 
 categories:
   - DATA
@@ -83,7 +85,7 @@ rds_pg_connections: &rds_pg_connections
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'is_primary', NOT pg_is_in_recovery(),
             'max_connections', current_setting('max_connections')::int,
@@ -129,7 +131,7 @@ rds_pg_top_statements: &rds_pg_top_statements
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'statements', COALESCE((
               SELECT json_agg(to_jsonb(r)) FROM (
@@ -142,7 +144,7 @@ rds_pg_top_statements: &rds_pg_top_statements
                 FROM pg_stat_statements s
                 LEFT JOIN pg_database d ON d.oid = s.dbid
                 LEFT JOIN pg_roles u ON u.oid = s.userid
-                WHERE s.query NOT LIKE '%rtifact-diagnostic%'
+                WHERE s.query NOT LIKE '%monitor-diagnostic%'
                 ORDER BY s.total_exec_time DESC LIMIT 5) r), '[]'::json)
           ) AS live
     timeout: 15
@@ -157,7 +159,7 @@ rds_pg_long_transactions: &rds_pg_long_transactions
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'server_version', current_setting('server_version'),
             'is_primary', NOT pg_is_in_recovery(),
@@ -199,7 +201,7 @@ rds_pg_replication: &rds_pg_replication
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'is_primary', NOT pg_is_in_recovery(),
             'standbys', COALESCE((
@@ -242,7 +244,7 @@ rds_pg_vacuum: &rds_pg_vacuum
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'database', current_database(),
             'is_primary', NOT pg_is_in_recovery(),
@@ -305,7 +307,7 @@ rds_pg_storage: &rds_pg_storage
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'is_primary', NOT pg_is_in_recovery(),
             'database', current_database(),
@@ -354,7 +356,7 @@ rds_pg_memory: &rds_pg_memory
   params:
     arguments:
       query: |-
-          /* rtifact-diagnostic */ SELECT json_build_object(
+          /* monitor-diagnostic */ SELECT json_build_object(
             'server_now', now(),
             'is_primary', NOT pg_is_in_recovery(),
             'settings', (SELECT json_object_agg(name, current_setting(name)) FROM pg_settings
@@ -387,7 +389,7 @@ rds_pg_memory: &rds_pg_memory
 common_alerts:
   - name: AwsRdsCpuHigh
     patterns:
-      - rtifact-rds-cpu-above-90
+      - monitor-rds-cpu-above-90
       - rds_cpu_above_90
       - 'RDS: CPU above 90%'
     priority: P2
@@ -405,7 +407,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-cpu-above-90']
+                alarmNames: ['monitor-rds-cpu-above-90']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -425,7 +427,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-cpu-above-90
+                alarmName: monitor-rds-cpu-above-90
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -548,7 +550,7 @@ common_alerts:
 
   - name: AwsRdsFreeStorageLow
     patterns:
-      - rtifact-rds-free-storage-below-10gib
+      - monitor-rds-free-storage-below-10gib
       - rds_free_storage_below_10gib
       - 'RDS: Free storage below 10 GiB'
     priority: P1
@@ -566,7 +568,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-free-storage-below-10gib']
+                alarmNames: ['monitor-rds-free-storage-below-10gib']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -584,7 +586,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-free-storage-below-10gib
+                alarmName: monitor-rds-free-storage-below-10gib
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -707,7 +709,7 @@ common_alerts:
 
   - name: AwsRdsFreeableMemoryLow
     patterns:
-      - rtifact-rds-freeable-memory-below-256mib
+      - monitor-rds-freeable-memory-below-256mib
       - rds_freeable_memory_below_256mib
       - 'RDS: Freeable memory below 256 MiB'
     priority: P2
@@ -724,7 +726,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-freeable-memory-below-256mib']
+                alarmNames: ['monitor-rds-freeable-memory-below-256mib']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -741,7 +743,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-freeable-memory-below-256mib
+                alarmName: monitor-rds-freeable-memory-below-256mib
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -841,7 +843,7 @@ common_alerts:
 
   - name: AwsRdsSwapUsageHigh
     patterns:
-      - rtifact-rds-swap-usage-above-256mib
+      - monitor-rds-swap-usage-above-256mib
       - rds_swap_usage_above_256mib
       - 'RDS: Swap usage above 256 MiB'
     priority: P2
@@ -857,7 +859,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-swap-usage-above-256mib']
+                alarmNames: ['monitor-rds-swap-usage-above-256mib']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -874,7 +876,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-swap-usage-above-256mib
+                alarmName: monitor-rds-swap-usage-above-256mib
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -964,7 +966,7 @@ common_alerts:
 
   - name: AwsRdsReadLatencyHigh
     patterns:
-      - rtifact-rds-read-latency-above-20ms
+      - monitor-rds-read-latency-above-20ms
       - rds_read_latency_above_20ms
       - 'RDS: Read latency above 20 ms'
     priority: P2
@@ -980,7 +982,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-read-latency-above-20ms']
+                alarmNames: ['monitor-rds-read-latency-above-20ms']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -997,7 +999,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-read-latency-above-20ms
+                alarmName: monitor-rds-read-latency-above-20ms
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -1104,7 +1106,7 @@ common_alerts:
 
   - name: AwsRdsWriteLatencyHigh
     patterns:
-      - rtifact-rds-write-latency-above-20ms
+      - monitor-rds-write-latency-above-20ms
       - rds_write_latency_above_20ms
       - 'RDS: Write latency above 20 ms'
     priority: P2
@@ -1120,7 +1122,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-write-latency-above-20ms']
+                alarmNames: ['monitor-rds-write-latency-above-20ms']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -1137,7 +1139,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-write-latency-above-20ms
+                alarmName: monitor-rds-write-latency-above-20ms
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -1237,7 +1239,7 @@ common_alerts:
 
   - name: AwsRdsReplicaLagHigh
     patterns:
-      - rtifact-rds-replica-lag-above-60s
+      - monitor-rds-replica-lag-above-60s
       - rds_replica_lag_above_60s
       - 'RDS: Replica lag above 60 seconds'
     priority: P2
@@ -1254,7 +1256,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-replica-lag-above-60s']
+                alarmNames: ['monitor-rds-replica-lag-above-60s']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -1271,7 +1273,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-replica-lag-above-60s
+                alarmName: monitor-rds-replica-lag-above-60s
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -1361,7 +1363,7 @@ common_alerts:
 
   - name: AwsRdsTransactionIdWraparound
     patterns:
-      - rtifact-rds-transaction-ids-above-1b
+      - monitor-rds-transaction-ids-above-1b
       - rds_transaction_ids_above_1b
       - 'RDS PostgreSQL: Transaction IDs used above 1 billion'
     priority: P1
@@ -1378,7 +1380,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-transaction-ids-above-1b']
+                alarmNames: ['monitor-rds-transaction-ids-above-1b']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -1395,7 +1397,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-transaction-ids-above-1b
+                alarmName: monitor-rds-transaction-ids-above-1b
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
@@ -1468,7 +1470,7 @@ common_alerts:
 
   - name: AwsRdsBurstBalanceLow
     patterns:
-      - rtifact-rds-burst-balance-below-20
+      - monitor-rds-burst-balance-below-20
       - rds_burst_balance_below_20
       - 'RDS: Storage burst balance below 20%'
     priority: P2
@@ -1485,7 +1487,7 @@ common_alerts:
             description: Alarm configuration and alarm-level state.
             params:
               arguments:
-                alarmNames: ['rtifact-rds-burst-balance-below-20']
+                alarmNames: ['monitor-rds-burst-balance-below-20']
               timeout: 20
               rows: 'MetricAlarms[*]'
               max_rows: 5
@@ -1502,7 +1504,7 @@ common_alerts:
             description: State transitions in the last 24 hours, one row per instance.
             params:
               arguments:
-                alarmName: rtifact-rds-burst-balance-below-20
+                alarmName: monitor-rds-burst-balance-below-20
                 historyItemType: StateUpdate
                 limit: 50
               timeout: 20
