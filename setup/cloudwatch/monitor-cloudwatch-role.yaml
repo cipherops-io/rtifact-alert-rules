@@ -1,0 +1,199 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Lets the platform's Amazon CloudWatch integration work in this AWS account without access
+  keys. Creates MonitorCloudWatchRole, which the platform assumes with an External ID, and
+  MonitorEventBridgeInvokeRole, which EventBridge uses to deliver alarm events to the platform.
+  Deployed by setup-role.sh in AWS CloudShell; enter the RoleArn and ExternalId outputs in the
+  platform connection (Assume Role).
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+      - Label:
+          default: Platform access
+        Parameters:
+          - PlatformRoleArn
+          - ExternalId
+      - Label:
+          default: Scope
+        Parameters:
+          - RegionScope
+          - CreateInvokeRole
+    ParameterLabels:
+      PlatformRoleArn:
+        default: Platform role ARN
+      ExternalId:
+        default: External ID
+      RegionScope:
+        default: Region
+      CreateInvokeRole:
+        default: Create MonitorEventBridgeInvokeRole
+
+Parameters:
+  PlatformRoleArn:
+    Type: String
+    Description: >-
+      ARN of the IAM role the platform runs as, given to you by the team that installed the
+      platform. Only this role may assume MonitorCloudWatchRole. It must already exist.
+    AllowedPattern: '^arn:aws[a-z-]*:iam::\d{12}:role/.+$'
+    ConstraintDescription: must be an IAM role ARN, for example arn:aws:iam::123456789012:role/my-platform-role.
+  ExternalId:
+    Type: String
+    Description: >-
+      A random value, for example the output of uuidgen; setup-role.sh generates one. Enter the
+      same value in the platform connection.
+    MinLength: 2
+    MaxLength: 1224
+    AllowedPattern: '^[\w+=,.@:/-]+$'
+    ConstraintDescription: 'must be 2-1224 letters, digits or + = , . @ : / - _ characters.'
+  RegionScope:
+    Type: String
+    Default: '*'
+    Description: >-
+      The Region to monitor, for example ap-south-1, or * for all Regions. The
+      platform may manage its alarms and EventBridge resources only there.
+    AllowedPattern: '^(\*|[a-z]{2}(-[a-z0-9]+)+-\d+)$'
+    ConstraintDescription: must be * or a Region code such as ap-south-1.
+  CreateInvokeRole:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Description: >-
+      Choose false if MonitorEventBridgeInvokeRole already exists in this account, for example
+      from an earlier setup.
+
+Conditions:
+  ShouldCreateInvokeRole: !Equals [!Ref CreateInvokeRole, 'true']
+
+Resources:
+  # EventBridge assumes this role to call the platform's webhook. The name is fixed: the
+  # platform looks it up by name.
+  EventBridgeInvokeRole:
+    Type: AWS::IAM::Role
+    Condition: ShouldCreateInvokeRole
+    Properties:
+      RoleName: MonitorEventBridgeInvokeRole
+      Description: Used by EventBridge to deliver CloudWatch alarm events to the platform.
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: events.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: InvokeMonitorApiDestination
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: events:InvokeApiDestination
+                Resource: !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:api-destination/monitor-*'
+
+  # The platform assumes this role. Same permissions as the MonitorCloudWatchIntegration
+  # policy in the setup guide. The name is fixed: the platform's own role is allowed to
+  # assume only this name.
+  CloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: MonitorCloudWatchRole
+      Description: Assumed by the platform's Amazon CloudWatch integration.
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Ref PlatformRoleArn
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                sts:ExternalId: !Ref ExternalId
+      Policies:
+        - PolicyName: MonitorCloudWatchIntegration
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadForIncidentAnalysis
+                Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:DescribeAlarmHistory
+                  - cloudwatch:ListMetrics
+                  - cloudwatch:GetMetricData
+                  - logs:DescribeLogGroups
+                  - logs:StartQuery
+                  - logs:GetQueryResults
+                  - logs:StopQuery
+                  - logs:ListLogAnomalyDetectors
+                  - logs:ListAnomalies
+                  - rds:DescribeDBInstances
+                Resource: '*'
+              - Sid: ManageMonitorAlarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:${RegionScope}:${AWS::AccountId}:alarm:monitor-*'
+              - Sid: ManageMonitorAlertDelivery
+                Effect: Allow
+                Action:
+                  - events:CreateConnection
+                  - events:UpdateConnection
+                  - events:DescribeConnection
+                  - events:DeleteConnection
+                  - events:CreateApiDestination
+                  - events:UpdateApiDestination
+                  - events:DescribeApiDestination
+                  - events:DeleteApiDestination
+                  - events:PutRule
+                  - events:DescribeRule
+                  - events:DeleteRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:connection/monitor-*'
+                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:api-destination/monitor-*'
+                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:rule/monitor-*'
+              - Sid: StoreDeliveryTokenAsEventBridgeSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                  - secretsmanager:PutSecretValue
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                  - secretsmanager:DeleteSecret
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${RegionScope}:${AWS::AccountId}:secret:events!connection/*'
+              - Sid: AllowEventBridgeApiDestinationsServiceRole
+                Effect: Allow
+                Action: iam:CreateServiceLinkedRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/aws-service-role/apidestinations.events.amazonaws.com/*'
+                Condition:
+                  StringEquals:
+                    iam:AWSServiceName: apidestinations.events.amazonaws.com
+              - Sid: PassInvokeRoleToEventBridge
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub 'arn:${AWS::Partition}:iam::${AWS::AccountId}:role/MonitorEventBridgeInvokeRole'
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: events.amazonaws.com
+
+Outputs:
+  RoleArn:
+    Description: Enter this as Role ARN in the platform connection (Assume Role).
+    Value: !GetAtt CloudWatchRole.Arn
+  ExternalId:
+    Description: Enter this as External ID in the same connection.
+    Value: !Ref ExternalId
+  InvokeRoleArn:
+    Condition: ShouldCreateInvokeRole
+    Description: The role EventBridge uses to deliver alarm events to the platform.
+    Value: !GetAtt EventBridgeInvokeRole.Arn

@@ -83,6 +83,7 @@ tests/<category>/<stack>_test.yaml     # promtool test rules unit tests
 runbooks/<category>/<stack>.md         # human runbook for that tech stack
 runbooks/<category>/<stack>.yaml       # structured runbook (machine-readable RCA steps)
 dashboards/<category>/<stack>*.json    # companion Grafana dashboards
+setup/<integration>/                   # public setup scripts and templates customers run (e.g. CloudWatch IAM role via CloudShell)
 docs/                                  # auto-generated catalog + design docs
 scripts/                               # lint, test, render, catalog tools
 .github/workflows/                     # CI for lint, test, label contract
