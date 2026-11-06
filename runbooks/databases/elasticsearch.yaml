@@ -1,7 +1,8 @@
 # Elasticsearch self-hosted runbook: VictoriaMetrics evidence plus live
 # read-only Elasticsearch MCP calls. VM is VictoriaMetrics. Every live call
 # uses target: child; the MCP registry routes it to the alerting cluster's connection.
-# Source: the 10 enabled Elasticsearch rules supplied on 2026-10-13.
+# Source: the 10 enabled Elasticsearch rules supplied on 2026-10-13, plus
+# ElasticsearchScrapeSlow and ElasticsearchIndicesReadOnly added on 2026-11-06.
 # Query inputs: raw alert label $instance + the platform's scoped VM datasource.
 # Installation target: runbooks/databases/elasticsearch.yaml
 # Shared query anchors use the same pattern as the reference runbook.
@@ -28,7 +29,7 @@ description: >-
   native counters are cumulative since node start. Optional calls that need
   $name (node), $index or a bound index are skipped when that value is missing.
   The VM sections below describe the original metric-only behaviour.
-  Investigation runbook for the ten enabled rules in rules/metrics/databases/elasticsearch.yml.
+  Investigation runbook for the twelve enabled rules in rules/metrics/databases/elasticsearch.yml.
   Intended for self-hosted Elasticsearch exported through prometheus-community/elasticsearch_exporter.
   Every VM call is tool.query_metrics; all queried metric names are in the supplied 229-metric
   inventory. The exporter already collects Elasticsearch statistics; VM steps read those stored samples.
@@ -99,6 +100,8 @@ match_keywords:
   - elasticsearch exporter
   - self-hosted elasticsearch
   - elasticsearch_scrape_success
+  - elasticsearch_scrape_duration_seconds
+  - elasticsearch_indices_settings_stats_read_only_indices
   - elasticsearch_cluster_health
   - elasticsearch_jvm
   - elasticsearch_breakers
@@ -795,6 +798,117 @@ common_alerts:
         Re-evaluate the database alerts after telemetry returns. Add or verify the platform's independent
         missing-target monitoring; this rule does not detect an exporter that disappears without emitting
         zero.
+  - name: ElasticsearchScrapeSlow
+    patterns:
+      - ElasticsearchScrapeSlow
+      - Elasticsearch metric collection is slow
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: Confirm which collector is slow and whether collection still succeeds
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Read the collector label to identify the slow collection family; other
+          collectors may be fast. Check sample age and counts before interpreting any value. Missing or
+          stale evidence is unknown, never zero. This P3 rule requires scrape_duration_seconds > 3 for 10
+          minutes. Duration is measured by the exporter for its own Elasticsearch API calls, not by
+          Prometheus. It is a warning sign only while collection succeeds; once the duration reaches the
+          lower of the exporter's --es.timeout and the Prometheus scrape_timeout, collection fails and
+          the incident becomes ElasticsearchMetricsCollectionFailed or a missing target. Compare the
+          duration trend with its own value 1 hour earlier: a gradual climb points to growth (more indices,
+          shards or nodes), a sudden step points to a cluster or network event.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the condition and measure the duration trend.
+            params:
+              queries:
+                - name: scrape_slow_rule_condition
+                  query: 'elasticsearch_scrape_duration_seconds{instance="$instance"} > 3'
+                - name: scrape_duration_seconds
+                  unit: s
+                  query: 'elasticsearch_scrape_duration_seconds{instance="$instance"}'
+                  panel: true
+                  panel_title: Collection Duration by Collector
+                  panel_id: es-scrape-duration-seconds
+                - name: scrape_duration_peak_1h_seconds
+                  unit: s
+                  query: 'max_over_time(elasticsearch_scrape_duration_seconds{instance="$instance"}[1h])'
+                - name: scrape_duration_1h_earlier_seconds
+                  unit: s
+                  query: 'elasticsearch_scrape_duration_seconds{instance="$instance"} offset 1h'
+                - name: scrape_duration_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_scrape_duration_seconds{instance="$instance"}[5m])'
+          - tool_id: tool.query_metrics
+            description: >-
+              Collector success and freshness for the same exporter.
+            params:
+              queries: *collection_quality_queries
+      - step: 2
+        title: Look for cluster load or growth that explains slow API responses
+        description: >-
+          Slow stats and health calls usually come from an overloaded elected master or data node, a
+          large cluster state (many indices or shards) or a long cluster-management queue. Rising CPU,
+          heap or GC time on master-eligible nodes, growing pending tasks, or rising node counts around
+          onset support those hypotheses. Normal resources with a slow collector point instead to the
+          network path between exporter and Elasticsearch or to exporter-side limits, which these metrics
+          cannot measure.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Cluster-management queue and backlog.
+            params:
+              queries: *cluster_task_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Heap, GC and CPU by node.
+            params:
+              queries: *node_memory_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Cluster size and observed shard counts.
+            params:
+              queries:
+                - name: scrape_slow_cluster_nodes
+                  query: 'elasticsearch_cluster_health_number_of_nodes{instance="$instance"}'
+                - name: scrape_slow_active_shards
+                  query: 'elasticsearch_cluster_health_active_shards{instance="$instance"}'
+                - name: scrape_slow_active_shards_1d_earlier
+                  query: 'elasticsearch_cluster_health_active_shards{instance="$instance"} offset 1d'
+      - step: 3
+        title: Read live master and node load
+        description: >-
+          Identify the elected master from nodes_info and compare its heap, GC and CPU with peers. Sample
+          hot threads for long-running stats or cluster-state work. A fast live cluster_health response
+          from the MCP connection while the exporter stays slow suggests an exporter-side or network-path
+          problem, not cluster load.
+        tool_calls:
+          - *live_health
+          - *live_nodes_info
+          - *live_jvm_stats
+          - *live_cpu_stats
+          - *live_hot_threads
+    remediation:
+      - action: reduce_collection_latency
+        description: >-
+          If cluster load explains the latency, follow the matching heap, CPU or cluster-task path with
+          the Elasticsearch owner. If the cluster has grown, ask the monitoring owner to disable unneeded
+          per-index or per-shard collectors or adjust the exporter's --es.timeout and the Prometheus
+          scrape_timeout together, keeping this threshold near 70% of the lower of the two. Do not raise
+          timeouts only to silence the alert.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P3 to the monitoring owner during working hours. Escalate to the Elasticsearch owner if cluster
+      load or a growing management queue is the supported cause, and to the P1 collection path if
+      ElasticsearchMetricsCollectionFailed fires.
+    follow_up:
+      - >-
+        Require the collector's duration to stay at or below 3 seconds for at least 30 minutes with
+        successful collection.
+      - >-
+        Record the effective --es.timeout and scrape_timeout for this exporter and confirm that the 3-second
+        threshold is still about 70% of the lower one.
   - name: ElasticsearchClusterRed
     patterns:
       - ElasticsearchClusterRed
@@ -1154,9 +1268,11 @@ common_alerts:
         description: >-
           Check shard health and recently failed indexing operations. Red/yellow beginning after free
           space falls is consistent with allocation pressure; indexing failures are compatible with write
-          problems but do not identify a disk-related error. The supplied read_only_indices metric counts
-          index.blocks.read_only in the exporter implementation; it does not reliably measure read_only_allow_delete
-          flood-stage blocks. Zero does not exclude those blocks. The metric inventory does not establish
+          problems but do not identify a disk-related error. The read_only_indices metric counts only indices
+          whose index.blocks.read_only_allow_delete setting is "true" (the flood-stage block); it does not
+          count index.blocks.read_only or index.blocks.write. A positive value is direct evidence of write
+          blocks (see ElasticsearchIndicesReadOnly); a missing series means the settings collector is
+          disabled or failing, not zero. The metric inventory does not establish
           the effective watermarks, headroom, disk I/O latency, inode exhaustion or storage error. Never
           state that 95% alone proves a flood-stage block. State whether capacity exhaustion is observed,
           growth is ongoing and other impact is supported, then list any exact cause still unknown.
@@ -1289,9 +1405,11 @@ common_alerts:
         description: >-
           Check shard health and recently failed indexing operations. Red/yellow beginning after free
           space falls is consistent with allocation pressure; indexing failures are compatible with write
-          problems but do not identify a disk-related error. The supplied read_only_indices metric counts
-          index.blocks.read_only in the exporter implementation; it does not reliably measure read_only_allow_delete
-          flood-stage blocks. Zero does not exclude those blocks. The metric inventory does not establish
+          problems but do not identify a disk-related error. The read_only_indices metric counts only indices
+          whose index.blocks.read_only_allow_delete setting is "true" (the flood-stage block); it does not
+          count index.blocks.read_only or index.blocks.write. A positive value is direct evidence of write
+          blocks (see ElasticsearchIndicesReadOnly); a missing series means the settings collector is
+          disabled or failing, not zero. The metric inventory does not establish
           the effective watermarks, headroom, disk I/O latency, inode exhaustion or storage error. Never
           state that 95% alone proves a flood-stage block. State whether capacity exhaustion is observed,
           growth is ongoing and other impact is supported, then list any exact cause still unknown.
@@ -1346,6 +1464,142 @@ common_alerts:
         For this fixed warning/critical pair, require fresh usage at or below 85% for at least 10 minutes
         to clear both conditions, or document an explicitly approved alternative capacity target. Confirm
         available bytes remain stable or improving and associated shard/write symptoms have recovered.
+  - name: ElasticsearchIndicesReadOnly
+    patterns:
+      - ElasticsearchIndicesReadOnly
+      - Elasticsearch indices are blocked from accepting writes
+    priority: P1
+    diagnostic_steps:
+      - step: 1
+        title: Confirm the write-blocked index count and when it started
+        description: >-
+          Use the incident's VictoriaMetrics tenant/project/environment and bind $instance from the raw
+          alert's instance label. Confirm the returned series belong to the firing exporter and match
+          the alert's cluster label wherever it exists. Check sample age and counts before interpreting
+          any value. Missing, stale, failed or truncated evidence is unknown, never zero. Evaluate the
+          condition at the incident time as well as at the latest time; an instant true result alone does
+          not prove the rule's for duration. This P1 rule requires read_only_indices > 0 for 5 minutes.
+          The exporter (--es.indices_settings) counts only indices whose index.blocks.read_only_allow_delete
+          setting is "true"; it does not count index.blocks.read_only or index.blocks.write, so a zero value
+          does not exclude those blocks. The gauge is cluster-wide with no index label and is not emitted
+          when the settings request fails, so a missing series means unknown. Find the first sample above
+          zero to date the onset, and note whether the count is growing (more indices blocked) or stable.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Reproduce the condition and date the onset.
+            params:
+              queries:
+                - name: indices_read_only_rule_condition
+                  query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"} > 0'
+                - name: indices_read_only_count
+                  query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}'
+                  panel: true
+                  panel_title: Indices With Flood-Stage Write Block
+                  panel_id: es-indices-read-only-count
+                - name: indices_read_only_peak_1h
+                  query: 'max_over_time(elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}[1h])'
+                - name: indices_read_only_1h_earlier
+                  query: 'elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"} offset 1h'
+                - name: indices_read_only_signal_sample_age_seconds
+                  unit: s
+                  query: 'time() - timestamp(elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"})'
+                - name: indices_read_only_signal_samples_5m
+                  query: 'count_over_time(elasticsearch_indices_settings_stats_read_only_indices{instance="$instance"}[5m])'
+                - name: indices_settings_collector_up
+                  query: 'elasticsearch_indices_settings_stats_up{instance="$instance"}'
+          - tool_id: tool.query_metrics
+            description: >-
+              Collection freshness for the same exporter.
+            params:
+              queries: *collection_quality_queries
+      - step: 2
+        title: Check whether disk pressure explains the block
+        description: >-
+          Elasticsearch sets read_only_allow_delete on every index with a shard on a node that exceeds the
+          flood-stage disk watermark. Usage at or near the critical disk threshold on one or more data paths,
+          with available bytes falling before the onset, supports a flood-stage block. If every data path
+          has comfortable free space and has had it since before the onset, the block was more likely set
+          manually or by tooling, or it is left over from an earlier flood-stage event on a version that
+          does not release the block automatically (before Elasticsearch 7.4). Fixed 85/95 percent alert
+          thresholds are not the configured watermarks; compare against the live settings in step 4.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Disk capacity, available bytes and net change by node and path.
+            params:
+              queries: *disk_capacity_queries
+          - tool_id: tool.query_metrics
+            description: >-
+              Largest indices and shards, as candidates for the space consumed.
+            params:
+              queries: *index_storage_queries
+      - step: 3
+        title: Measure write impact
+        description: >-
+          Blocked indices reject indexing, updates and mapping changes; searches continue. Look for
+          indexing failures, write-pool rejections or a drop in indexing rate starting at or after the
+          onset. Producers may also stop sending, buffer or retry, so a falling index rate with no failures
+          is still consistent with impact. Index-level failure counters can point at the blocked indices
+          because the read-only gauge has no index label. None of these proves that a specific producer
+          lost data.
+        tool_calls:
+          - tool_id: tool.query_metrics
+            description: >-
+              Write activity and failure evidence around the onset.
+            params:
+              queries:
+                - name: read_only_index_failures_10m_by_index
+                  query: 'topk(10, increase(elasticsearch_index_stats_indexing_index_failed_total{instance="$instance"}[10m]))'
+                - name: read_only_node_index_operations_per_second
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m])'
+                - name: read_only_node_index_rate_30m_earlier
+                  unit: operations/s
+                  query: 'rate(elasticsearch_indices_indexing_index_total{instance="$instance"}[5m] offset 30m)'
+                - name: read_only_write_pool_rejections_per_second
+                  unit: tasks/s
+                  query: >-
+                    rate(elasticsearch_thread_pool_rejected_count{instance="$instance",type=~"write|write_coordination|bulk|index"}[5m])
+                - name: read_only_cluster_status
+                  query: 'elasticsearch_cluster_health_status{instance="$instance"}'
+      - step: 4
+        title: Compare live free space with the effective flood-stage watermark
+        description: >-
+          Read live free bytes for every data path and the effective flood_stage, high and low watermarks
+          (transient over persistent over defaults). A data path above flood stage confirms the cause.
+          Shard placement shows which indices have shards on that node and are therefore likely blocked.
+          These tools do not list each index's index.blocks settings; ask the owner to list the blocked
+          indices (GET _all/_settings/index.blocks.*) when the exact set is needed. Do not remove blocks
+          or delete indices from this runbook.
+        tool_calls:
+          - *live_disk_stats
+          - *live_cluster_settings
+          - *live_health
+          - *live_shards
+    remediation:
+      - action: restore_capacity_then_release_write_block
+        description: >-
+          If a data path is above flood stage, follow the ElasticsearchDiskSpaceCritical path: have the
+          Elasticsearch and storage owners expand capacity or remove data through the approved retention
+          process. On Elasticsearch 7.4 and later the block is released automatically once usage falls below
+          the high watermark; on older versions, or for a block set manually, the owner clears
+          index.blocks.read_only_allow_delete after capacity is restored. Never clear the block while the
+          disk is still above flood stage, and never delete data files manually.
+        tool_id: ''
+        requires_approval: true
+    escalation: >-
+      P1 to the Elasticsearch and storage owners immediately, plus the owners of producers writing to the
+      blocked indices. Include the blocked-index count and onset, the data paths above the watermark with
+      available bytes, and observed write failures. Escalate to the cluster-red P0 path if primary
+      unavailability is observed.
+    follow_up:
+      - >-
+        Require read_only_indices == 0 on fresh samples for at least 10 minutes, with the settings collector
+        reporting successfully, and disk usage below the effective high watermark.
+      - >-
+        Have producer owners confirm that buffered or retried writes were delivered; resolution of the
+        block does not prove that rejected writes were recovered.
   - name: ElasticsearchJVMHeapHigh
     patterns:
       - ElasticsearchJVMHeapHigh
@@ -1868,8 +2122,9 @@ common_alerts:
           this counter. Some requests can fail before reaching the indexed operation accounting. Node-level
           signals cannot be assigned to the failing index without a valid mapping. A healthy cluster with
           normal pressure leaves mapping/validation/conflict or other request errors as possibilities,
-          not diagnoses. The read-only count does not prove or exclude flood-stage read_only_allow_delete
-          blocks.
+          not diagnoses. A positive read-only count shows that some indices carry the flood-stage
+          read_only_allow_delete block, but it has no index label and does not prove that the failing index
+          is one of them; it does not count index.blocks.read_only or index.blocks.write.
         tool_calls:
           - tool_id: tool.query_metrics
             description: >-
@@ -2152,8 +2407,9 @@ general_diagnostic:
 escalation: >-
   Route monitoring/collection failures to the exporter owner, capacity and cluster-availability incidents
   to the Elasticsearch/platform owner, and request-driven failures to the relevant application or producer
-  owner. Preserve the rule's priority: cluster red P0; collection failure and critical disk P1; the other
-  seven rules P2. Escalate on separately observed impact rather than inventing it from an empty query.
+  owner. Preserve the rule's priority: cluster red P0; collection failure, critical disk and
+  read-only indices P1; slow collection P3; the other seven rules P2. Escalate on separately observed
+  impact rather than inventing it from an empty query.
   Include object labels, time window, evidence query names/values/timestamps, coverage limitations, confidence
   and the exact unanswered question. Report live-call results separately from VM evidence, with any NOT RUN calls.
 follow_up:

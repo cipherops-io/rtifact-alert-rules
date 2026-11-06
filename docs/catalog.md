@@ -89,10 +89,12 @@
 | Alert | Severity | Priority | For | Signal | Expression | Runbook |
 |---|---|---|---|---|---|---|
 | `ElasticsearchMetricsCollectionFailed` | critical | P1 | 2m | cause | `elasticsearch_scrape_success == 0` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchScrapeSlow` | warning | P3 | 10m | cause | `elasticsearch_scrape_duration_seconds > 3` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchClusterRed` | critical | P0 | 1m | symptom | `elasticsearch_cluster_health_status{color="red"} == 1` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchClusterYellow` | warning | P2 | 10m | cause | `elasticsearch_cluster_health_status{color="yellow"} == 1` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchDiskSpaceLow` | warning | P2 | 10m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchDiskSpaceCritical` | critical | P1 | 2m | cause | `(1 - elasticsearch_filesystem_data_available_bytes / elasticsearch_filesystem_d…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
+| `ElasticsearchIndicesReadOnly` | critical | P1 | 5m | symptom | `elasticsearch_indices_settings_stats_read_only_indices > 0` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchJVMHeapHigh` | warning | P2 | 10m | cause | `elasticsearch_jvm_memory_used_bytes{area="heap"} / elasticsearch_jvm_memory_max…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchCircuitBreakerTripped` | warning | P2 | 5m | symptom | `increase(elasticsearch_breakers_tripped[10m]) >= 3` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
 | `ElasticsearchThreadPoolRejections` | warning | P2 | 5m | symptom | `( rate(elasticsearch_thread_pool_rejected_count{type=~"search\|search_coordinati…` | [elasticsearch.yaml](runbooks/databases/elasticsearch.yaml) |
@@ -553,4 +555,4 @@
 
 ---
 
-_365 alerts across 31 files in 8 categories._
+_367 alerts across 31 files in 8 categories._

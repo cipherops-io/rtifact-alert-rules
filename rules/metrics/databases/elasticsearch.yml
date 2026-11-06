@@ -36,6 +36,34 @@ groups:
             and API reachability from the exporter before concluding that the cluster is down."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
+      # Early warning before collection fails. Keep the threshold near 70% of
+      # the effective timeout: the lower of Prometheus scrape_timeout and the
+      # exporter's --es.timeout. A threshold above that timeout never fires.
+      - alert: ElasticsearchScrapeSlow
+        expr: elasticsearch_scrape_duration_seconds > 3
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          notify_every: "4h"
+          tech_stack: elasticsearch
+          signal: cause
+          category: monitoring
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: elasticsearch_scrape_duration_seconds > 3
+        annotations:
+          summary: "Elasticsearch metric collection is slow"
+          description: "Collector {{ $labels.collector }} at exporter target {{ $labels.instance }} took
+            {{ $value | humanizeDuration }} for its latest collection, and collection time has stayed above 3 seconds
+            for at least 10 minutes. Collection still succeeds, but slow responses from the Elasticsearch APIs behind
+            this collector are often an early sign of an overloaded master or data node, a large cluster state or
+            index count, or network latency between the exporter and Elasticsearch. If it keeps rising it can reach
+            the scrape or exporter timeout and turn into failed collection and missing metrics. Check the elected
+            master's CPU, heap and GC, the number of indices and shards, pending cluster tasks, and network latency
+            from the exporter before increasing any timeout."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
       - alert: ElasticsearchClusterRed
         expr: elasticsearch_cluster_health_status{color="red"} == 1
         for: 1m
@@ -154,6 +182,38 @@ groups:
             operations. This percentage alone does not establish whether write blocks are active because watermark
             settings and headroom limits can vary. Urgently check free bytes, effective watermarks, index write blocks
             and allocation decisions, then restore capacity through expansion or approved cleanup."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
+
+      # Direct evidence that writes are blocked, which the disk percentages
+      # cannot confirm. Requires the exporter's --es.indices_settings flag.
+      # The exporter counts only indices with index.blocks.read_only_allow_delete
+      # = "true" (the flood-stage block; checked in exporter v1.5.0 and master).
+      # index.blocks.read_only and index.blocks.write are NOT counted. The
+      # gauge has no index label and is absent when the settings fetch fails.
+      - alert: ElasticsearchIndicesReadOnly
+        expr: elasticsearch_indices_settings_stats_read_only_indices > 0
+        for: 5m
+        labels:
+          sourceType: metric
+          severity: critical
+          priority: P1
+          notify_every: "15m"
+          tech_stack: elasticsearch
+          signal: symptom
+          category: storage
+          runbook: runbooks/databases/elasticsearch.yaml
+          query: elasticsearch_indices_settings_stats_read_only_indices > 0
+        annotations:
+          summary: "Elasticsearch indices are blocked from accepting writes"
+          description: "Cluster {{ $labels.cluster }}, reported by {{ $labels.instance }}, has {{ $value }} indices with a
+            read-only-allow-delete write block, and at least one has remained blocked for 5 minutes. Indexing, updates
+            and mapping changes to these indices are rejected (typically with a cluster_block_exception or HTTP 429);
+            searches continue and the whole index can still be deleted. Elasticsearch applies this block when a node holding
+            their shards exceeds the flood-stage disk watermark; an operator or tooling can also set it manually.
+            Producers may be dropping or buffering writes. Identify the blocked indices, check data disk usage
+            against the effective flood-stage watermark on the nodes holding their shards, and restore disk capacity.
+            Recent Elasticsearch versions remove the block automatically once usage falls below the high watermark;
+            older versions or manual blocks need the setting cleared after capacity is restored."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/elasticsearch.yaml"
 
       # --------------------------------------------------------------------------
