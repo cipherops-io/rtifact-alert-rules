@@ -239,8 +239,13 @@ groups:
             agents may be missing, creating observability/security/data-plane gaps."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
+      # A stuck pull alternates ImagePullBackOff/ErrImagePull; dropping `reason` and smoothing short scrape gaps
+      # keeps it one continuous alert instead of resolving and re-firing on every retry.
       - alert: KubePodImagePullBackOff
-        expr: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
+        expr: |
+          max without (reason) (
+            max_over_time(kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}[2m])
+          ) == 1
         for: 5m
         labels:
           sourceType: metric
@@ -251,12 +256,16 @@ groups:
           signal: symptom
           category: workload
           runbook: runbooks/kubernetes/workloads.yaml
-          query: kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"} == 1
+          query: |
+            max without (reason) (
+              max_over_time(kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}[2m])
+            ) == 1
         annotations:
-          summary: "image pull failure: {{ $labels.namespace }}/{{ $labels.pod }} reason={{ $labels.reason }}"
-          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} cannot pull image (reason={{ $labels.reason }}) for >5m.
-            Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Verify
-            image tag, registry reachability, and pull-secret credentials."
+          summary: "image pull failure: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} cannot pull its image
+            (ImagePullBackOff/ErrImagePull) for >5m. Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }},
+            service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Verify image tag, registry
+            reachability, and pull-secret credentials."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
       - alert: KubeJobFailed

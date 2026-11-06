@@ -125,6 +125,58 @@ tests:
         exp_alerts: []
 
   # ============================================================
+  # KubePodImagePullBackOff: positive — stuck pull flips to ErrImagePull for one scrape at 8m
+  # (stale marker on the ImagePullBackOff series); must stay one firing alert, no `reason` label
+  # ============================================================
+  - interval: 30s
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{namespace="prod",pod="api-7c",container="api",reason="ImagePullBackOff"}'
+        values: '1x15 stale 1x20'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="prod",pod="api-7c",container="api",reason="ErrImagePull"}'
+        values: '_x16 1 stale'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: KubePodImagePullBackOff
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: KubePodImagePullBackOff
+        exp_alerts:
+          - exp_labels:
+              sourceType: metric
+              severity: warning
+              priority: P2
+              notify_every: "1h"
+              tech_stack: kubernetes
+              signal: symptom
+              category: workload
+              runbook: runbooks/kubernetes/workloads.yaml
+              query: |
+                max without (reason) (
+                  max_over_time(kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff|ErrImagePull"}[2m])
+                ) == 1
+              namespace: "prod"
+              pod: "api-7c"
+              container: "api"
+            exp_annotations:
+              summary: "image pull failure: prod/api-7c container=api"
+              description: "Container api in pod prod/api-7c cannot pull its image (ImagePullBackOff/ErrImagePull) for >5m. Context: cluster=, env=, service=api-7c. Verify image tag, registry reachability, and pull-secret credentials."
+              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
+  # ============================================================
+  # KubePodImagePullBackOff: negative — one transient pull failure that then succeeds
+  # ============================================================
+  - interval: 30s
+    input_series:
+      - series: 'kube_pod_container_status_waiting_reason{namespace="prod",pod="api-7c",container="api",reason="ErrImagePull"}'
+        values: '1 stale'
+      - series: 'kube_pod_container_status_waiting_reason{namespace="prod",pod="api-7c",container="api",reason="ImagePullBackOff"}'
+        values: '_ 1 stale'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: KubePodImagePullBackOff
+        exp_alerts: []
+
+  # ============================================================
   # KubePodNotReady: positive — pod not ready for > 15m
   # ============================================================
   - interval: 1m

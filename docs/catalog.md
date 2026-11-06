@@ -197,10 +197,9 @@
 | `RedisKeyspaceHitRatioLow` | warning | P2 | 10m | cause | `( rate(redis_keyspace_hits_total[5m]) / ( rate(redis_keyspace_hits_total[5m]) +…` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisTooManyConnections` | warning | P2 | 2m | cause | `redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclien…` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisConnectedClientsHigh` | warning | P2 | 5m | cause | `redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclien…` | [redis.yaml](runbooks/databases/redis.yaml) |
-| `RedisNotEnoughConnections` | warning | P3 | 5m | symptom | `redis_connected_clients < 5` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisRejectedConnections` | warning | P2 | 1m | symptom | `increase(redis_rejected_connections_total[1m]) > 5` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisBlockedClientsHigh` | warning | P2 | 5m | symptom | `redis_blocked_clients > 10` | [redis.yaml](runbooks/databases/redis.yaml) |
-| `RedisSlowLogGrowing` | warning | P3 | 5m | cause | `increase(redis_slowlog_last_id[5m]) > 0` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisSlowLogGrowing` | warning | P3 | 10m | cause | `increase(redis_slowlog_last_id[5m]) >= 20` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisRDBSaveError` | warning | P2 | 5m | cause | `redis_rdb_last_bgsave_status == 0` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisAOFRewriteRunningLong` | warning | P3 | 10m | cause | `redis_aof_rewrite_in_progress == 1` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisCPUSaturation` | warning | P2 | 5m | cause | `rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) …` | [redis.yaml](runbooks/databases/redis.yaml) |
@@ -357,7 +356,7 @@
 | `KubeDeploymentRolloutStuck` | warning | P2 | 15m | cause | `kube_deployment_status_condition{condition="Progressing",status="false"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeStatefulSetReplicasMismatch` | critical | P1 | 10m | symptom | `kube_statefulset_status_replicas_ready != kube_statefulset_replicas` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeDaemonSetNotScheduled` | warning | P2 | 15m | symptom | `kube_daemonset_status_desired_number_scheduled != kube_daemonset_status_number_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
-| `KubePodImagePullBackOff` | warning | P2 | 5m | symptom | `kube_pod_container_status_waiting_reason{reason=~"ImagePullBackOff\|ErrImagePull…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodImagePullBackOff` | warning | P2 | 5m | symptom | `max without (reason) ( max_over_time(kube_pod_container_status_waiting_reason{r…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeJobFailed` | warning | P2 | 15m | symptom | `kube_job_status_failed > 0 and kube_job_status_succeeded == 0` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeCronJobSuspended` | warning | P3 | 1h | cause | `kube_cronjob_spec_suspend == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodEvicted` | warning | P2 | 0m | symptom | `kube_pod_status_reason{reason="Evicted"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
@@ -554,4 +553,4 @@
 
 ---
 
-_366 alerts across 31 files in 8 categories._
+_365 alerts across 31 files in 8 categories._
