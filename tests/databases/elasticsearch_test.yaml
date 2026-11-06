@@ -388,3 +388,35 @@ tests:
       - expr: sum by (alertname) (ALERTS{alertstate="firing"})
         eval_time: 15m
         exp_samples: []
+  - name: Read-only indices fire after 5 minutes; zero blocked indices never fire
+    interval: 30s
+    input_series:
+      - series: elasticsearch_indices_settings_stats_read_only_indices{cluster="production",instance="exporter:9114",rtf_cluster_id="client-a"}
+        values: 2+0x20
+      - series: elasticsearch_indices_settings_stats_read_only_indices{cluster="staging",instance="healthy:9114",rtf_cluster_id="client-b"}
+        values: 0+0x20
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 4m30s
+        exp_samples: []
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 5m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchIndicesReadOnly"}'
+            value: 1
+  - name: Slow collection fires above 3 seconds after 10 minutes; exactly 3 seconds does not
+    interval: 30s
+    input_series:
+      - series: elasticsearch_scrape_duration_seconds{instance="exporter:9114",collector="cluster-info"}
+        values: 4+0x25
+      - series: elasticsearch_scrape_duration_seconds{instance="healthy:9114",collector="cluster-info"}
+        values: 3+0x25
+    promql_expr_test:
+      - expr: sum by (alertname) (ALERTS{alertstate="firing"})
+        eval_time: 9m30s
+        exp_samples: []
+      - expr: sum by (alertname, instance) (ALERTS{alertstate="firing"})
+        eval_time: 10m
+        exp_samples:
+          - labels: '{alertname="ElasticsearchScrapeSlow",instance="exporter:9114"}'
+            value: 1
