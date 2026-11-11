@@ -438,7 +438,22 @@ groups:
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterbackupoverdue"
 
       - alert: CNPGClusterLastBackupFailed
-        expr: cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp
+        expr: |
+          (
+            barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp
+            >
+            barman_cloud_cloudnative_pg_io_last_available_backup_timestamp
+          )
+          or
+          (
+            (
+              cnpg_collector_last_failed_backup_timestamp
+              >
+              cnpg_collector_last_available_backup_timestamp
+            )
+            unless on (namespace, pod)
+            barman_cloud_cloudnative_pg_io_last_available_backup_timestamp
+          )
         for: 5m
         labels:
           sourceType: metric
@@ -450,10 +465,25 @@ groups:
           signal: symptom
           category: data
           runbook: runbooks/databases/cnpg.yaml
-          query: cnpg_collector_last_failed_backup_timestamp > cnpg_collector_last_available_backup_timestamp
+          query: |
+            (
+              barman_cloud_cloudnative_pg_io_last_failed_backup_timestamp
+              >
+              barman_cloud_cloudnative_pg_io_last_available_backup_timestamp
+            )
+            or
+            (
+              (
+                cnpg_collector_last_failed_backup_timestamp
+                >
+                cnpg_collector_last_available_backup_timestamp
+              )
+              unless on (namespace, pod)
+              barman_cloud_cloudnative_pg_io_last_available_backup_timestamp
+            )
         annotations:
           summary: "CloudNativePG most recent backup attempt failed"
-          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) has a failed backup newer than the last successful one, as reported by pod {{ $labels.pod }} — backups are currently broken."
+          description: "CNPG cluster {{ $labels.cnpg_cluster }} (namespace {{ $labels.namespace }}) has a failed backup newer than the last successful one, as reported by pod {{ $labels.pod }} — backups are currently broken. Uses Barman Cloud plugin metrics; legacy cnpg_collector metrics are used only for clusters without the plugin."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/cnpg.yaml#cnpgclusterlastbackupfailed"
 
       # ── Operator intervention signals ──
