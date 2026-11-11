@@ -125,9 +125,11 @@ groups:
 
       - alert: KafkaTopicInSyncReplicasBelowThree
         expr: |
-          min by (topic) (
+          count by (namespace, topic) (
             kafka_topic_partition_in_sync_replica
-          ) < 3
+            <
+            kafka_topic_partition_replicas
+          ) > 0
         for: 5m
         labels:
           sourceType: metric
@@ -138,10 +140,10 @@ groups:
           signal: cause
           category: messaging
           runbook: runbooks/messaging/kafka.yaml
-          query: min by (topic) (kafka_topic_partition_in_sync_replica) < 3
+          query: count by (namespace, topic) (kafka_topic_partition_in_sync_replica < kafka_topic_partition_replicas) > 0
         annotations:
-          summary: "Kafka topic has fewer than 3 in-sync replicas"
-          description: "Topic {{ $labels.topic }} has only {{ $value }} in-sync replica(s) for more than 5 minutes. This is a durability warning for production topics expected to run with replication factor 3, because the topic has lost one or more healthy replicas and may not safely tolerate another broker failure. If some topics intentionally use replication factor 1 or 2, exclude them from this rule to avoid noise."
+          summary: "Kafka topic has partitions with fewer in-sync replicas than configured"
+          description: "Topic {{ $labels.topic }} (namespace {{ $labels.namespace }}) has {{ $value }} partition(s) with fewer in-sync replicas than its configured replication factor for more than 5 minutes. The topic has lost one or more healthy replicas and may not safely tolerate another broker failure. Topics are compared against their own replication factor, so topics intentionally created with 1 or 2 replicas do not trigger this alert."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/messaging/kafka.yaml#kafkatopicinsyncreplicasbelowthree"
 
       - alert: KafkaPartitionLeaderMissing
