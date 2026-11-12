@@ -3,8 +3,8 @@ Description: >-
   Lets the platform's Amazon CloudWatch integration work in this AWS account without access
   keys. Creates MonitorCloudWatchRole, which the platform assumes with an External ID, and
   MonitorEventBridgeInvokeRole, which EventBridge uses to deliver alarm events to the platform.
-  Deployed by setup-role.sh in AWS CloudShell; enter the RoleArn and ExternalId outputs in the
-  platform connection (Assume Role).
+  Deploy it with setup-role.sh in AWS CloudShell for one account, or as the StackSet
+  monitor-cloudwatch for many; then connect each account and Region in the platform.
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -17,6 +17,7 @@ Metadata:
       - Label:
           default: Scope
         Parameters:
+          - RoleRegion
           - RegionScope
           - CreateInvokeRole
     ParameterLabels:
@@ -24,6 +25,8 @@ Metadata:
         default: Platform role ARN
       ExternalId:
         default: External ID
+      RoleRegion:
+        default: Region that creates the roles
       RegionScope:
         default: Region
       CreateInvokeRole:
@@ -33,19 +36,27 @@ Parameters:
   PlatformRoleArn:
     Type: String
     Description: >-
-      ARN of the IAM role the platform runs as, given to you by the team that installed the
-      platform. Only this role may assume MonitorCloudWatchRole. It must already exist.
+      ARN of the IAM role the platform runs as, given to you at onboarding with the External
+      ID. Only this role may assume MonitorCloudWatchRole. It must already exist.
     AllowedPattern: '^arn:aws[a-z-]*:iam::\d{12}:role/.+$'
     ConstraintDescription: must be an IAM role ARN, for example arn:aws:iam::123456789012:role/my-platform-role.
   ExternalId:
     Type: String
     Description: >-
-      A random value, for example the output of uuidgen; setup-role.sh generates one. Enter the
-      same value in the platform connection.
+      The External ID the platform gave you at onboarding, together with the platform role ARN.
+      The platform signs in with it; it is the same for all your AWS accounts.
     MinLength: 2
     MaxLength: 1224
     AllowedPattern: '^[\w+=,.@:/-]+$'
     ConstraintDescription: 'must be 2-1224 letters, digits or + = , . @ : / - _ characters.'
+  RoleRegion:
+    Type: String
+    Description: >-
+      One of the Regions you deploy this template to, for example ap-south-1. The roles are
+      created only there: IAM roles are global, so one copy serves every Region of the account.
+      In your other Regions the stack creates nothing, and only records that you monitor them.
+    AllowedPattern: '^[a-z]{2}(-[a-z0-9]+)+-\d+$'
+    ConstraintDescription: must be a Region code such as ap-south-1, and one of the Regions you deploy to.
   RegionScope:
     Type: String
     Default: '*'
@@ -65,9 +76,18 @@ Parameters:
       from an earlier setup.
 
 Conditions:
-  ShouldCreateInvokeRole: !Equals [!Ref CreateInvokeRole, 'true']
+  IsRoleRegion: !Equals [!Ref RoleRegion, !Ref 'AWS::Region']
+  ShouldCreateInvokeRole: !And
+    - !Condition IsRoleRegion
+    - !Equals [!Ref CreateInvokeRole, 'true']
 
 Resources:
+  # Creates nothing. In a Region other than RoleRegion it is the whole stack, so the
+  # StackSet lists the Region for the account (aws cloudformation list-stack-instances),
+  # which tells the platform to monitor it.
+  RegionMarker:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
   # EventBridge assumes this role to call the platform's webhook. The name is fixed: the
   # platform looks it up by name.
   EventBridgeInvokeRole:
@@ -100,6 +120,7 @@ Resources:
   # assume only this name.
   CloudWatchRole:
     Type: AWS::IAM::Role
+    Condition: IsRoleRegion
     Properties:
       RoleName: MonitorCloudWatchRole
       Description: Assumed by the platform's Amazon CloudWatch integration.
@@ -188,11 +209,9 @@ Resources:
 
 Outputs:
   RoleArn:
-    Description: Enter this as Role ARN in the platform connection (Assume Role).
+    Condition: IsRoleRegion
+    Description: The role the platform assumes in this account.
     Value: !GetAtt CloudWatchRole.Arn
-  ExternalId:
-    Description: Enter this as External ID in the same connection.
-    Value: !Ref ExternalId
   InvokeRoleArn:
     Condition: ShouldCreateInvokeRole
     Description: The role EventBridge uses to deliver alarm events to the platform.
