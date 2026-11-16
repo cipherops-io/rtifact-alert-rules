@@ -128,13 +128,22 @@ Resources:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
-          - Effect: Allow
+          - Sid: PlatformAssumesWithExternalId
+            Effect: Allow
             Principal:
               AWS: !Ref PlatformRoleArn
             Action: sts:AssumeRole
             Condition:
               StringEquals:
                 sts:ExternalId: !Ref ExternalId
+          # With EKS Pod Identity, the platform's session carries tags that AWS passes on
+          # when it assumes this role, which needs sts:TagSession as well. This grants
+          # nothing by itself: assuming the role still needs the External ID above.
+          - Sid: PlatformPassesSessionTags
+            Effect: Allow
+            Principal:
+              AWS: !Ref PlatformRoleArn
+            Action: sts:TagSession
       Policies:
         - PolicyName: MonitorCloudWatchIntegration
           PolicyDocument:

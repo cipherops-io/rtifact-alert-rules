@@ -111,6 +111,10 @@ if [ -z "$STATUS" ]; then
       *) TRUSTS_EXTERNAL_ID=false ;;
     esac
     if [ "$TRUSTS_PLATFORM" = true ] && [ "$TRUSTS_EXTERNAL_ID" = true ]; then
+      case "$TRUST" in
+        *'"sts:TagSession"'*) ;;
+        *) fail "IAM role $ROLE_NAME in account $ACCOUNT_ID was created by an older setup, whose trust policy lacks sts:TagSession, which the platform needs. Run this command again in the Region where you ran it before, to update it. If a StackSet created it, update the StackSet with the latest template." ;;
+      esac
       echo "$ROLE_NAME already exists in account $ACCOUNT_ID and trusts the platform; nothing to change."
       done_message
       exit 0
