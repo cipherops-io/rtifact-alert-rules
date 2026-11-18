@@ -84,14 +84,27 @@ groups:
       - alert: KubePodCPUThrottlingHigh
         expr: |
           (
+            (
+              sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+              )
+              /
+              sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+              )
+            ) * 100 > 25
+          )
+          and on (rtf_cluster_id, rtf_env, namespace, pod, container)
+          (
             sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
-              rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+              rate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])
             )
             /
             sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
-              rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+              kube_pod_container_resource_limits{resource="cpu"}
             )
-          ) * 100 > 25
+            > 0.10
+          )
         for: 10m
         labels:
           sourceType: metric
@@ -104,19 +117,32 @@ groups:
           runbook: runbooks/kubernetes/workloads.yaml
           query: |
             (
+              (
+                sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                  rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+                )
+                /
+                sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                  rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+                )
+              ) * 100 > 25
+            )
+            and on (rtf_cluster_id, rtf_env, namespace, pod, container)
+            (
               sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
-                rate(container_cpu_cfs_throttled_periods_total{container!="",container!="POD",pod!=""}[5m])
+                rate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])
               )
               /
               sum by (rtf_cluster_id, rtf_env, namespace, pod, container) (
-                rate(container_cpu_cfs_periods_total{container!="",container!="POD",pod!=""}[5m])
+                kube_pod_container_resource_limits{resource="cpu"}
               )
-            ) * 100 > 25
+              > 0.10
+            )
         annotations:
           summary: "pod CPU throttling high: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
           description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has sustained CPU
             throttling above 25% for >10m (value={{ printf \"%.2f\" $value }}%). Context: cluster={{ $labels.rtf_cluster_id }},
-            env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Review CPU limits, compare usage vs limits,
+            env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Only evaluated for containers using more than 10% of their own CPU limit, so near-idle containers are ignored. Review CPU limits, compare usage vs limits,
             check node CPU saturation, validate HPA behavior, and consider removing CPU limits for latency-sensitive workloads."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
@@ -409,11 +435,29 @@ groups:
 
       - alert: KubeHpaMaxedOut
         expr: |
-          kube_horizontalpodautoscaler_status_desired_replicas
-            >= kube_horizontalpodautoscaler_spec_max_replicas
-          and kube_horizontalpodautoscaler_spec_max_replicas > 1
-          and kube_horizontalpodautoscaler_spec_min_replicas
-            != kube_horizontalpodautoscaler_spec_max_replicas
+          (
+            kube_horizontalpodautoscaler_status_desired_replicas
+              >= kube_horizontalpodautoscaler_spec_max_replicas
+            and kube_horizontalpodautoscaler_spec_max_replicas > 1
+            and kube_horizontalpodautoscaler_spec_min_replicas
+              != kube_horizontalpodautoscaler_spec_max_replicas
+          )
+          and on (namespace, horizontalpodautoscaler)
+          (
+            (
+              max by (namespace, horizontalpodautoscaler) (
+                kube_horizontalpodautoscaler_status_target_metric{metric_target_type="utilization"}
+                / on (namespace, horizontalpodautoscaler, metric_name, metric_target_type)
+                  kube_horizontalpodautoscaler_spec_target_metric{metric_target_type="utilization"}
+              ) > 1
+            )
+            or
+            (
+              group by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_status_desired_replicas)
+              unless on (namespace, horizontalpodautoscaler)
+              group by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_spec_target_metric{metric_target_type="utilization"})
+            )
+          )
         for: 15m
         labels:
           sourceType: metric
@@ -425,14 +469,32 @@ groups:
           category: autoscaling
           runbook: runbooks/kubernetes/workloads.yaml
           query: |
-            kube_horizontalpodautoscaler_status_desired_replicas
-              >= kube_horizontalpodautoscaler_spec_max_replicas
-            and kube_horizontalpodautoscaler_spec_max_replicas > 1
-            and kube_horizontalpodautoscaler_spec_min_replicas
-              != kube_horizontalpodautoscaler_spec_max_replicas
+            (
+              kube_horizontalpodautoscaler_status_desired_replicas
+                >= kube_horizontalpodautoscaler_spec_max_replicas
+              and kube_horizontalpodautoscaler_spec_max_replicas > 1
+              and kube_horizontalpodautoscaler_spec_min_replicas
+                != kube_horizontalpodautoscaler_spec_max_replicas
+            )
+            and on (namespace, horizontalpodautoscaler)
+            (
+              (
+                max by (namespace, horizontalpodautoscaler) (
+                  kube_horizontalpodautoscaler_status_target_metric{metric_target_type="utilization"}
+                  / on (namespace, horizontalpodautoscaler, metric_name, metric_target_type)
+                    kube_horizontalpodautoscaler_spec_target_metric{metric_target_type="utilization"}
+                ) > 1
+              )
+              or
+              (
+                group by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_status_desired_replicas)
+                unless on (namespace, horizontalpodautoscaler)
+                group by (namespace, horizontalpodautoscaler) (kube_horizontalpodautoscaler_spec_target_metric{metric_target_type="utilization"})
+              )
+            )
         annotations:
           summary: "HPA maxed out: {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }}"
           description: "HPA {{ $labels.namespace }}/{{ $labels.horizontalpodautoscaler }} has stayed at max replicas for >15m
-            (desired={{ $value }}). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.horizontalpodautoscaler
-            }}. Workload is at scaling ceiling and may experience latency or throttling under sustained demand."
+            (desired={{ $value }}) and is still above its scaling target (or has no utilization target to judge by). Context: cluster={{ $labels.rtf_cluster_id }}, env={{ $labels.rtf_env }}, service={{ $labels.horizontalpodautoscaler
+            }}. Workload is at its scaling ceiling and demand is not being met, so it may experience latency or throttling."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
