@@ -274,9 +274,12 @@ cnpg_mcp_replication: &cnpg_mcp_replication
 cnpg_mcp_vacuum: &cnpg_mcp_vacuum
   tool_id: "mcp.postgres.execute_query"
   target: "child"
-  description: "MCP fallback: dead rows, oldest-frozen tables, running vacuums and xmin-horizon holders — in the database the MCP connection is configured for (it cannot switch to the alert's datname)."
+  description: "MCP fallback: dead rows, oldest-frozen tables, running vacuums and xmin-horizon holders — in the alert's database (datname); when the alert names none, in the database the MCP connection is configured for."
   params:
     arguments:
+      # Dropped when the alert carries no datname; the call then runs on the
+      # connection's own database.
+      database: "$datname"
       query: |-
           /* rtifact-diagnostic */ SELECT json_build_object(
             'server_now', now(),
