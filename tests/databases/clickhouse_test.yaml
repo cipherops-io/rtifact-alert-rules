@@ -821,36 +821,69 @@ tests:
   #       exp_alerts: []
 
   # ============================================================
-  # ClickHouseReplicatedPartFetchFailures: positive — one failed part
-  # fetch inside the 15m window.
+  # ClickHouseReplicatedPartFetchFailures: positive — 10 failed vs 100
+  # successful fetches per minute (150 failed / 1650 attempts = 9.1% in
+  # 15m), sustained past the 15m `for`.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '0 1+0x15'
+        values: '0+10x40'
+      - series: 'chi_clickhouse_event_ReplicatedPartFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+100x40'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 35m
         alertname: ClickHouseReplicatedPartFetchFailures
         exp_alerts:
           - exp_labels:
               sourceType: "metric"
               severity: "warning"
-              priority: "P2"
-              notify_every: "30m"
+              priority: "P3"
+              notify_every: "2h"
               tech_stack: "clickhouse"
               signal: "cause"
               category: "data"
               runbook: "runbooks/databases/clickhouse.yaml"
               query: |
-                increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
-                or ((chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
-                    and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
+                (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) / (increase(chi_clickhouse_event_ReplicatedPartFetches[15m]) + increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]))) > 0.05
+                and increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 50
               chi: "prod3"
               hostname: "chi-prod3-cluster-0-0"
             exp_annotations:
               summary: "ClickHouse is failing to fetch parts from its replicas"
-              description: "Host chi-prod3-cluster-0-0 (CHI prod3) failed 1 part fetch(es) in the last 15m. Every failed fetch is a part this replica still does not have, so it stays behind on those tables and its replication queue keeps retrying. Look for an unreachable or overloaded source replica, the interserver port being blocked, or a full disk on either side."
+              description: "Host chi-prod3-cluster-0-0 (CHI prod3) is failing 9.091% of its replicated part fetches over the last 15m (more than 50 failed attempts). A small number of failed fetches is normal (the part was merged away on the source and is retried), but a sustained failure rate means this replica cannot keep up with its peers and will fall behind. Check ReplicasMaxQueueSize and ReplicasMaxAbsoluteDelay for this host, then look for an unreachable or overloaded source replica, the interserver port being blocked, or a full disk on either side."
               runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicatedpartfetchfailures"
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: negative — normal background
+  # retries (like TCPROD): 5 failed vs 700 successful per minute
+  # (75 failed, but only ~0.7% of attempts).
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+5x40'
+      - series: 'chi_clickhouse_event_ReplicatedPartFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+700x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts: []
+
+  # ============================================================
+  # ClickHouseReplicatedPartFetchFailures: negative — high ratio on a
+  # quiet replica but too few failures (~15 failed / ~75 attempts).
+  # ============================================================
+  - interval: 1m
+    input_series:
+      - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+1x40'
+      - series: 'chi_clickhouse_event_ReplicatedPartFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+4x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ClickHouseReplicatedPartFetchFailures
+        exp_alerts: []
 
   # ============================================================
   # ClickHouseReplicatedPartFetchFailures: negative — fetches are
@@ -859,9 +892,11 @@ tests:
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
-        values: '0+0x15'
+        values: '0+0x40'
+      - series: 'chi_clickhouse_event_ReplicatedPartFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+100x40'
     alert_rule_test:
-      - eval_time: 15m
+      - eval_time: 35m
         alertname: ClickHouseReplicatedPartFetchFailures
         exp_alerts: []
 
@@ -1938,38 +1973,22 @@ tests:
   #       exp_alerts: []
 
   # ============================================================
-  # ClickHouseReplicatedPartFetchFailures: positive — the counter appears for the
-  # first time at t=15m and never moves again.
+  # ClickHouseReplicatedPartFetchFailures: negative — the counter appears for the
+  # first time at t=15m (a single first-ever failure) and never moves again.
+  # A lone failure is normal retry noise and must not alert.
   # ============================================================
   - interval: 1m
     input_series:
       - series: 'chi_clickhouse_event_ReplicatedPartFailedFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '_x15 1+0x40'
+      - series: 'chi_clickhouse_event_ReplicatedPartFetches{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
+        values: '0+100x80'
       - series: 'chi_clickhouse_event_Query{chi="prod3",hostname="chi-prod3-cluster-0-0"}'
         values: '100+10x80'
     alert_rule_test:
       - eval_time: 21m
         alertname: ClickHouseReplicatedPartFetchFailures
-        exp_alerts:
-          - exp_labels:
-              sourceType: "metric"
-              severity: "warning"
-              priority: "P2"
-              notify_every: "30m"
-              tech_stack: "clickhouse"
-              signal: "cause"
-              category: "data"
-              runbook: "runbooks/databases/clickhouse.yaml"
-              query: |
-                increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0
-                or ((chi_clickhouse_event_ReplicatedPartFailedFetches > 0 unless on (chi, hostname) chi_clickhouse_event_ReplicatedPartFailedFetches offset 15m)
-                    and on (chi, hostname) chi_clickhouse_event_Query offset 15m)
-              chi: "prod3"
-              hostname: "chi-prod3-cluster-0-0"
-            exp_annotations:
-              summary: "ClickHouse is failing to fetch parts from its replicas"
-              description: "Host chi-prod3-cluster-0-0 (CHI prod3) failed 1 part fetch(es) in the last 15m. Every failed fetch is a part this replica still does not have, so it stays behind on those tables and its replication queue keeps retrying. Look for an unreachable or overloaded source replica, the interserver port being blocked, or a full disk on either side."
-              runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousereplicatedpartfetchfailures"
+        exp_alerts: []
 
   # ============================================================
   # ClickHouseReplicatedPartFetchFailures: negative — the counter has been sitting at

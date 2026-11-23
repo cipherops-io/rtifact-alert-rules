@@ -2061,21 +2061,21 @@ common_alerts:
         "chi_clickhouse_event_ReplicatedPartFailedFetches",
         "failed part fetch",
       ]
-    priority: P2
+    priority: P3
     diagnostic_steps:
       - step: 1
-        title: "Confirm the failures are ongoing and not a just-appeared counter"
+        title: "Confirm the failure rate is real and whether the replica is falling behind"
         description: >-
-          This rule has two branches: increase(...[15m]) > 0, or the counter being nonzero
-          and absent one window earlier. That second branch exists because a
-          chi_clickhouse_event_* series does not exist until the event first happens — so a
-          firing alert may represent a single historical failure that only just became
-          visible. failed_fetches_15m is the recent rate; failed_fetches_total is the
-          cumulative counter since server start. Interpret: failed_fetches_15m > 0 and
-          repeating => fetches are actively failing now; continue. failed_fetches_15m = 0
-          with a nonzero total => the counter just appeared (or the failures stopped), so
-          report the total and the time of the event instead of implying an ongoing problem;
-          the alert will self-resolve within the window whether or not anything was fixed.
+          The rule fires only when more than 5% of this host's part fetch attempts failed in
+          the last 15m AND there were more than 50 failures, sustained for 15m. A few failed
+          fetches among thousands of successful ones are normal (the part was merged away on
+          the source and the fetch is retried), so the rule ignores them. fetch_failure_ratio_15m
+          is the share of attempts failing; failed_fetches_15m and successful_fetches_15m are the
+          raw counts. Interpret: ratio well above 5% with replication queue or delay growing =>
+          the replica cannot keep up; continue to step 2. Ratio just over 5% with queue in single
+          digits and delay near 0 => retries are succeeding and no data is behind; report it as
+          degraded but not impacting. Then check ClickHouseReplicationLagHigh,
+          ClickHouseReplicationQueueHigh and ClickHouseReadonlyReplica, which measure real impact.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Readonly replicas, replication delay and queue per host."
@@ -2090,6 +2090,13 @@ common_alerts:
                   panel: true
                   panel_title: "Failed Part Fetches (15m)"
                   panel_id: "ch-failed-fetches-15m"
+                - name: successful_fetches_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFetches[15m]))'
+                - name: fetch_failure_ratio_15m
+                  query: 'sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m])) / (sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFetches[15m])) + sum by (chi, hostname) (increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m])))'
+                  panel: true
+                  panel_title: "Part Fetch Failure Ratio (15m)"
+                  panel_id: "ch-fetch-failure-ratio-15m"
                 - name: failed_fetches_total
                   query: 'max by (chi, hostname) (chi_clickhouse_event_ReplicatedPartFailedFetches)'
                 - name: replication_queue_by_host
