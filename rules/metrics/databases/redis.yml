@@ -332,7 +332,17 @@ groups:
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisblockedclientshigh"
 
       - alert: RedisSlowLogGrowing
-        expr: increase(redis_slowlog_last_id[5m]) >= 20
+        # Real Redis only. On Redis the slowlog id only goes backwards on a restart or SLOWLOG RESET.
+        # Dragonfly keeps one slowlog PER THREAD and the exporter reads the newest entry's id from
+        # whichever thread logged last, so the value jumps up and down (~70 drops/24h on compro
+        # platform-redis). increase() treats every drop as a counter reset and counts hundreds of
+        # phantom "new" entries. Skipping series whose id went backwards in the last hour excludes
+        # Dragonfly (and pauses real Redis for 1h after a restart). Dragonfly is covered by
+        # RedisCommandLatencyHigh instead.
+        expr: |
+          increase(redis_slowlog_last_id[5m]) >= 20
+          and
+          resets(redis_slowlog_last_id[1h]) == 0
         for: 10m
         labels:
           sourceType: metric
@@ -343,11 +353,61 @@ groups:
           signal: cause
           category: data
           runbook: runbooks/databases/redis.yaml
-          query: increase(redis_slowlog_last_id[5m]) >= 20
+          query: |
+            increase(redis_slowlog_last_id[5m]) >= 20
+            and
+            resets(redis_slowlog_last_id[1h]) == 0
         annotations:
           summary: "Redis slowlog is growing"
-          description: "New Redis slowlog entries were observed on {{ $labels.instance }}. One or more commands are exceeding the configured slowlog threshold and may be increasing request latency for all clients because Redis command execution is largely single-threaded. Expensive commands, large keys, broad scans, Lua scripts, or slow disk/network conditions can delay unrelated cache, session, lock, queue, and rate-limit operations."
+          description: "{{ $value | printf \"%.0f\" }} new slowlog entries were recorded on {{ $labels.instance }} in the last 5m
+            (threshold 20, sustained for 10m). One or more commands are exceeding the configured slowlog threshold and may be
+            increasing request latency for all clients because Redis command execution is largely single-threaded. Expensive
+            commands, large keys, broad scans, Lua scripts, or slow disk/network conditions can delay unrelated cache, session,
+            lock, queue, and rate-limit operations. Run SLOWLOG GET to see the exact commands."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#redisslowloggrowing"
+
+      - alert: RedisCommandLatencyHigh
+        # Works on Redis AND Dragonfly: average server-side time per command type (INFO commandstats).
+        # Normal is well under 1ms (compro 24h max: 1ms), so a 10ms average is a clear slowdown.
+        # Excluded: the exporter's own admin commands, replication internals, and blocking/pub-sub
+        # commands that wait by design. `([|].*)?` also matches Redis 7 subcommand names (config|get).
+        # The traffic guard (> 1 call/s) skips rarely-used commands, and drops the +Inf seen when the
+        # duration counter moves but the call counter does not.
+        expr: |
+          (
+            rate(redis_commands_duration_seconds_total{cmd!~"(info|config|slowlog|client|ping|latency|cluster|monitor|sync|psync|replconf|dfly|blpop|brpop|brpoplpush|blmove|blmpop|bzpopmin|bzpopmax|bzmpop|xread|xreadgroup|wait|waitaof|subscribe|psubscribe|ssubscribe)([|].*)?"}[5m])
+            /
+            rate(redis_commands_total[5m])
+          ) > 0.01
+          and
+          rate(redis_commands_total[5m]) > 1
+        for: 10m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          notify_every: "1h"
+          tech_stack: redis
+          signal: symptom
+          category: data
+          runbook: runbooks/databases/redis.yaml
+          query: |
+            (
+              rate(redis_commands_duration_seconds_total{cmd!~"(info|config|slowlog|client|ping|latency|cluster|monitor|sync|psync|replconf|dfly|blpop|brpop|brpoplpush|blmove|blmpop|bzpopmin|bzpopmax|bzmpop|xread|xreadgroup|wait|waitaof|subscribe|psubscribe|ssubscribe)([|].*)?"}[5m])
+              /
+              rate(redis_commands_total[5m])
+            ) > 0.01
+            and
+            rate(redis_commands_total[5m]) > 1
+        annotations:
+          summary: "Redis command {{ $labels.cmd }} is slow"
+          description: "Command {{ $labels.cmd }} on {{ $labels.instance }} has averaged {{ $value | humanizeDuration }} per call
+            for more than 10m (threshold 10ms; a healthy Redis/Dragonfly serves commands in well under 1ms). Slow commands
+            hold the event loop (one per thread on Dragonfly) and delay every client of this instance. Check whether CPU is
+            saturated, whether this command is hitting a very large key (HGETALL/SMEMBERS/ZRANGE on big collections, KEYS,
+            Lua scripts), and whether a traffic surge or a new release started at the same time. SLOWLOG GET shows the exact
+            commands and keys."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/redis.yaml#rediscommandlatencyhigh"
 
       - alert: RedisRDBSaveError
         expr: redis_rdb_last_bgsave_status == 0

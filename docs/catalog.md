@@ -201,7 +201,8 @@
 | `RedisConnectedClientsHigh` | warning | P2 | 5m | cause | `redis_config_maxclients > 0 and redis_connected_clients / redis_config_maxclien…` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisRejectedConnections` | warning | P2 | 1m | symptom | `increase(redis_rejected_connections_total[1m]) > 5` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisBlockedClientsHigh` | warning | P2 | 5m | symptom | `redis_blocked_clients > 10` | [redis.yaml](runbooks/databases/redis.yaml) |
-| `RedisSlowLogGrowing` | warning | P3 | 10m | cause | `increase(redis_slowlog_last_id[5m]) >= 20` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisSlowLogGrowing` | warning | P3 | 10m | cause | `increase(redis_slowlog_last_id[5m]) >= 20 and resets(redis_slowlog_last_id[1h])…` | [redis.yaml](runbooks/databases/redis.yaml) |
+| `RedisCommandLatencyHigh` | warning | P3 | 10m | symptom | `( rate(redis_commands_duration_seconds_total{cmd!~"(info\|config\|slowlog\|client\|…` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisRDBSaveError` | warning | P2 | 5m | cause | `redis_rdb_last_bgsave_status == 0` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisAOFRewriteRunningLong` | warning | P3 | 10m | cause | `redis_aof_rewrite_in_progress == 1` | [redis.yaml](runbooks/databases/redis.yaml) |
 | `RedisCPUSaturation` | warning | P2 | 5m | cause | `rate(redis_cpu_sys_seconds_total[5m]) + rate(redis_cpu_user_seconds_total[5m]) …` | [redis.yaml](runbooks/databases/redis.yaml) |

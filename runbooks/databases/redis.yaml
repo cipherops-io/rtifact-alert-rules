@@ -63,6 +63,7 @@ match_keywords:
   - eviction
   - replication
   - slowlog
+  - command latency
   - redis cluster
   - cache
 
@@ -1313,16 +1314,21 @@ common_alerts:
       - step: 1
         title: "Confirm new slowlog entries are being added right now, and how fast"
         description: >-
-          Fires on increase(redis_slowlog_last_id[5m]) > 0 — Redis recorded new commands that
-          exceeded the slowlog threshold. Because Redis executes commands largely single-threaded, slow
-          commands delay ALL clients. new_slowlog_entries_15m is how many new slowlog ids appeared (the
-          active-growth signal); slowlog_length is the current buffer size; last_slow_exec_ms is the most
-          recent slow command's duration. Interpret: new_slowlog_entries_15m > 0 => slow commands are
-          STILL occurring (an active problem, not a stale buffer). new_slowlog_entries_15m ~ 0 but
-          slowlog_length high => old entries from a past spike; not currently growing — lower urgency.
-          last_slow_exec_ms large => the most recent offender was very expensive. Name the instance
-          ($service). NOTE: in this fleet slowlog growth is genuinely high on the busy Dragonfly instances —
-          treat a high entry rate as real.
+          Fires on increase(redis_slowlog_last_id[5m]) >= 20 for 10m, ONLY on series whose slowlog id has
+          not gone backwards in the last hour — Redis recorded 20+ new commands per 5m that exceeded the
+          slowlog threshold. Because Redis executes commands largely single-threaded, slow commands delay
+          ALL clients. new_slowlog_entries_15m is how many new slowlog ids appeared (the active-growth
+          signal); slowlog_length is the current buffer size; last_slow_exec_ms is the most recent slow
+          command's duration; slowlog_id_resets_1h must be 0 for this alert to fire. Interpret:
+          new_slowlog_entries_15m > 0 => slow commands are STILL occurring (an active problem, not a stale
+          buffer). new_slowlog_entries_15m ~ 0 but slowlog_length high => old entries from a past spike;
+          not currently growing — lower urgency. last_slow_exec_ms large => the most recent offender was
+          very expensive. Name the instance ($service). NOTE (Dragonfly): Dragonfly keeps one slowlog PER
+          THREAD and the exporter reads the newest entry's id from whichever thread logged last, so the id
+          jumps up and down and increase() over it is NOT a count of slow commands (platform-redis once
+          showed "910 new entries in 5m" with 40 entries in the buffer and 0.02 cores of CPU). That is why
+          the rule skips any series with slowlog_id_resets_1h > 0. For Dragonfly, rely on
+          RedisCommandLatencyHigh and the live SLOWLOG read in step 3, never on the id growth.
         tool_calls:
           - tool_id: "tool.query_metrics"
             description: "Redis/Dragonfly pod CPU and memory (container-level), matched to the instance's pods by name across the workload namespace."
@@ -1347,6 +1353,9 @@ common_alerts:
                 - name: last_slow_exec_ms
                   unit: "ms"
                   query: '1000 * max by (job) (redis_last_slow_execution_duration_seconds{rtf_service="$service"})'
+                - name: slowlog_id_resets_1h
+                  unit: "resets"
+                  query: 'max by (job) (resets(redis_slowlog_last_id{rtf_service="$service"}[1h]))'
       - step: 2
         title: "Tie it to server-side latency, throughput and CPU, and name the affected operations (OBI)"
         description: >-
@@ -1451,6 +1460,118 @@ common_alerts:
       - "Confirm new slowlog entries stop accruing and avg command duration / OBI p95 return to baseline after the command fixes."
       - "Add a guard against the worst command patterns (e.g. forbid KEYS in app code) so the slowlog doesn't regrow."
       - "Step 3 now reads SLOWLOG live. Remaining gap: client_addr is an IP — mapping it to the owning pod/workload needs a reverse lookup, so escalate with the IP plus the client name when the app sets one via CLIENT SETNAME."
+
+  - name: "RedisCommandLatencyHigh"
+    patterns:
+      [
+        "RedisCommandLatencyHigh",
+        "redis command is slow",
+        "command latency high",
+        "average command duration",
+      ]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm which command is slow, how slow versus its normal, and how much traffic it carries"
+        description: >-
+          Fires when one command type's average server-side execution time (INFO commandstats:
+          redis_commands_duration_seconds_total / redis_commands_total) stays above 10ms for 10m while it
+          runs at more than 1 call/s. Works on Redis AND Dragonfly (unlike RedisSlowLogGrowing, whose
+          slowlog id is unusable on Dragonfly). The exporter's own admin commands, replication internals
+          and blocking/pub-sub commands are excluded. slow_cmd_avg_ms lists the slowest busy commands now;
+          slow_cmd_calls_per_s shows how busy each command is; slow_cmd_avg_ms_24h_max is each command's
+          worst 5m average over the last day (the baseline, normally well under 1ms). Interpret: ONE
+          command slow while the others are normal => that command is hitting large keys or doing heavy
+          work (name it: HGETALL/SMEMBERS/ZRANGE/LRANGE on big collections, KEYS, EVAL/EVALSHA Lua, EXEC of
+          a big MULTI). MANY commands slow at once, including cheap ones like GET/SET => the whole instance
+          is stalled (CPU saturation or pod CPU throttling, a long Lua script or blocking command holding
+          the loop, a fork/save) — go to step 2. Name the instance ($service) and the command.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Per-command average latency, call rate, and the 24h baseline on the alert's instance."
+            params:
+              queries:
+                - name: slow_cmd_avg_ms
+                  unit: "ms"
+                  query: 'topk(5, 1000 * (rate(redis_commands_duration_seconds_total{rtf_service="$service",cmd!~"(info|config|slowlog|client|ping|latency|cluster|monitor|sync|psync|replconf|dfly|blpop|brpop|brpoplpush|blmove|blmpop|bzpopmin|bzpopmax|bzmpop|xread|xreadgroup|wait|waitaof|subscribe|psubscribe|ssubscribe)([|].*)?"}[5m]) / rate(redis_commands_total{rtf_service="$service"}[5m])) and rate(redis_commands_total{rtf_service="$service"}[5m]) > 1)'
+                  panel: true
+                  panel_title: "Avg Latency per Command (top 5)"
+                  panel_id: "redis-cmd-avg-latency"
+                - name: slow_cmd_calls_per_s
+                  unit: "calls/s"
+                  query: 'topk(5, rate(redis_commands_total{rtf_service="$service",cmd!~"(info|config|slowlog|client|ping|latency|cluster|monitor|sync|psync|replconf|dfly|blpop|brpop|brpoplpush|blmove|blmpop|bzpopmin|bzpopmax|bzmpop|xread|xreadgroup|wait|waitaof|subscribe|psubscribe|ssubscribe)([|].*)?"}[5m]))'
+                  panel: true
+                  panel_title: "Calls per Command (top 5)"
+                  panel_id: "redis-cmd-call-rate"
+                - name: slow_cmd_avg_ms_24h_max
+                  unit: "ms"
+                  query: 'topk(5, max_over_time(((1000 * rate(redis_commands_duration_seconds_total{rtf_service="$service",cmd!~"(info|config|slowlog|client|ping|latency|cluster|monitor|sync|psync|replconf|dfly|blpop|brpop|brpoplpush|blmove|blmpop|bzpopmin|bzpopmax|bzmpop|xread|xreadgroup|wait|waitaof|subscribe|psubscribe|ssubscribe)([|].*)?"}[5m]) / rate(redis_commands_total{rtf_service="$service"}[5m])) and rate(redis_commands_total{rtf_service="$service"}[5m]) > 1)[24h:5m]))'
+      - step: 2
+        title: "Check whether the whole instance is stalled: CPU, throttling, throughput and client-side latency (OBI)"
+        description: >-
+          cpu_total_rate is the CPU cores Redis/Dragonfly is using (a Redis main loop tops out near 1 core;
+          Dragonfly uses one core per thread, so compare it with the pod CPU limit in the infra panels);
+          cmd_rate is total throughput; obi_op_p95_ms is the latency the applications actually see, per
+          operation. Interpret: CPU at its ceiling together with high latency => capacity problem
+          (cross-link RedisCPUSaturation, and KubePodCPUNearLimit / KubePodCPUThrottlingHigh on the Redis
+          pods — CFS throttling pauses the pod and inflates every command's time). cmd_rate jumped at the
+          same moment => a traffic surge or a new release is driving it. CPU normal but one command slow
+          => a data-shape problem (a big key), not capacity.
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Redis/Dragonfly pod CPU and memory (container-level), matched to the instance's pods by name across the workload namespace."
+            params:
+              queries: *infra_panels
+          - tool_id: "tool.query_metrics"
+            description: "Redis CPU, total command rate and OBI client-side p95 per operation."
+            params:
+              queries:
+                - name: cpu_total_rate
+                  unit: "cores"
+                  query: 'sum by (job) (rate(redis_cpu_sys_seconds_total{rtf_service="$service"}[5m])) + sum by (job) (rate(redis_cpu_user_seconds_total{rtf_service="$service"}[5m]))'
+                - name: cmd_rate
+                  unit: "cmd/s"
+                  query: 'sum by (job) (rate(redis_commands_processed_total{rtf_service="$service"}[5m]))'
+                - name: obi_op_p95_ms
+                  unit: "ms"
+                  query: 'topk(5, histogram_quantile(0.95, sum by (le, service.name, db.operation.name) (rate({__name__="db.client.operation.duration_bucket",db.system.name="redis",server.address=~"$service.*"}[5m]))) * 1000)'
+      - step: 3
+        title: "Read the actual slow commands from the server's slowlog (names the command, key and client)"
+        description: >-
+          Same live SLOWLOG read as RedisSlowLogGrowing step 3, the only source of the exact command, key
+          and client. On Dragonfly the entry ids come from different threads and are not in order: ignore
+          the ids and read the commands, durations and clients. Report the worst command and the most
+          repeated command shape VERBATIM (argument values are redacted to "?" by design); never invent a
+          command. If the slowlog shows nothing for the alerting command, the slowlog threshold
+          (slowlog-log-slower-than) may be set above 10ms or disabled — say so and rely on steps 1–2.
+        tool_calls:
+          - tool_id: "tool.query_db_activity"
+            description: "Live SLOWLOG GET on the alerting Redis/Dragonfly pod: command, key, duration, and the client that issued it."
+            params:
+              engine: "redis"
+              query_id: "slowlog"
+              limit: 10
+            fallback:
+              - tool_id: "mcp.redis.slowlog_get"
+                target: "child"
+                description: "Fallback when the tunnel read fails: SLOWLOG GET from the MCP Redis tool (20 newest entries) — command, key, duration and client; argument values arrive unredacted, quote only the command and key."
+                params:
+                  arguments:
+                    count: 20
+                  summary_chars: 4000
+    remediation: # suggestion-only
+      - action: "optimize_slow_command"
+        description: "Fix the command steps 1 and 3 named (quote the command and key): paginate big HGETALL/SMEMBERS/ZRANGE/LRANGE reads (HSCAN/SSCAN/ZSCAN or bounded ranges), split big keys, replace KEYS with SCAN, and shorten Lua scripts and large MULTI/EXEC blocks."
+        tool_id: ""
+        requires_approval: true
+      - action: "relieve_cpu_or_throttling"
+        description: "If step 2 shows the instance at its CPU ceiling or the pod being CPU-throttled: raise or remove the CPU limit on the Redis/Dragonfly pods, move read-heavy traffic to replicas, or shard the keyspace."
+        tool_id: ""
+        requires_approval: true
+    escalation: "Owning service team when a single command is slow (usage / data-shape driven). Redis/Dragonfly platform on-call when many commands are slow at once or CPU/throttling is the cause (instance-wide degradation affecting all clients)."
+    follow_up:
+      - "Confirm slow_cmd_avg_ms returns to its 24h baseline and OBI p95 recovers after the fix."
+      - "If the same command keeps coming back, add an app-side guard (key-size limits, pagination) so it cannot regrow."
 
   # ============================================================ CPU
   - name: "RedisCPUSaturation"
