@@ -146,6 +146,50 @@ groups:
             check node CPU saturation, validate HPA behavior, and consider removing CPU limits for latency-sensitive workloads."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
 
+      - alert: KubePodCPUNearLimit
+        # Early warning BEFORE KubePodCPUThrottlingHigh: container is using >80% of its own CPU limit.
+        # `max by` (not `sum by`) on both sides: some clusters scrape kubelet/cAdvisor and kube-state-metrics
+        # twice (two kube-prometheus-stack installs), and summing would double usage and limit.
+        # Containers without a CPU limit have no kube_pod_container_resource_limits series and never match.
+        expr: |
+          (
+            max by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+              rate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])
+            )
+            /
+            max by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+              kube_pod_container_resource_limits{resource="cpu"} > 0
+            )
+          ) > 0.80
+        for: 15m
+        labels:
+          sourceType: metric
+          severity: warning
+          priority: P3
+          notify_every: "1h"
+          tech_stack: kubernetes
+          signal: cause
+          category: workload
+          runbook: runbooks/kubernetes/workloads.yaml
+          query: |
+            (
+              max by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                rate(container_cpu_usage_seconds_total{container!="",container!="POD",pod!=""}[5m])
+              )
+              /
+              max by (rtf_cluster_id, rtf_env, namespace, pod, container) (
+                kube_pod_container_resource_limits{resource="cpu"} > 0
+              )
+            ) > 0.80
+        annotations:
+          summary: "pod CPU near limit: {{ $labels.namespace }}/{{ $labels.pod }} container={{ $labels.container }}"
+          description: "Container {{ $labels.container }} in pod {{ $labels.namespace }}/{{ $labels.pod }} has been using
+            {{ $value | humanizePercentage }} of its CPU limit for more than 15m (threshold 80%). Context: cluster={{ $labels.rtf_cluster_id }},
+            env={{ $labels.rtf_env }}, service={{ reReplaceAll \"(-[a-z0-9]{8,10})?-[a-z0-9]{5}$\" \"\" $labels.pod }}. Headroom is running out:
+            at the limit Kubernetes throttles the container (KubePodCPUThrottlingHigh) and latency rises. Check what is driving the
+            load (traffic, batch jobs, a recent rollout), then raise or remove the CPU limit per policy or scale out replicas."
+          runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/kubernetes/workloads.yaml"
+
       - alert: KubeContainerWaiting
         expr: kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1
         for: 1h

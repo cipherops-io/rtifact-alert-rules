@@ -352,6 +352,7 @@
 | `KubePodOOMKilled` | critical | P1 | 0m | symptom | `increase(kube_pod_container_status_restarts_total[10m]) > 0 and on(namespace, p…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeContainerRestartingFrequently` | warning | P2 | 5m | symptom | `increase( (max by (rtf_cluster_id, rtf_env, namespace, pod, container) (kube_po…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodCPUThrottlingHigh` | warning | P2 | 10m | cause | `( sum by (rtf_cluster_id, rtf_env, namespace, pod, container) ( rate(container_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
+| `KubePodCPUNearLimit` | warning | P3 | 15m | cause | `( max by (rtf_cluster_id, rtf_env, namespace, pod, container) ( rate(container_…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeContainerWaiting` | warning | P2 | 1h | cause | `kube_pod_container_status_waiting_reason{reason!="ContainerCreating"} == 1` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubePodNotReady` | warning | P2 | 15m | symptom | `kube_pod_status_ready{condition="true"} == 0 unless on(namespace, pod) kube_pod…` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |
 | `KubeDeploymentReplicasMismatch` | warning | P2 | 15m | symptom | `kube_deployment_spec_replicas != kube_deployment_status_replicas_available` | [workloads.yaml](runbooks/kubernetes/workloads.yaml) |

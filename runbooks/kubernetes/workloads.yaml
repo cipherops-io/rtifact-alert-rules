@@ -7,6 +7,7 @@ match_keywords:
   - crashloopbackoff
   - oomkilled
   - cpu throttling
+  - cpu near limit
   - imagepullbackoff
   - pod pending
   - rollout stuck
@@ -401,6 +402,72 @@ common_alerts:
         tool_id: "forge.scale_deployment"
         requires_approval: true
     escalation: "SRE for CPU request/limit policy and node contention; owning service team if throttling correlates with Kafka lag, GC, latency, timeouts, or failed customer traffic."
+
+  - name: "KubePodCPUNearLimit"
+    patterns: ["KubePodCPUNearLimit", "CPU near limit", "CPU headroom low", "container CPU usage vs limit"]
+    priority: P3
+    diagnostic_steps:
+      - step: 1
+        title: "Confirm usage vs limit and whether throttling has started"
+        description: "This is an early warning: the container uses >80% of its CPU limit. Confirm the ratio is sustained (not a single spike), read the configured limit/request, and check whether CFS throttling has already begun (if so, KubePodCPUThrottlingHigh may follow). max() is used for usage and limit because some clusters scrape cAdvisor and kube-state-metrics twice."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Exact pod/container usage, limit, request, usage-vs-limit and throttling."
+            params:
+              queries:
+                - name: "cpu_usage_vs_limit_pct"
+                  unit: "%"
+                  query: '100*max(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                  panel: true
+                  panel_title: "CPU Usage vs Limit %"
+                  panel_id: "kube-cpu-near-limit-pct"
+                - name: "cpu_usage_cores"
+                  unit: "cores"
+                  query: 'max(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                  panel: true
+                  panel_title: "CPU: Usage vs Request vs Limit"
+                  panel_id: "kube-cpu-near-limit-cores"
+                  panel_query: 'label_replace(max(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m])), "series", "usage", "", "") or label_replace(max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"}), "series", "request", "", "") or label_replace(max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"}), "series", "limit", "", "")'
+                - name: "cpu_limit_cores"
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                - name: "cpu_request_cores"
+                  unit: "cores"
+                  query: 'max(kube_pod_container_resource_requests{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                - name: "cpu_throttle_pct"
+                  unit: "%"
+                  query: '100*max(rate(container_cpu_cfs_throttled_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))/max(rate(container_cpu_cfs_periods_total{namespace="$namespace",pod="$pod",container="$container"}[5m]))'
+                  panel: true
+                  panel_title: "CPU Throttling %"
+                  panel_id: "kube-cpu-near-limit-throttle-pct"
+      - step: 2
+        title: "Find what is driving the load"
+        description: "Check whether the increase follows traffic, a batch/cron job, a recent rollout, or node contention, so the fix matches the cause (more CPU vs. a regression)."
+        tool_calls:
+          - tool_id: "tool.query_metrics"
+            description: "Usage trend over the last 24h and node CPU around the alert window."
+            params:
+              queries:
+                - name: "cpu_usage_vs_limit_pct_24h_max"
+                  unit: "%"
+                  query: '100*max(max_over_time(rate(container_cpu_usage_seconds_total{namespace="$namespace",pod="$pod",container="$container"}[5m])[24h:5m]))/max(kube_pod_container_resource_limits{namespace="$namespace",pod="$pod",container="$container",resource="cpu"})'
+                - name: "node_cpu_pct"
+                  unit: "%"
+                  query: '(100 - avg(rate(node_cpu_seconds_total{mode="idle",rtf_node="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",instance="$node"}[5m])) * 100) or (100 - avg(rate(node_cpu_seconds_total{mode="idle",node="$node"}[5m])) * 100)'
+          - tool_id: "tool.read_logs"
+            description: "Review logs for load spikes, batch activity, slow queries, or errors during the alert window."
+            params:
+              tail_lines: 300
+    remediation:
+      - action: "patch_resources"
+        description: "Raise the CPU limit (or remove it per platform policy) before throttling starts; keep an appropriate CPU request."
+        tool_id: "forge.patch_resources"
+        requires_approval: true
+      - action: "scale_out_replicas"
+        description: "Scale replicas only for horizontally scalable workloads where load (traffic/consumers) is driving CPU. Not applicable to single-master stateful stores like Redis/Dragonfly."
+        tool_id: "forge.scale_deployment"
+        requires_approval: true
+    escalation: "SRE for CPU limit changes; owning service team if a rollout or new feature (e.g. extra calls per request) is driving the increase."
 
   - name: "KubeContainerWaiting"
     patterns: ["KubeContainerWaiting", "container waiting too long", "ContainerCreating", "CreateContainerConfigError", "ErrImagePull"]
@@ -2683,6 +2750,9 @@ key_metrics:
     severity: critical
   - name: "container_cpu_cfs_throttled_periods_total / container_cpu_cfs_periods_total"
     threshold: "> 25% throttled periods for 10m"
+    severity: medium
+  - name: "container_cpu_usage_seconds_total / kube_pod_container_resource_limits{resource=cpu}"
+    threshold: "> 80% of CPU limit for 15m"
     severity: medium
   - name: "kube_pod_status_ready"
     threshold: "condition=true equals 0 for 15m"
