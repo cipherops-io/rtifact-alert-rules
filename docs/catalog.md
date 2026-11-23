@@ -40,7 +40,7 @@
 | `ClickHouseReadonlyReplica` | critical | P1 | 5m | symptom | `chi_clickhouse_metric_ReadonlyReplica > 0` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseReplicationLagHigh` | warning | P2 | 10m | symptom | `chi_clickhouse_metric_ReplicasMaxAbsoluteDelay > 300` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseReplicationQueueHigh` | warning | P2 | 15m | cause | `chi_clickhouse_metric_ReplicasMaxQueueSize > 100` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
-| `ClickHouseReplicatedPartFetchFailures` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) > 0 or ( (chi_c…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
+| `ClickHouseReplicatedPartFetchFailures` | warning | P3 | 15m | cause | `( increase(chi_clickhouse_event_ReplicatedPartFailedFetches[15m]) / ( increase(…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseKeeperSessionUnstable` | warning | P2 | 5m | cause | `chi_clickhouse_metric_ZooKeeperSession > 1` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseKeeperHardwareExceptions` | warning | P2 | 5m | cause | `increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0 or ( (chi_c…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
 | `ClickHouseRejectedInserts` | critical | P1 | 2m | symptom | `increase(chi_clickhouse_event_RejectedInserts[10m]) > 0 or ( (chi_clickhouse_ev…` | [clickhouse.yaml](runbooks/databases/clickhouse.yaml) |
