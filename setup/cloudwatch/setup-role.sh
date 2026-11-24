@@ -126,14 +126,12 @@ if [ -z "$STATUS" ]; then
     CREATE_INVOKE_ROLE=false
     echo "$INVOKE_ROLE_NAME already exists in this account; keeping it."
   fi
-  REGION_SCOPE='*'
   echo "Creating stack $STACK_NAME in $REGION (account $ACCOUNT_ID)..."
 else
   # Keep what the stack was created with; the External ID is the one given now. The roles are
 # always created by this stack, in this Region (RoleRegion below).
   OLD_EXTERNAL_ID="$(stack_value "Stacks[0].Parameters[?ParameterKey=='ExternalId'].ParameterValue")"
   CREATE_INVOKE_ROLE="$(stack_value "Stacks[0].Parameters[?ParameterKey=='CreateInvokeRole'].ParameterValue")"
-  REGION_SCOPE="$(stack_value "Stacks[0].Parameters[?ParameterKey=='RegionScope'].ParameterValue")"
   if [ "$OLD_EXTERNAL_ID" != "$EXTERNAL_ID" ]; then
     echo "The role's External ID changes from $OLD_EXTERNAL_ID to $EXTERNAL_ID."
   fi
@@ -149,7 +147,7 @@ if ! aws cloudformation deploy --region "$REGION" --stack-name "$STACK_NAME" \
   --template-file "$TEMPLATE_FILE" --capabilities CAPABILITY_NAMED_IAM \
   --no-fail-on-empty-changeset \
   --parameter-overrides "PlatformRoleArn=$PLATFORM_ROLE_ARN" "ExternalId=$EXTERNAL_ID" \
-  "CreateInvokeRole=$CREATE_INVOKE_ROLE" "RegionScope=$REGION_SCOPE" "RoleRegion=$REGION"; then
+  "CreateInvokeRole=$CREATE_INVOKE_ROLE" "RoleRegion=$REGION"; then
   echo "" >&2
   echo "Why it failed:" >&2
   aws cloudformation describe-stack-events --region "$REGION" --stack-name "$STACK_NAME" \
