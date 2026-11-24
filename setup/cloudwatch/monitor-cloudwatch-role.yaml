@@ -18,7 +18,6 @@ Metadata:
           default: Scope
         Parameters:
           - RoleRegion
-          - RegionScope
           - CreateInvokeRole
     ParameterLabels:
       PlatformRoleArn:
@@ -27,8 +26,6 @@ Metadata:
         default: External ID
       RoleRegion:
         default: Region that creates the roles
-      RegionScope:
-        default: Region
       CreateInvokeRole:
         default: Create MonitorEventBridgeInvokeRole
 
@@ -57,14 +54,6 @@ Parameters:
       In your other Regions the stack creates nothing, and only records that you monitor them.
     AllowedPattern: '^[a-z]{2}(-[a-z0-9]+)+-\d+$'
     ConstraintDescription: must be a Region code such as ap-south-1, and one of the Regions you deploy to.
-  RegionScope:
-    Type: String
-    Default: '*'
-    Description: >-
-      The Region to monitor, for example ap-south-1, or * for all Regions. The
-      platform may manage its alarms and EventBridge resources only there.
-    AllowedPattern: '^(\*|[a-z]{2}(-[a-z0-9]+)+-\d+)$'
-    ConstraintDescription: must be * or a Region code such as ap-south-1.
   CreateInvokeRole:
     Type: String
     Default: 'true'
@@ -113,7 +102,7 @@ Resources:
             Statement:
               - Effect: Allow
                 Action: events:InvokeApiDestination
-                Resource: !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:api-destination/monitor-*'
+                Resource: !Sub 'arn:${AWS::Partition}:events:*:${AWS::AccountId}:api-destination/monitor-*'
 
   # The platform assumes this role. Same permissions as the MonitorCloudWatchIntegration
   # policy in the setup guide. The name is fixed: the platform's own role is allowed to
@@ -169,7 +158,7 @@ Resources:
                 Action:
                   - cloudwatch:PutMetricAlarm
                   - cloudwatch:DeleteAlarms
-                Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:${RegionScope}:${AWS::AccountId}:alarm:monitor-*'
+                Resource: !Sub 'arn:${AWS::Partition}:cloudwatch:*:${AWS::AccountId}:alarm:monitor-*'
               - Sid: ManageMonitorAlertDelivery
                 Effect: Allow
                 Action:
@@ -188,9 +177,9 @@ Resources:
                   - events:RemoveTargets
                   - events:ListTargetsByRule
                 Resource:
-                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:connection/monitor-*'
-                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:api-destination/monitor-*'
-                  - !Sub 'arn:${AWS::Partition}:events:${RegionScope}:${AWS::AccountId}:rule/monitor-*'
+                  - !Sub 'arn:${AWS::Partition}:events:*:${AWS::AccountId}:connection/monitor-*'
+                  - !Sub 'arn:${AWS::Partition}:events:*:${AWS::AccountId}:api-destination/monitor-*'
+                  - !Sub 'arn:${AWS::Partition}:events:*:${AWS::AccountId}:rule/monitor-*'
               - Sid: StoreDeliveryTokenAsEventBridgeSecret
                 Effect: Allow
                 Action:
@@ -200,7 +189,7 @@ Resources:
                   - secretsmanager:GetSecretValue
                   - secretsmanager:DescribeSecret
                   - secretsmanager:DeleteSecret
-                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:${RegionScope}:${AWS::AccountId}:secret:events!connection/*'
+                Resource: !Sub 'arn:${AWS::Partition}:secretsmanager:*:${AWS::AccountId}:secret:events!connection/*'
               - Sid: AllowEventBridgeApiDestinationsServiceRole
                 Effect: Allow
                 Action: iam:CreateServiceLinkedRole
