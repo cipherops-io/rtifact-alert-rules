@@ -515,10 +515,10 @@ groups:
 
       - alert: ClickHouseKeeperHardwareExceptions
         expr: |
-          increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
+          increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 5
           or
           (
-            (chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+            (chi_clickhouse_event_ZooKeeperHardwareExceptions > 5 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
             and on (chi, hostname) chi_clickhouse_event_Query offset 10m
           )
         for: 5m
@@ -532,15 +532,16 @@ groups:
           category: data
           runbook: runbooks/databases/clickhouse.yaml
           query: |
-            increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 0
-            or ((chi_clickhouse_event_ZooKeeperHardwareExceptions > 0 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
+            increase(chi_clickhouse_event_ZooKeeperHardwareExceptions[10m]) > 5
+            or ((chi_clickhouse_event_ZooKeeperHardwareExceptions > 5 unless on (chi, hostname) chi_clickhouse_event_ZooKeeperHardwareExceptions offset 10m)
                 and on (chi, hostname) chi_clickhouse_event_Query offset 10m)
         annotations:
           summary: "ClickHouse cannot talk to Keeper/ZooKeeper reliably"
           description: "Host {{ $labels.hostname }} (CHI {{ $labels.chi }}) hit {{ $value | humanize }} Keeper/ZooKeeper
-            hardware exception(s) in the last 10m — connection loss or session timeout, not a logical error. Every
-            replicated INSERT, merge assignment and ALTER needs Keeper, so while this continues writes stall and replicas
-            drift towards read-only. Check the Keeper/ZooKeeper ensemble before treating this as a ClickHouse problem."
+            hardware exception(s) in the last 10m (threshold 5) — repeated connection loss or session timeouts, not a
+            logical error. Every replicated INSERT, merge assignment and ALTER needs Keeper, so while this continues
+            writes stall and replicas drift towards read-only. Check the Keeper/ZooKeeper ensemble before treating this
+            as a ClickHouse problem."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousekeeperhardwareexceptions"
 
       # --------------------------------------------------------------------------
