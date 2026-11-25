@@ -11,7 +11,7 @@ set -euo pipefail
 umask 077
 
 # CI replaces this placeholder with the published, digest-pinned image.
-STACK_DETECTOR_IMAGE="${STACK_DETECTOR_IMAGE:-ghcr.io/cipherops-io/stack-detector@sha256:693a65e60e6aef0e285f2ee092203318771494571c001f07540d48da426edb1e}"
+STACK_DETECTOR_IMAGE="${STACK_DETECTOR_IMAGE:-ghcr.io/cipherops-io/stack-detector@sha256:f48dc73e1f2ed5f4f33b236563681e19ba42d59610a08fbda6212a0eb072dcaa}"
 # Must match ReportBegin and ReportEnd in internal/cli/scan.go.
 REPORT_BEGIN='----- BEGIN RT-STACK-DETECTOR REPORT -----'
 REPORT_END='----- END RT-STACK-DETECTOR REPORT -----'
@@ -43,7 +43,6 @@ has_namespace=false
 has_account=false
 has_role=false
 has_binding=false
-job_started=false
 missing_permissions=""
 kube_args=()
 
@@ -68,6 +67,8 @@ Kubernetes removes each finished Job after 15 minutes.
   --timeout DURATION          scan timeout, e.g. 300s or 10m (default: 5m)
   --include-namespaces LIST   comma-separated namespaces to scan
   --exclude-namespaces LIST   comma-separated namespaces to skip
+                              (exclude wins; '*' matches any characters,
+                              e.g. 'rtifact-*'; quote it so the shell keeps it)
   --probe-metrics BOOL        verify metrics endpoints (default: true)
   --detection-catalog PATH    YAML catalog overlay, mounted into the Job
   --image IMAGE               scanner image (default: the published release)
@@ -119,14 +120,14 @@ parse_args() {
 validate_args() {
     local label='^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
     local subdomain='^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$'
-    local namespace_list='^[a-z0-9,-]*$'
+    local namespace_list='^[a-z0-9*,-]*$'
     local duration='^[1-9][0-9]*[sm]$'
     local image_ref='^[A-Za-z0-9][A-Za-z0-9./:@_-]*$'
     if ! [[ "$namespace" =~ $label ]] || [ "${#namespace}" -gt 63 ]; then
         fail "Invalid --namespace: $namespace"
     fi
-    [[ "$include" =~ $namespace_list ]] || fail "--include-namespaces must be comma-separated namespace names."
-    [[ "$exclude" =~ $namespace_list ]] || fail "--exclude-namespaces must be comma-separated namespace names."
+    [[ "$include" =~ $namespace_list ]] || fail "--include-namespaces must be comma-separated namespace names; '*' is the only wildcard."
+    [[ "$exclude" =~ $namespace_list ]] || fail "--exclude-namespaces must be comma-separated namespace names; '*' is the only wildcard."
     [[ "$timeout" =~ $duration ]] || fail "--timeout must be seconds or minutes, e.g. 300s or 10m."
     case "$probe_metrics" in true|false) ;; *) fail "--probe-metrics must be true or false." ;; esac
     case "$image" in
@@ -443,9 +444,6 @@ save_catalog() {
 on_exit() {
     local status=$?
     trap - EXIT INT TERM
-    if [ "$job_started" = true ]; then
-        info "Kubernetes deletes Job $namespace/$name and its pod $(( JOB_TTL_SECONDS / 60 )) minutes after the Job ends."
-    fi
     if [ -n "$tmp" ]; then rm -rf -- "$tmp"; fi
     exit "$status"
 }
@@ -474,7 +472,6 @@ main() {
     ensure "$has_binding" "ClusterRoleBinding $ACCESS_NAME" <<<"$(binding_manifest)"
     if [ -n "$catalog" ]; then save_catalog; fi
     job_manifest "$deadline" | kube create -f - >/dev/null || fail "Cannot create the scan Job (see the error above)."
-    job_started=true
     info "Started Job $namespace/$name; waiting up to $(( deadline / 60 )) minutes..."
 
     wait_for_job "$deadline" || job_succeeded=false
