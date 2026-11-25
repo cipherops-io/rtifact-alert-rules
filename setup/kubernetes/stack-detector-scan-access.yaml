@@ -1,0 +1,153 @@
+# Rtifact Stack Detector — access for the one-time scan script
+#
+# A cluster admin applies this once. After that, the person named in the two
+# bindings at the bottom can run the scan script without admin rights.
+#
+#   curl -fsSLO https://raw.githubusercontent.com/cipherops-io/rtifact-alert-rules/main/setup/kubernetes/stack-detector-scan-access.yaml
+#   sed 's/REPLACE_WITH_USER/jane@example.com/' stack-detector-scan-access.yaml | kubectl apply -f -
+#
+# Part 1 is what the script creates on its first run (same names and rules), so
+# the script finds it and reuses it. Part 2 is what the person needs to run it.
+#
+# The source is deploy/stack-detector-scan-access.yaml in
+# cipherops-io/rt-stack-detector. Edit the source, not the copy in
+# cipherops-io/rtifact-alert-rules.
+
+# ── Part 1: the scan's own read-only access ──
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: rtifact-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rt-stack-detector-scan
+  namespace: rtifact-system
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan
+    app.kubernetes.io/managed-by: rt-stack-detector-script
+---
+# The scan pod can only list these six kinds of objects; nothing else.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rt-stack-detector-scan
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan
+    app.kubernetes.io/managed-by: rt-stack-detector-script
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "services"]
+    verbs: ["list"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "daemonsets", "statefulsets", "replicasets"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rt-stack-detector-scan
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan
+    app.kubernetes.io/managed-by: rt-stack-detector-script
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rt-stack-detector-scan
+subjects:
+  - kind: ServiceAccount
+    name: rt-stack-detector-scan
+    namespace: rtifact-system
+---
+
+# ── Part 2: what the person running the script needs ──
+
+# In rtifact-system: start the scan Job and read its result.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rt-stack-detector-runner
+  namespace: rtifact-system
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan-runner
+rules:
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  # Shown when the scan pod cannot start.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["serviceaccounts"]
+    resourceNames: ["rt-stack-detector-scan"]
+    verbs: ["get"]
+  # Only needed for --detection-catalog:
+  # - apiGroups: [""]
+  #   resources: ["configmaps"]
+  #   verbs: ["create", "get", "patch"]
+---
+# Cluster-wide: only check that Part 1 exists. Read only, these names only.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rt-stack-detector-runner
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan-runner
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    resourceNames: ["rtifact-system"]
+    verbs: ["get"]
+  - apiGroups: ["rbac.authorization.k8s.io"]
+    resources: ["clusterroles", "clusterrolebindings"]
+    resourceNames: ["rt-stack-detector-scan"]
+    verbs: ["get"]
+---
+# Who may run the scan. For a group use "kind: Group"; for a CI pod use
+# "kind: ServiceAccount" with its namespace (and no apiGroup).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rt-stack-detector-runner
+  namespace: rtifact-system
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rt-stack-detector-runner
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: REPLACE_WITH_USER
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rt-stack-detector-runner
+  labels:
+    app.kubernetes.io/name: rt-stack-detector
+    app.kubernetes.io/component: scan-runner
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rt-stack-detector-runner
+subjects:
+  - kind: User
+    apiGroup: rbac.authorization.k8s.io
+    name: REPLACE_WITH_USER
