@@ -653,10 +653,35 @@ groups:
 
       - alert: ClickHouseSmallInsertBatches
         expr: |
-          increase(chi_clickhouse_event_InsertQuery[30m]) > 100
+          (
+            max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m]))
+            - (
+              max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertQuery[30m]))
+              or
+              max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) * 0
+            )
+          ) > 1800
           and
-          increase(chi_clickhouse_event_InsertedRows[30m])
-          / increase(chi_clickhouse_event_InsertQuery[30m]) < 1000
+          (
+            clamp_min(
+              max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertedRows[30m]))
+              - (
+                max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertRows[30m]))
+                or
+                max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertedRows[30m])) * 0
+              ),
+              0
+            )
+            /
+            (
+              max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m]))
+              - (
+                max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertQuery[30m]))
+                or
+                max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) * 0
+              )
+            )
+          ) < 1000
         for: 15m
         labels:
           sourceType: metric
@@ -668,16 +693,18 @@ groups:
           category: data
           runbook: runbooks/databases/clickhouse.yaml
           query: |
-            increase(chi_clickhouse_event_InsertQuery[30m]) > 100
+            (max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) - (max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertQuery[30m])) or max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) * 0)) > 1800
             and
-            increase(chi_clickhouse_event_InsertedRows[30m]) / increase(chi_clickhouse_event_InsertQuery[30m]) < 1000
+            (clamp_min(max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertedRows[30m])) - (max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertRows[30m])) or max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertedRows[30m])) * 0), 0)
+            / (max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) - (max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_AsyncInsertQuery[30m])) or max by (chi, hostname, cluster, rtf_cluster_id, rtf_env, rtf_region, rtf_tenant_id) (increase(chi_clickhouse_event_InsertQuery[30m])) * 0))) < 1000
         annotations:
-          summary: "ClickHouse is being written to in very small batches"
-          description: "Host {{ $labels.hostname }} (CHI {{ $labels.chi }}) is averaging under 1000 rows per INSERT over
-            the last 30m across {{ $value | humanize }} inserts. Every INSERT creates at least one part, so small batches
-            generate parts far faster than merges can consume them — this is the root cause behind most
-            ClickHouseMaxPartCountForPartition, ClickHouseDelayedInserts and ClickHouseRejectedInserts incidents. Batch
-            on the client side or put async_insert in front of these writers."
+          summary: "ClickHouse is receiving many small regular (non-async) INSERTs"
+          description: "Host {{ $labels.hostname }} (CHI {{ $labels.chi }}) received {{ $value | humanize }} regular
+            (non-async) INSERTs in the last 30m, more than one per second, averaging under 1000 rows each. Every regular
+            INSERT creates at least one part, so if this continues, parts can pile up faster than merges combine them,
+            which leads to ClickHouseMaxPartCountForPartition, ClickHouseDelayedInserts and ClickHouseRejectedInserts.
+            Async inserts are excluded because ClickHouse batches them itself. Batch on the client side or switch these
+            writers to async_insert."
           runbook_url: "https://github.com/cipherops-io/rtifact-alert-rules/blob/main/runbooks/databases/clickhouse.yaml#clickhousesmallinsertbatches"
 
       # DISABLED: chi_clickhouse_event_StorageBufferErrorOnFlush is not exported in either
