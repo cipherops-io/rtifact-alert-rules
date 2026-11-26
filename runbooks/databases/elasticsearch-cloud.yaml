@@ -1190,11 +1190,112 @@ common_alerts:
       rules, disk, or replica configuration. Do not reduce replicas without considering redundancy requirements.'
     tool_id: ''
     requires_approval: true
+    # ── Act fix template (forge/act). The checks re-run this entry's own child calls;
+    # the change is a manual step chosen by forge from the decider that says NO. ──
+    id: es_allocation_blocker
+    fix_kind: immediate
+    title: Clear the shard allocation blocker on the source deployment
+    summary: The cluster is not green because shards cannot be placed. The allocation explanation names the decider
+      that says no, and the fix depends on that decider.
+    when:
+    - {diag: mcp.elasticsearch.cluster_health@child, path: status, op: ne, threshold: green}
+    steps:
+    - kind: check
+      title: Read the current cluster health
+      rerun: mcp.elasticsearch.cluster_health@child
+      expected: Status, unassigned shard count and data node count of the source deployment
+    - kind: check
+      title: Explain why one unassigned shard cannot be placed
+      rerun: mcp.elasticsearch.cluster_allocation_explain@child
+      expected: The index and shard, and the decider that answers NO on each node
+    - kind: check
+      title: Read the allocation and disk settings
+      rerun: mcp.elasticsearch.cluster_get_settings@child
+      expected: Awareness, filters, disk watermarks and whether allocation is enabled
+    variants:
+    - id: max_retry
+      when:
+      - {diag: mcp.elasticsearch.cluster_allocation_explain@child, path: 'node_allocation_decisions[*].deciders[*].decider',
+        op: contains, threshold: max_retry}
+      title: Retry the failed shard allocations
+      summary: Allocation gave up after repeated failures (max_retry). A retry re-attempts placement and does not override
+        any decider.
+      steps:
+      - kind: manual
+        title: Retry the failed allocations
+        instruction: Run in Kibana Dev Tools on the source deployment. It retries shards that hit the retry limit; it
+          does not force a placement.
+        manual: POST _cluster/reroute?retry_failed=true
+        action_class: es.cluster_reroute
+        expected: Unassigned shards start initializing
+    - id: same_shard
+      when:
+      - {diag: mcp.elasticsearch.cluster_allocation_explain@child, path: 'node_allocation_decisions[*].deciders[*].decider',
+        op: contains, threshold: same_shard}
+      title: Match the replica count of $rtfUnassignedIndex to the data nodes
+      summary: A replica cannot share a node with its primary (same_shard), and the deployment has $data_nodes data
+        nodes. Either lower the replica count to fit, or add a data node.
+      params:
+        data_nodes: {diag: mcp.elasticsearch.cluster_health@child, path: number_of_data_nodes}
+        replicas: {expr: 'max(0, data_nodes - 1)'}
+      steps:
+      - kind: manual
+        title: Set number_of_replicas to $replicas on $rtfUnassignedIndex
+        instruction: Agree with the index owner first, because fewer replicas means less redundancy. The alternative
+          is to add a data node and leave the replica count as it is.
+        manual: 'PUT $rtfUnassignedIndex/_settings {"index": {"number_of_replicas": $replicas}}'
+        action_class: es.index_replicas
+        expected: The replica shards of this index are no longer unassigned
+    - id: disk_threshold
+      when:
+      - {diag: mcp.elasticsearch.cluster_allocation_explain@child, path: 'node_allocation_decisions[*].deciders[*].decider',
+        op: contains, threshold: disk_threshold}
+      title: Free disk or add capacity on the data nodes
+      summary: The disk watermark decider is refusing shards. Raising the watermark only moves the problem; free disk
+        or add capacity.
+      steps:
+      - kind: manual
+        title: Free disk or add data-tier capacity
+        instruction: Delete or shrink indices that are no longer needed, or grow the data tier in the Elastic Cloud
+          console. Do not raise the watermarks to make room.
+        action_class: es.capacity
+        expected: Disk use on every data node drops below the high watermark
+    validate:
+    - {id: es_green, label: Cluster status is green, tool: mcp.elasticsearch.cluster_health@child, field: status,
+      op: eq, threshold: green, for_minutes: 10}
+    - {id: es_no_unassigned_primaries, label: No unassigned primary shards, tool: mcp.elasticsearch.cluster_health@child,
+      field: unassigned_primary_shards, op: eq, threshold: 0, for_minutes: 10}
+    eta_minutes: 20
   - action: recover_unavailable_primaries
     description: For unassigned primaries, use the allocation explanation and valid-copy evidence to plan node recovery
       or snapshot restoration with the owner.
     tool_id: ''
     requires_approval: true
+    id: es_recover_primaries
+    fix_kind: immediate
+    title: Recover the unassigned primary shards
+    summary: Primary shards are unassigned, so part of the data is unavailable. Recovery needs the node that holds
+      a valid copy, or a snapshot.
+    when:
+    - {diag: mcp.elasticsearch.cluster_health@child, path: unassigned_primary_shards, op: gt, threshold: 0}
+    steps:
+    - kind: check
+      title: Read the current cluster health
+      rerun: mcp.elasticsearch.cluster_health@child
+    - kind: check
+      title: Explain the unassigned primary
+      rerun: mcp.elasticsearch.cluster_allocation_explain@child
+      expected: Whether a valid copy of the shard still exists on a node
+    - kind: manual
+      title: Plan node recovery or a snapshot restore with the deployment owner
+      instruction: If the explanation shows a valid copy on a node that left, bring that node back. If no valid copy
+        exists, restore the index from the latest snapshot. Do not allocate an empty or stale primary without the owner
+        accepting the data loss.
+      action_class: es.capacity
+    validate:
+    - {id: es_no_unassigned_primaries, label: No unassigned primary shards, tool: mcp.elasticsearch.cluster_health@child,
+      field: unassigned_primary_shards, op: eq, threshold: 0, for_minutes: 10}
+    eta_minutes: 30
   escalation: Deployment owner urgently for unavailable primaries or confirmed request failures. Yellow indicates
     degraded redundancy; use the observed shard impact and allocation decisions.
   follow_up:
