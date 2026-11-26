@@ -180,6 +180,107 @@ common_alerts:
               previous: true
               tail_lines: 200
     remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
+      # ── Act fix templates (forge/act). Conditions are evaluated by forge from step 1's
+      # metric pack; checks go through the tenant's Kubernetes operator (MCP). ──
+      - action: "read_crash_error"
+        description: "Read the exact fatal line, last state and owner of the crashing container before changing anything. The previous container's output is the decisive evidence for every fix below."
+        tool_id: ""
+        requires_approval: false
+        id: crash_read_error
+        fix_kind: immediate
+        title: "Read the exact error from the crashed $container container"
+        summary: "The fix depends on the line the container printed right before it exited. These reads go to the pod through the Kubernetes operator, so they work without a tunnel and even when the log store has nothing."
+        when:
+          - {value: restarts_6h, op: ge, threshold: 1}
+        avoid_when:
+          - {value: term_reason_oomkilled, op: ge, threshold: 1}   # an OOM: the KubePodOOMKilled fixes apply
+        steps:
+          - kind: check
+            title: "Re-read the exit code, restarts and readiness of $container"
+            rerun: [last_exit_code, restarts_6h, container_ready]
+            expected: "The exit code is unchanged and restarts are still climbing"
+          - kind: check
+            title: "Diagnose $workload: replicas, restarts, last state and log tail"
+            tool: mcp.kubernetes.diagnose_workload
+            args: {namespace: $namespace, kind: Deployment, name: $workload, tailLines: 50}
+            summary_chars: 3000
+            expected: "The $container container shows the same exit code; warning events name any probe or mount failure"
+          - kind: check
+            title: "Read the previous $container container's last log lines"
+            tool: mcp.kubernetes.get_pod_logs
+            args: {namespace: $namespace, podName: $pod, container: $container, previous: true, tailLines: 100}
+            summary_chars: 3000
+            expected: "The last lines name the rejected flag, missing config key or secret, or the dependency that failed"
+          - kind: check
+            title: "Read the $workload deployment: command, args, env sources and owner"
+            tool: mcp.kubernetes.get_deployment
+            args: {namespace: $namespace, deploymentName: $workload}
+            summary_chars: 3000
+            expected: "ownerReferences and managed-by labels say where the spec is defined"
+        eta_minutes: 2
+      - action: "fix_startup_config"
+        description: "Deterministic crash (exit 1/2/126/127/139, not OOM): correct the command, args, config or image where the workload is defined. A restart will not help."
+        tool_id: ""
+        requires_approval: false
+        id: crash_fix_startup
+        fix_kind: comprehensive
+        title: "Fix what $container fails on at startup, where it is defined"
+        summary: "The container exits with code $exit_code on every start, so restarting loops back into the same failure. Change it where the workload is defined."
+        when:
+          - {value: last_exit_code, op: ge, threshold: 1}
+          - {value: last_exit_code, op: ne, threshold: 137}   # OOM / SIGKILL
+          - {value: last_exit_code, op: ne, threshold: 143}   # SIGTERM: rollout or shutdown, not an app bug
+        avoid_when:
+          - {value: term_reason_oomkilled, op: ge, threshold: 1}
+        params:
+          exit_code: {value: last_exit_code}
+        variants:   # first match wins
+          - id: bad_args
+            when: [{value: last_exit_code, op: eq, threshold: 2}]
+            title: "Correct the startup arguments of $container where they are defined"
+            summary: "Exit code 2 is a command-line usage error: a flag or argument is rejected on every start, so a restart loops back into it. Fix it where the workload is defined."
+          - id: app_config
+            when: [{value: last_exit_code, op: eq, threshold: 1}]
+            title: "Fix the config or secret $container fails on at startup"
+            summary: "Exit code 1 with no OOM is an application or config failure at startup, typically a missing or invalid env value, ConfigMap or Secret. Fix it where the workload is defined."
+          - id: bad_entrypoint
+            when: [{value: last_exit_code, op: ge, threshold: 126}, {value: last_exit_code, op: le, threshold: 127}]
+            title: "Fix the image entrypoint or command of $container"
+            summary: "Exit code $exit_code means the command is missing or not executable in the image. Fix the image or the command where the workload is defined."
+          - id: native_crash
+            when: [{value: last_exit_code, op: eq, threshold: 139}]
+            title: "Hand the segmentation fault in $container to the owning team"
+            summary: "Exit code 139 is a native crash (SIGSEGV) in the application or its runtime. The owning team needs the crash output and the image version."
+        steps:
+          - kind: check
+            title: "Read the $workload deployment and its owner"
+            tool: mcp.kubernetes.get_deployment
+            args: {namespace: $namespace, deploymentName: $workload}
+            summary_chars: 3000
+            expected: "ownerReferences and managed-by labels say where the spec is defined: Helm or ArgoCD, an operator, or an OLM ClusterServiceVersion"
+          - kind: manual
+            title: "Make the fix where $workload is defined and let it roll out"
+            instruction: "Using the error line from the crashed container, change the command, args, env, ConfigMap/Secret reference or image where $workload is defined. If a controller owns the Deployment (an operator, an OLM ClusterServiceVersion, Helm or ArgoCD), change it there: a direct edit of the Deployment is put back."
+            manual: "kubectl -n $namespace get deployment $workload -o jsonpath='{.metadata.ownerReferences}'"
+            action_class: k8s.edit_workload_spec
+            expected: "New pods of $workload start and stay ready"
+        validate:
+          - id: no_new_restarts
+            label: "No new restarts of $container"
+            promql: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[30m]))'
+            op: eq
+            threshold: 0
+            for_minutes: 30
+            not_before_minutes: 10   # old pods' restarts stay in the window until the rollout settles
+          - id: exit_code_cleared
+            label: "No $container container last exited with code $exit_code"
+            promql: 'max(kube_pod_container_status_last_terminated_exitcode{namespace="$namespace",pod=~"$workload-.*",container="$container"} == $exit_code) or vector(0)'
+            op: eq
+            threshold: 0
+            for_minutes: 10
+            not_before_minutes: 10
+          - {id: ready, label: "$container is ready", from: container_ready, op: eq, threshold: 1, for_minutes: 10}
+        eta_minutes: 30
       - action: "rollback_deployment"
         description: "Primary fix when the crash loop began right after a rollout (small newest_rs_age_min, generation lag, or a bad image/config in the new revision)."
         tool_id: "forge.revert_deployment"
@@ -192,6 +293,41 @@ common_alerts:
         description: "Only to restore availability when the cause is a transient external dependency (e.g. DB not ready at startup) and config is valid. NOT a fix for a deterministic config/code crash — it will just loop back into the same failure."
         tool_id: "forge.restart_deployment"
         requires_approval: true
+        # Act: offered only for a generic startup error (exit 1) with no config waiting
+        # reason — never for exit 2/126/127/139, which repeat on every start.
+        id: crash_restart
+        fix_kind: immediate
+        title: "Restart $workload"
+        summary: "Only if the previous container's logs show a dependency that was not ready at startup and is ready now. Not a fix for a crash that repeats on every start."
+        when:
+          - {value: last_exit_code, op: eq, threshold: 1}
+        avoid_when:
+          - {value: waiting_config, op: ge, threshold: 1}
+        steps:
+          - kind: check
+            title: "Read the previous $container container's last log lines"
+            tool: mcp.kubernetes.get_pod_logs
+            args: {namespace: $namespace, podName: $pod, container: $container, previous: true, tailLines: 100}
+            summary_chars: 3000
+            expected: "The failure is a dependency (database, broker, DNS) that is reachable now"
+          # Through the Kubernetes operator. Runs from Act once the operator
+          # has the action and ACT_MCP_WRITE_ACTIONS allows it; until then, the command.
+          - kind: change
+            title: "Restart deployment $workload"
+            executor: mcp.kubernetes.restart_deployment
+            args: {namespace: $namespace, name: $workload}
+            manual: "kubectl -n $namespace rollout restart deployment/$workload"
+            expected: "New pods of $workload start and stay ready"
+        validate:
+          - id: no_new_restarts
+            label: "No new restarts of $container"
+            promql: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[15m]))'
+            op: eq
+            threshold: 0
+            for_minutes: 15
+            not_before_minutes: 5
+          - {id: ready, label: "$container is ready", from: container_ready, op: eq, threshold: 1, for_minutes: 10}
+        eta_minutes: 5
     escalation: "App team and SRE on-call if multiple replicas are impacted or customer traffic is degraded. Route by exit code — 137: SRE (memory sizing); 1/2/139: app team (code/config); 126/127/ImagePull/config-error: platform (image, secret, configmap)."
     follow_up:
       - "Once the previous-container logs name the exact failure, file the concrete fix (config key, secret, image tag, command/args) rather than a generic 'enable tracing'."
@@ -297,6 +433,99 @@ common_alerts:
         description: "Right-size memory: raise request AND limit together (keep request==limit per policy) to ~1.3x the observed 6h peak. Primary fix when peak/util is high against the limit."
         tool_id: "forge.patch_resources"
         requires_approval: true
+        # ── Act fix template (forge/act). Conditions and numbers are evaluated by
+        # forge from step 1's metric pack. Act has no operator action for a resource
+        # change, so it is a manual step with the exact command. ──
+        id: oom_raise_memory
+        fix_kind: immediate
+        title: "Raise the memory limit of $container to $memory"
+        summary: "The 6h memory peak sits at the limit, so the container is undersized. Raises request and limit together to 1.3x the peak."
+        chip: "memory $current_limit → $memory"
+        when:
+          - {value: oom_confirmed, op: ge, threshold: 1}
+          - {value: mem_peak_pct, op: ge, threshold: 85}
+        avoid_when:
+          - {value: mem_peak_pct, op: lt, threshold: 70}
+        params:
+          memory: {expr: "ceil_to(1.3 * mem_peak_6h_mib, 64)", suffix: Mi}
+          current_limit: {expr: "round(mem_limit_mib)", suffix: Mi}
+          current_request: {expr: "round(mem_request_mib)", suffix: Mi}
+        bounds:
+          memory: {gt: current_limit, max_ratio_of: current_limit, max_ratio: 2.0, max: 8192}
+        steps:
+          - kind: check
+            title: "Confirm the OOM kill and the current limit"
+            rerun: [oom_confirmed, mem_limit_mib, mem_peak_6h_mib]
+            expected: "oom_confirmed is 1 and the 6h peak is at or above 85% of the limit"
+          # Through the Kubernetes operator (MCP), so it works without a tunnel.
+          - kind: check
+            title: "Read the workload: replicas, restarts, OOMKilled containers and their last logs"
+            tool: mcp.kubernetes.diagnose_workload
+            args: {namespace: $namespace, kind: Deployment, name: $workload, tailLines: 30}
+            summary_chars: 3000
+            expected: "The $container container shows OOMKilled / exit 137 and the restart count is climbing"
+          - kind: change
+            title: "Set memory request and limit of $container to $memory"
+            action_class: k8s.patch_resources
+            manual: "kubectl -n $namespace set resources deployment/$workload -c $container --limits=memory=$memory --requests=memory=$memory"
+            diff:
+              target: "deployment/$workload · container $container · resources"
+              before: "limits.memory: $current_limit\nrequests.memory: $current_request"
+              after: "limits.memory: $memory\nrequests.memory: $memory"
+            expected: "New pods roll out with the $memory limit"
+          # GitOps-managed workloads: the change above is made in Git (forge adds that step);
+          # then ArgoCD syncs. Runs from Act once the operator has argocd.sync_application
+          # and ACT_MCP_WRITE_ACTIONS allows it; until then it is this manual command.
+          - kind: change
+            only_if: gitops
+            title: "Sync ArgoCD app $argocd_app"
+            executor: mcp.argocd.sync_application
+            args: {name: $argocd_app}
+            manual: "argocd app sync $argocd_app"
+            expected: "ArgoCD app $argocd_app is Synced and Healthy, and the new pods run with $memory"
+        rollback:
+          - kind: change
+            title: "Restore the previous memory request and limit of $container"
+            action_class: k8s.patch_resources
+            manual: "kubectl -n $namespace set resources deployment/$workload -c $container --limits=memory=$current_limit --requests=memory=$current_request"
+        validate:
+          - id: no_new_restarts
+            label: "No new restarts of $container"
+            promql: 'sum(increase(kube_pod_container_status_restarts_total{namespace="$namespace",pod=~"$workload-.*",container="$container"}[10m]))'
+            op: eq
+            threshold: 0
+            for_minutes: 10
+            not_before_minutes: 10   # old pods' restarts stay in the window until the rollout settles
+          - {id: headroom, label: "Memory under 85% of the limit", from: mem_util_pct, op: lt, threshold: 85, unit: "%", for_minutes: 10}
+        eta_minutes: 10
+      - action: "investigate_memory_growth"
+        description: "When memory keeps climbing with no matching traffic rise, a larger limit only delays the next kill: capture a heap profile and hand it to the owning team."
+        tool_id: ""
+        requires_approval: false
+        id: oom_fix_growth
+        fix_kind: comprehensive
+        title: "Find and fix the memory growth in $container"
+        summary: "Memory is climbing at $slope MiB/min, so a larger limit only delays the next kill. The lasting fix is in the application."
+        when:
+          - {value: oom_confirmed, op: ge, threshold: 1}
+          - {value: mem_slope_mib_per_min, op: gt, threshold: 0.5}
+        params:
+          slope: {expr: "mem_slope_mib_per_min"}
+        steps:
+          - kind: check
+            title: "Re-read the memory growth rate"
+            rerun: [mem_slope_mib_per_min, mem_working_set_mib]
+            expected: "A positive slope while traffic is flat points to a leak or an unbounded cache"
+          - kind: check
+            title: "Read the killed container's last log lines"
+            rerun: "tool.get_crash_context"
+          - kind: manual
+            title: "Capture a heap profile before the next kill"
+            instruction: "Take a heap dump or profile from a running pod of $workload while memory is above 80% of the limit, and hand it to the owning team with the growth rate above."
+            manual: "kubectl -n $namespace top pod --containers"
+        validate:
+          - {id: growth_stopped, label: "Memory growth has stopped", from: mem_slope_mib_per_min, op: le, threshold: 0.1, unit: "MiB/min", for_minutes: 30}
+        eta_minutes: 60
       - action: "remove_cpu_limit"
         description: "If a CPU limit is set, remove it (platform policy: no CPU limits, avoid CFS throttling); keep memory request==limit."
         tool_id: "forge.patch_resources"
