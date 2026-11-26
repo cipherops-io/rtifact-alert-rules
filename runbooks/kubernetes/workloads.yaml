@@ -181,7 +181,7 @@ common_alerts:
               tail_lines: 200
     remediation:   # only for suggestion — never auto-executed (forge.* are approval-gated)
       # ── Act fix templates (forge/act). Conditions are evaluated by forge from step 1's
-      # metric pack; checks go through the tenant's Kubernetes operator (MCP, no tunnel). ──
+      # metric pack; checks go through the tenant's Kubernetes operator (MCP). ──
       - action: "read_crash_error"
         description: "Read the exact fatal line, last state and owner of the crashing container before changing anything. The previous container's output is the decisive evidence for every fix below."
         tool_id: ""
@@ -310,10 +310,12 @@ common_alerts:
             args: {namespace: $namespace, podName: $pod, container: $container, previous: true, tailLines: 100}
             summary_chars: 3000
             expected: "The failure is a dependency (database, broker, DNS) that is reachable now"
+          # Through the Kubernetes operator. Runs from Act once the operator
+          # has the action and ACT_MCP_WRITE_ACTIONS allows it; until then, the command.
           - kind: change
             title: "Restart deployment $workload"
-            executor: k8s.restart_deployment
-            args: {}
+            executor: mcp.kubernetes.restart_deployment
+            args: {namespace: $namespace, name: $workload}
             manual: "kubectl -n $namespace rollout restart deployment/$workload"
             expected: "New pods of $workload start and stay ready"
         validate:
@@ -432,7 +434,8 @@ common_alerts:
         tool_id: "forge.patch_resources"
         requires_approval: true
         # ── Act fix template (forge/act). Conditions and numbers are evaluated by
-        # forge from step 1's metric pack; the change runs only after approval. ──
+        # forge from step 1's metric pack. Act has no operator action for a resource
+        # change, so it is a manual step with the exact command. ──
         id: oom_raise_memory
         fix_kind: immediate
         title: "Raise the memory limit of $container to $memory"
@@ -463,8 +466,7 @@ common_alerts:
             expected: "The $container container shows OOMKilled / exit 137 and the restart count is climbing"
           - kind: change
             title: "Set memory request and limit of $container to $memory"
-            executor: k8s.patch_resources
-            args: {container: $container, limits: {memory: $memory}, requests: {memory: $memory}}
+            action_class: k8s.patch_resources
             manual: "kubectl -n $namespace set resources deployment/$workload -c $container --limits=memory=$memory --requests=memory=$memory"
             diff:
               target: "deployment/$workload · container $container · resources"
@@ -484,8 +486,7 @@ common_alerts:
         rollback:
           - kind: change
             title: "Restore the previous memory request and limit of $container"
-            executor: k8s.patch_resources
-            args: {container: $container, limits: {memory: $current_limit}, requests: {memory: $current_request}}
+            action_class: k8s.patch_resources
             manual: "kubectl -n $namespace set resources deployment/$workload -c $container --limits=memory=$current_limit --requests=memory=$current_request"
         validate:
           - id: no_new_restarts
